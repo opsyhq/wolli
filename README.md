@@ -3,7 +3,7 @@
 **Persistent, purposeful AI agents.**
 
 ```
-$ opsy new calories
+$ steward new calories
 agent: What is my purpose?
 you:   Help me count calories and lose weight.
 ```
@@ -27,5 +27,5 @@ toward its purpose until you retire it.
   workspace (container locally, hosted sandbox in the cloud). Touching the
   user's actual machine is an explicit, approval-gated escalation.
 - **Addressable.** Agents are peers with handles and hosted email identity:
-  `opsy message @calories "log: two eggs, toast"`. Agent-to-agent messaging
+  `steward message @calories "log: two eggs, toast"`. Agent-to-agent messaging
   and A2A interop are part of the frame, not bolt-ons.
