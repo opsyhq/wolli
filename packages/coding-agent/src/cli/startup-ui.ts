@@ -28,7 +28,7 @@ async function clearStartupTui(ui: TUI): Promise<void> {
 
 /**
  * First-time setup runs when all of these hold:
- * - experimental features are enabled (PI_EXPERIMENTAL=1)
+ * - experimental features are enabled (STEWARD_EXPERIMENTAL=1)
  * - the default agent directory is used (no custom agent dir override)
  * - setup was not completed before (settings.json does not exist)
  */
