@@ -1,6 +1,11 @@
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
-const LATEST_VERSION_URL = "https://pi.dev/api/latest-version";
+// Update checks are disabled: steward has no release server yet, and the
+// upstream endpoint would surface pi's releases. The fetch implementation
+// below is preserved for when steward has its own endpoint — set
+// VERSION_CHECK_ENABLED to true and point LATEST_VERSION_URL at it to re-enable.
+const VERSION_CHECK_ENABLED = false;
+const LATEST_VERSION_URL = "https://opsyhq.com/api/latest-version"; // placeholder; not live while disabled
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
 
 export interface LatestPiRelease {
@@ -57,6 +62,7 @@ export async function getLatestPiRelease(
 	currentVersion: string,
 	options: { timeoutMs?: number } = {},
 ): Promise<LatestPiRelease | undefined> {
+	if (!VERSION_CHECK_ENABLED) return undefined;
 	if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE) return undefined;
 
 	const response = await fetch(LATEST_VERSION_URL, {

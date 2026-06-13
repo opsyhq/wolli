@@ -475,7 +475,8 @@ export function expandTildePath(path: string): string {
 	return normalizePath(path);
 }
 
-const DEFAULT_SHARE_VIEWER_URL = "https://pi.dev/session/";
+// Placeholder until steward has a session viewer; overridable via PI_SHARE_VIEWER_URL.
+const DEFAULT_SHARE_VIEWER_URL = "https://opsyhq.com/session/";
 
 /** Get the share viewer URL for a gist ID */
 export function getShareViewerUrl(gistId: string): string {
