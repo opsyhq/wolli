@@ -11,7 +11,7 @@ import {
 	getAgentDir,
 	type PromptTemplate,
 	SessionManager,
-} from "@opsy/coding-agent";
+} from "@opsyhq/coding-agent";
 
 // Define custom templates
 const deployTemplate: PromptTemplate = {

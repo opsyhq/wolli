@@ -3,12 +3,12 @@
 	"compilerOptions": {
 		"noEmit": true,
 		"paths": {
-			"@opsy/agent": ["./packages/agent/src/index.ts"],
-			"@opsy/agent/*": ["./packages/agent/src/*"],
-			"@opsy/tui": ["./packages/tui/src/index.ts"],
-			"@opsy/tui/*": ["./packages/tui/src/*"],
-			"@opsy/coding-agent": ["./packages/coding-agent/src/index.ts"],
-			"@opsy/coding-agent/*": ["./packages/coding-agent/src/*"]
+			"@opsyhq/agent": ["./packages/agent/src/index.ts"],
+			"@opsyhq/agent/*": ["./packages/agent/src/*"],
+			"@opsyhq/tui": ["./packages/tui/src/index.ts"],
+			"@opsyhq/tui/*": ["./packages/tui/src/*"],
+			"@opsyhq/coding-agent": ["./packages/coding-agent/src/index.ts"],
+			"@opsyhq/coding-agent/*": ["./packages/coding-agent/src/*"]
 		}
 	},
 	"include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"],

@@ -1,4 +1,4 @@
-import { Container, type SelectItem, SelectList, type SelectListLayoutOptions } from "@opsy/tui";
+import { Container, type SelectItem, SelectList, type SelectListLayoutOptions } from "@opsyhq/tui";
 import { getSelectListTheme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 

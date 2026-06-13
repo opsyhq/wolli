@@ -15,7 +15,7 @@
  */
 
 import { mkdtemp, writeFile } from "node:fs/promises";
-import type { ExtensionAPI } from "@opsy/coding-agent";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -23,8 +23,8 @@ import {
 	type TruncationResult,
 	truncateHead,
 	withFileMutationQueue,
-} from "@opsy/coding-agent";
-import { Text } from "@opsy/tui";
+} from "@opsyhq/coding-agent";
+import { Text } from "@opsyhq/tui";
 import { execSync } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";

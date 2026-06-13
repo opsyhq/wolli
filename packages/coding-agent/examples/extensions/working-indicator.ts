@@ -16,7 +16,7 @@
  *   /working-indicator reset     Restore pi's default spinner
  */
 
-import type { ExtensionAPI, ExtensionContext, WorkingIndicatorOptions } from "@opsy/coding-agent";
+import type { ExtensionAPI, ExtensionContext, WorkingIndicatorOptions } from "@opsyhq/coding-agent";
 
 type WorkingIndicatorMode = "dot" | "none" | "pulse" | "spinner" | "default";
 

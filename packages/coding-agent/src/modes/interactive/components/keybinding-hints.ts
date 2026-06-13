@@ -2,7 +2,7 @@
  * Utilities for formatting keybinding hints in the UI.
  */
 
-import { getKeybindings, type Keybinding, type KeyId } from "@opsy/tui";
+import { getKeybindings, type Keybinding, type KeyId } from "@opsyhq/tui";
 import { theme } from "../theme/theme.ts";
 
 export interface KeyTextFormatOptions {

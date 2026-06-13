@@ -1,5 +1,5 @@
-import type { ThinkingLevel } from "@opsy/agent";
-import { Container, type SelectItem, SelectList, type SelectListLayoutOptions } from "@opsy/tui";
+import type { ThinkingLevel } from "@opsyhq/agent";
+import { Container, type SelectItem, SelectList, type SelectListLayoutOptions } from "@opsyhq/tui";
 import { getSelectListTheme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 

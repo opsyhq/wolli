@@ -2,8 +2,8 @@
  * Snake game extension - play snake with /snake command
  */
 
-import type { ExtensionAPI } from "@opsy/coding-agent";
-import { matchesKey, visibleWidth } from "@opsy/tui";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
+import { matchesKey, visibleWidth } from "@opsyhq/tui";
 
 const GAME_WIDTH = 40;
 const GAME_HEIGHT = 15;

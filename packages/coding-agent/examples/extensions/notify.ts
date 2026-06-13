@@ -8,7 +8,7 @@
  * - Windows toast: Windows Terminal (WSL)
  */
 
-import type { ExtensionAPI } from "@opsy/coding-agent";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
 
 function windowsToastScript(title: string, body: string): string {
 	const type = "Windows.UI.Notifications";

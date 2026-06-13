@@ -1,4 +1,4 @@
-import { Container, getKeybindings, Spacer, Text } from "@opsy/tui";
+import { Container, getKeybindings, Spacer, Text } from "@opsyhq/tui";
 import {
 	getProjectTrustOptions,
 	getProjectTrustPath,

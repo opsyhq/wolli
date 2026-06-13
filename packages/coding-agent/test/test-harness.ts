@@ -24,8 +24,8 @@ import type {
 	Usage,
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { AgentTool } from "@opsy/agent";
-import { Agent } from "@opsy/agent";
+import type { AgentTool } from "@opsyhq/agent";
+import { Agent } from "@opsyhq/agent";
 import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";

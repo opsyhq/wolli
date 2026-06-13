@@ -6,7 +6,7 @@
  */
 
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
-import type { AgentMessage, ThinkingLevel } from "@opsy/agent";
+import type { AgentMessage, ThinkingLevel } from "@opsyhq/agent";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";

@@ -1,4 +1,4 @@
-import { resetCapabilitiesCache, setCapabilities } from "@opsy/tui";
+import { resetCapabilitiesCache, setCapabilities } from "@opsyhq/tui";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	detectTerminalBackground,

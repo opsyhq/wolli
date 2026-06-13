@@ -13,9 +13,9 @@
  */
 
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
-import type { AgentMessage } from "@opsy/agent";
-import type { ExtensionAPI, ExtensionContext } from "@opsy/coding-agent";
-import { Key } from "@opsy/tui";
+import type { AgentMessage } from "@opsyhq/agent";
+import type { ExtensionAPI, ExtensionContext } from "@opsyhq/coding-agent";
+import { Key } from "@opsyhq/tui";
 import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
 
 // Tools

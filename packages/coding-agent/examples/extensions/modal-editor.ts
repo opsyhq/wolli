@@ -9,8 +9,8 @@
  * - ctrl+c, ctrl+d, etc. work in both modes
  */
 
-import { CustomEditor, type ExtensionAPI } from "@opsy/coding-agent";
-import { matchesKey, truncateToWidth, visibleWidth } from "@opsy/tui";
+import { CustomEditor, type ExtensionAPI } from "@opsyhq/coding-agent";
+import { matchesKey, truncateToWidth, visibleWidth } from "@opsyhq/tui";
 
 // Normal mode key mappings: key -> escape sequence (or null for mode switch)
 const NORMAL_KEYS: Record<string, string | null> = {

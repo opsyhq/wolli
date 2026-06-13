@@ -18,9 +18,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { AgentToolResult } from "@opsy/agent";
-import { type ExtensionAPI, getMarkdownTheme, withFileMutationQueue } from "@opsy/coding-agent";
-import { Container, Markdown, Spacer, Text } from "@opsy/tui";
+import type { AgentToolResult } from "@opsyhq/agent";
+import { type ExtensionAPI, getMarkdownTheme, withFileMutationQueue } from "@opsyhq/coding-agent";
+import { Container, Markdown, Spacer, Text } from "@opsyhq/tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 

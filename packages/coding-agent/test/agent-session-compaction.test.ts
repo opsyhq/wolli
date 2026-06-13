@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai";
-import { Agent } from "@opsy/agent";
+import { Agent } from "@opsyhq/agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";

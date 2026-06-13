@@ -4,7 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentDir, parseFrontmatter } from "@opsy/coding-agent";
+import { getAgentDir, parseFrontmatter } from "@opsyhq/coding-agent";
 
 export type AgentScope = "user" | "project" | "both";
 

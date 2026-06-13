@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentEvent } from "@opsy/agent";
+import type { AgentEvent } from "@opsyhq/agent";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 
@@ -20,7 +20,7 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_OAUTH_T
 		client = new RpcClient({
 			cliPath: join(__dirname, "..", "dist", "cli.js"),
 			cwd: join(__dirname, ".."),
-			env: { OPSY_CODING_AGENT_DIR: sessionDir },
+			env: { STEWARD_CODING_AGENT_DIR: sessionDir },
 			provider: "anthropic",
 			model: "claude-sonnet-4-5",
 		});

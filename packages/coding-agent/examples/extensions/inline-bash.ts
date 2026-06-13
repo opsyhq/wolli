@@ -14,7 +14,7 @@
  *
  * Note: Regular !command syntax (whole-line bash) is preserved and works as before.
  */
-import type { ExtensionAPI } from "@opsy/coding-agent";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
 
 export default function (pi: ExtensionAPI) {
 	const PATTERN = /!\{([^}]+)\}/g;

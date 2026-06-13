@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { type AutocompleteProvider, CombinedAutocompleteProvider } from "@opsy/tui";
+import { type AutocompleteProvider, CombinedAutocompleteProvider } from "@opsyhq/tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { type Component, Container, type Focusable, TUI } from "../../tui/src/tui.ts";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";

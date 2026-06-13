@@ -5,7 +5,7 @@
  * Requires: npm install in this directory
  */
 
-import type { ExtensionAPI } from "@opsy/coding-agent";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
 import ms from "ms";
 import { Type } from "typebox";
 

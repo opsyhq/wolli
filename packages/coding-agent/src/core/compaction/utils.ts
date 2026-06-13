@@ -3,7 +3,7 @@
  */
 
 import type { Message } from "@earendil-works/pi-ai";
-import type { AgentMessage } from "@opsy/agent";
+import type { AgentMessage } from "@opsyhq/agent";
 
 // ============================================================================
 // File Operation Tracking

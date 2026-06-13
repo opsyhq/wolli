@@ -1,6 +1,6 @@
-import { CustomEditor, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@opsy/coding-agent";
-import type { Component, EditorTheme, TUI } from "@opsy/tui";
-import { truncateToWidth, visibleWidth } from "@opsy/tui";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@opsyhq/coding-agent";
+import type { Component, EditorTheme, TUI } from "@opsyhq/tui";
+import { truncateToWidth, visibleWidth } from "@opsyhq/tui";
 
 function fitBorder(
 	left: string,

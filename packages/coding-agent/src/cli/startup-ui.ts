@@ -1,4 +1,4 @@
-import { ProcessTerminal, setKeybindings, TUI } from "@opsy/tui";
+import { ProcessTerminal, setKeybindings, TUI } from "@opsyhq/tui";
 import { existsSync } from "fs";
 import { ENV_AGENT_DIR, getSettingsPath } from "../config.ts";
 import { areExperimentalFeaturesEnabled } from "../core/experimental.ts";

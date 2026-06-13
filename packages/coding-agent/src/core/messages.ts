@@ -6,7 +6,7 @@
  */
 
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
-import type { AgentMessage } from "@opsy/agent";
+import type { AgentMessage } from "@opsyhq/agent";
 
 export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
@@ -67,7 +67,7 @@ export interface CompactionSummaryMessage {
 }
 
 // Extend CustomAgentMessages via declaration merging
-declare module "@opsy/agent" {
+declare module "@opsyhq/agent" {
 	interface CustomAgentMessages {
 		bashExecution: BashExecutionMessage;
 		custom: CustomMessage;

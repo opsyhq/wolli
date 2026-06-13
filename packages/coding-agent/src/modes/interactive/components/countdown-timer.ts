@@ -2,7 +2,7 @@
  * Reusable countdown timer for dialog components.
  */
 
-import type { TUI } from "@opsy/tui";
+import type { TUI } from "@opsyhq/tui";
 
 export class CountdownTimer {
 	private intervalId: ReturnType<typeof setInterval> | undefined;

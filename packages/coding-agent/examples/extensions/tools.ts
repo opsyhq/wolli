@@ -9,9 +9,9 @@
  * 2. Use /tools to open the tool selector
  */
 
-import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@opsy/coding-agent";
-import { getSettingsListTheme } from "@opsy/coding-agent";
-import { Container, type SettingItem, SettingsList } from "@opsy/tui";
+import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@opsyhq/coding-agent";
+import { getSettingsListTheme } from "@opsyhq/coding-agent";
+import { Container, type SettingItem, SettingsList } from "@opsyhq/tui";
 
 // State persisted to session
 interface ToolsState {

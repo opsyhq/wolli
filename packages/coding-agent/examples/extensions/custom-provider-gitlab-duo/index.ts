@@ -22,7 +22,7 @@ import {
 	streamSimpleOpenAIResponses,
 	type ThinkingLevelMap,
 } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@opsy/coding-agent";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
 
 // =============================================================================
 // Constants

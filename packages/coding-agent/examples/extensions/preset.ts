@@ -41,9 +41,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@opsy/coding-agent";
-import { DynamicBorder, getAgentDir } from "@opsy/coding-agent";
-import { Container, Key, type SelectItem, SelectList, Text } from "@opsy/tui";
+import type { ExtensionAPI, ExtensionContext } from "@opsyhq/coding-agent";
+import { DynamicBorder, getAgentDir } from "@opsyhq/coding-agent";
+import { Container, Key, type SelectItem, SelectList, Text } from "@opsyhq/tui";
 
 // Preset configuration
 interface Preset {

@@ -12,7 +12,7 @@ import {
 	getAgentDir,
 	SessionManager,
 	type Skill,
-} from "@opsy/coding-agent";
+} from "@opsyhq/coding-agent";
 
 // Or define custom skills inline
 const customSkill: Skill = {

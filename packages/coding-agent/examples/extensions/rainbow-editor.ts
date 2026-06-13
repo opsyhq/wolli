@@ -4,7 +4,7 @@
  * Usage: pi --extension ./examples/extensions/rainbow-editor.ts
  */
 
-import { CustomEditor, type ExtensionAPI } from "@opsy/coding-agent";
+import { CustomEditor, type ExtensionAPI } from "@opsyhq/coding-agent";
 
 // Base colors (coral → yellow → green → teal → blue → purple → pink)
 const COLORS: [number, number, number][] = [

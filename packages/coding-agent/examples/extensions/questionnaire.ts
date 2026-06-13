@@ -5,8 +5,8 @@
  * Multiple questions: tab bar navigation between questions
  */
 
-import type { ExtensionAPI } from "@opsy/coding-agent";
-import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth } from "@opsy/tui";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
+import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth } from "@opsyhq/tui";
 import { Type } from "typebox";
 
 // Types

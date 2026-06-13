@@ -3,8 +3,8 @@
 	"compilerOptions": {
 		"noEmit": true,
 		"paths": {
-			"@opsy/coding-agent": ["./src/index.ts"],
-			"@opsy/tui": ["../tui/src/index.ts"]
+			"@opsyhq/coding-agent": ["./src/index.ts"],
+			"@opsyhq/tui": ["../tui/src/index.ts"]
 		},
 		"skipLibCheck": true
 	},

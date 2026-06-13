@@ -1,4 +1,4 @@
-import { Box, Container, Markdown, type MarkdownTheme } from "@opsy/tui";
+import { Box, Container, Markdown, type MarkdownTheme } from "@opsyhq/tui";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";

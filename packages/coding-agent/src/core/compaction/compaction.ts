@@ -7,7 +7,7 @@
 
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
-import type { AgentMessage, StreamFn, ThinkingLevel } from "@opsy/agent";
+import type { AgentMessage, StreamFn, ThinkingLevel } from "@opsyhq/agent";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,

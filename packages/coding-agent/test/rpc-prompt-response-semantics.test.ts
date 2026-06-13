@@ -8,7 +8,7 @@ import {
 	getModel,
 	type Model,
 } from "@earendil-works/pi-ai";
-import { Agent } from "@opsy/agent";
+import { Agent } from "@opsyhq/agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";

@@ -1,4 +1,4 @@
-import type { AgentState } from "@opsy/agent";
+import type { AgentState } from "@opsyhq/agent";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDir } from "../../config.ts";

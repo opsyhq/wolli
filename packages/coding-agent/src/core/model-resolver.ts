@@ -3,7 +3,7 @@
  */
 
 import { type Api, type KnownProvider, type Model, modelsAreEqual } from "@earendil-works/pi-ai";
-import type { ThinkingLevel } from "@opsy/agent";
+import type { ThinkingLevel } from "@opsyhq/agent";
 import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";

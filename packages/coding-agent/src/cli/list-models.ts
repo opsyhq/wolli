@@ -3,7 +3,7 @@
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { fuzzyFilter } from "@opsy/tui";
+import { fuzzyFilter } from "@opsyhq/tui";
 import chalk from "chalk";
 import { formatNoModelsAvailableMessage } from "../core/auth-guidance.ts";
 import type { ModelRegistry } from "../core/model-registry.ts";

@@ -7,7 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getModel, type OAuthCredentials, type OAuthProvider } from "@earendil-works/pi-ai";
 import { getOAuthApiKey } from "@earendil-works/pi-ai/oauth";
-import { Agent } from "@opsy/agent";
+import { Agent } from "@opsyhq/agent";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";

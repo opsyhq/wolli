@@ -1,4 +1,4 @@
-import type { Component } from "@opsy/tui";
+import type { Component } from "@opsyhq/tui";
 import { theme } from "../theme/theme.ts";
 
 /**

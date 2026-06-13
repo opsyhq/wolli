@@ -16,7 +16,7 @@ import {
 	type OAuthProviderId,
 	type OAuthSelectPrompt,
 } from "@earendil-works/pi-ai";
-import type { AgentMessage } from "@opsy/agent";
+import type { AgentMessage } from "@opsyhq/agent";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -27,7 +27,7 @@ import type {
 	OverlayHandle,
 	OverlayOptions,
 	SlashCommand,
-} from "@opsy/tui";
+} from "@opsyhq/tui";
 import {
 	CombinedAutocompleteProvider,
 	type Component,
@@ -46,7 +46,7 @@ import {
 	TruncatedText,
 	TUI,
 	visibleWidth,
-} from "@opsy/tui";
+} from "@opsyhq/tui";
 import chalk from "chalk";
 import { spawn, spawnSync } from "child_process";
 import {

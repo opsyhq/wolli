@@ -16,7 +16,7 @@
  * Then use ctrl+o to toggle between minimal (collapsed) and full (expanded) views.
  */
 
-import type { ExtensionAPI } from "@opsy/coding-agent";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
 import {
 	createBashTool,
 	createEditTool,
@@ -25,8 +25,8 @@ import {
 	createLsTool,
 	createReadTool,
 	createWriteTool,
-} from "@opsy/coding-agent";
-import { Text } from "@opsy/tui";
+} from "@opsyhq/coding-agent";
+import { Text } from "@opsyhq/tui";
 import { homedir } from "os";
 
 /**

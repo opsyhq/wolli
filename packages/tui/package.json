@@ -1,5 +1,5 @@
 {
-	"name": "@opsy/tui",
+	"name": "@opsyhq/tui",
 	"version": "0.0.1",
 	"description": "Terminal User Interface library with differential rendering for efficient text-based applications",
 	"type": "module",

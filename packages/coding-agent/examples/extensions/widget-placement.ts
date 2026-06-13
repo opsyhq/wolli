@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@opsy/coding-agent";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
 
 export default function widgetPlacementExtension(pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {

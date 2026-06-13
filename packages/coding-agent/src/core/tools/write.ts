@@ -1,5 +1,5 @@
-import type { AgentTool } from "@opsy/agent";
-import { Container, Text } from "@opsy/tui";
+import type { AgentTool } from "@opsyhq/agent";
+import { Container, Text } from "@opsyhq/tui";
 import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";

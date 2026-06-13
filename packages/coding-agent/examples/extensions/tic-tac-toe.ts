@@ -18,8 +18,8 @@
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, Theme, ToolExecutionMode } from "@opsy/coding-agent";
-import { type Component, matchesKey, Text, truncateToWidth, visibleWidth } from "@opsy/tui";
+import type { ExtensionAPI, ExtensionContext, Theme, ToolExecutionMode } from "@opsyhq/coding-agent";
+import { type Component, matchesKey, Text, truncateToWidth, visibleWidth } from "@opsyhq/tui";
 import { Type } from "typebox";
 
 // Thrown from the tool on illegal actions. The agent runtime surfaces thrown

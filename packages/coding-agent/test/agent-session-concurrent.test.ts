@@ -13,7 +13,7 @@ import {
 	type ImageContent,
 	type TextContent,
 } from "@earendil-works/pi-ai";
-import { Agent } from "@opsy/agent";
+import { Agent } from "@opsyhq/agent";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";

@@ -1,6 +1,6 @@
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
-import type { AgentMessage } from "@opsy/agent";
-import { Container, Text, type TUI } from "@opsy/tui";
+import type { AgentMessage } from "@opsyhq/agent";
+import { Container, Text, type TUI } from "@opsyhq/tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionContext } from "../../../src/core/session-manager.ts";

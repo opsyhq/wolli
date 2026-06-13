@@ -1,4 +1,4 @@
-import { Editor, type EditorOptions, type EditorTheme, type TUI } from "@opsy/tui";
+import { Editor, type EditorOptions, type EditorTheme, type TUI } from "@opsyhq/tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
 
 /**

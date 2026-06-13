@@ -5,8 +5,8 @@
  * without paying for an extra follow-up LLM turn.
  */
 
-import { defineTool, type ExtensionAPI } from "@opsy/coding-agent";
-import { Text } from "@opsy/tui";
+import { defineTool, type ExtensionAPI } from "@opsyhq/coding-agent";
+import { Text } from "@opsyhq/tui";
 import { Type } from "typebox";
 
 interface StructuredOutputDetails {

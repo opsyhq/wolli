@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import type { AgentTool } from "@opsy/agent";
+import type { AgentTool } from "@opsyhq/agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BashOperations } from "../../src/core/tools/bash.ts";

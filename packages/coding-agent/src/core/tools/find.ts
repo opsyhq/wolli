@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
-import type { AgentTool } from "@opsy/agent";
-import { Text } from "@opsy/tui";
+import type { AgentTool } from "@opsyhq/agent";
+import { Text } from "@opsyhq/tui";
 import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";

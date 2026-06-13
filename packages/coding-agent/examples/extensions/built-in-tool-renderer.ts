@@ -25,9 +25,9 @@
  *   pi -e ./built-in-tool-renderer.ts
  */
 
-import type { BashToolDetails, EditToolDetails, ExtensionAPI, ReadToolDetails } from "@opsy/coding-agent";
-import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@opsy/coding-agent";
-import { Text } from "@opsy/tui";
+import type { BashToolDetails, EditToolDetails, ExtensionAPI, ReadToolDetails } from "@opsyhq/coding-agent";
+import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@opsyhq/coding-agent";
+import { Text } from "@opsyhq/tui";
 
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();

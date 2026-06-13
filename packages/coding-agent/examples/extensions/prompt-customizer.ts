@@ -12,7 +12,7 @@
  * 2. Use the extension — it automatically adapts to your active tools and skills
  */
 
-import type { BuildSystemPromptOptions, ExtensionAPI } from "@opsy/coding-agent";
+import type { BuildSystemPromptOptions, ExtensionAPI } from "@opsyhq/coding-agent";
 
 /**
  * Adds tool-specific guidance that adapts to the active tool set.

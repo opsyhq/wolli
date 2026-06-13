@@ -3,8 +3,8 @@
  * Uses Kitty keyboard protocol for smooth movement (press/release detection)
  */
 
-import type { ExtensionAPI } from "@opsy/coding-agent";
-import { isKeyRelease, Key, matchesKey, visibleWidth } from "@opsy/tui";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
+import { isKeyRelease, Key, matchesKey, visibleWidth } from "@opsyhq/tui";
 
 const GAME_WIDTH = 60;
 const GAME_HEIGHT = 24;

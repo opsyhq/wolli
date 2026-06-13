@@ -4,7 +4,7 @@
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { AgentTool } from "@opsy/agent";
+import type { AgentTool } from "@opsyhq/agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, createHarnessWithExtensions, type Harness } from "./test-harness.ts";

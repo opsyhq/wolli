@@ -1,6 +1,6 @@
 import type { TextContent } from "@earendil-works/pi-ai";
-import type { Component } from "@opsy/tui";
-import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@opsy/tui";
+import type { Component } from "@opsyhq/tui";
+import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@opsyhq/tui";
 import type { MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";

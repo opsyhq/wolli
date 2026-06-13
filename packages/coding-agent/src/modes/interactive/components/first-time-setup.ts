@@ -1,4 +1,4 @@
-import { Container, getKeybindings, Spacer, Text } from "@opsy/tui";
+import { Container, getKeybindings, Spacer, Text } from "@opsyhq/tui";
 import { APP_NAME } from "../../../config.ts";
 import { type TerminalTheme, theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";

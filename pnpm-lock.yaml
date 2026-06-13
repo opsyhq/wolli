@@ -61,10 +61,10 @@ importers:
       '@earendil-works/pi-ai':
         specifier: ^0.79.3
         version: 0.79.3(ws@8.21.0)(zod@4.4.3)
-      '@opsy/agent':
+      '@opsyhq/agent':
         specifier: workspace:*
         version: link:../agent
-      '@opsy/tui':
+      '@opsyhq/tui':
         specifier: workspace:*
         version: link:../tui
       '@silvia-odwyer/photon-node':

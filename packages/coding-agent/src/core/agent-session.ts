@@ -25,7 +25,7 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai";
-import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@opsy/agent";
+import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@opsyhq/agent";
 import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";

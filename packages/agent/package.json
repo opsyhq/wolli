@@ -1,5 +1,5 @@
 {
-	"name": "@opsy/agent",
+	"name": "@opsyhq/agent",
 	"version": "0.0.1",
 	"description": "General-purpose agent with transport abstraction, state management, and attachment support",
 	"type": "module",

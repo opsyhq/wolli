@@ -1,5 +1,5 @@
 import type { Transport } from "@earendil-works/pi-ai";
-import type { ThinkingLevel } from "@opsy/agent";
+import type { ThinkingLevel } from "@opsyhq/agent";
 import {
 	Container,
 	getCapabilities,
@@ -10,7 +10,7 @@ import {
 	SettingsList,
 	Spacer,
 	Text,
-} from "@opsy/tui";
+} from "@opsyhq/tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import type { DefaultProjectTrust, WarningSettings } from "../../../core/settings-manager.ts";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../theme/theme.ts";

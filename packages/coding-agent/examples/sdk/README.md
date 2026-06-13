@@ -40,7 +40,7 @@ import {
   ModelRegistry,
   SessionManager,
   SettingsManager,
-} from "@opsy/coding-agent";
+} from "@opsyhq/coding-agent";
 
 // Auth and models setup
 const authStorage = AuthStorage.create();

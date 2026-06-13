@@ -14,8 +14,8 @@
  */
 
 import { complete } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@opsy/coding-agent";
-import { convertToLlm, serializeConversation } from "@opsy/coding-agent";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
+import { convertToLlm, serializeConversation } from "@opsyhq/coding-agent";
 
 export default function (pi: ExtensionAPI) {
 	pi.on("session_before_compact", async (event, ctx) => {

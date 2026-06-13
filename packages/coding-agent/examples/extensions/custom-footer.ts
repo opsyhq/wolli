@@ -9,8 +9,8 @@
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@opsy/coding-agent";
-import { truncateToWidth, visibleWidth } from "@opsy/tui";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
+import { truncateToWidth, visibleWidth } from "@opsyhq/tui";
 
 export default function (pi: ExtensionAPI) {
 	let enabled = false;

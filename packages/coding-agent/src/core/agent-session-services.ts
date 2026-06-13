@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
-import type { ThinkingLevel } from "@opsy/agent";
+import type { ThinkingLevel } from "@opsyhq/agent";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AuthStorage } from "./auth-storage.ts";

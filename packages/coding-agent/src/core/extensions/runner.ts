@@ -3,8 +3,8 @@
  */
 
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
-import type { AgentMessage } from "@opsy/agent";
-import type { KeyId } from "@opsy/tui";
+import type { AgentMessage } from "@opsyhq/agent";
+import type { KeyId } from "@opsyhq/tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";

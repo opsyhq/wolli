@@ -5,7 +5,7 @@
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { ProcessTerminal, TUI } from "@opsy/tui";
+import { ProcessTerminal, TUI } from "@opsyhq/tui";
 import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentMessage } from "@opsy/agent";
+import type { AgentMessage } from "@opsyhq/agent";
 import { afterEach } from "vitest";
 
 export function createUserMessage(text: string): AgentMessage {

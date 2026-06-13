@@ -92,10 +92,10 @@ describe("ProjectTrustStore", () => {
 		expect(hasProjectConfigDir(cwd)).toBe(false);
 		expect(hasProjectTrustInputs(cwd)).toBe(false);
 
-		mkdirSync(join(cwd, ".opsy"), { recursive: true });
+		mkdirSync(join(cwd, ".steward"), { recursive: true });
 		expect(hasProjectConfigDir(cwd)).toBe(true);
 		expect(hasProjectTrustInputs(cwd)).toBe(true);
-		rmSync(join(cwd, ".opsy"), { recursive: true, force: true });
+		rmSync(join(cwd, ".steward"), { recursive: true, force: true });
 
 		writeFileSync(join(cwd, "AGENTS.md"), "Project instructions");
 		expect(hasProjectTrustInputs(cwd)).toBe(false);

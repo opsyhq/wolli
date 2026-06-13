@@ -4,7 +4,7 @@
  * Override settings using SettingsManager.
  */
 
-import { createAgentSession, SessionManager, SettingsManager } from "@opsy/coding-agent";
+import { createAgentSession, SessionManager, SettingsManager } from "@opsyhq/coding-agent";
 
 const cwd = process.cwd();
 

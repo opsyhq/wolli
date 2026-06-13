@@ -5,7 +5,7 @@
  * Shows turn progress with themed colors.
  */
 
-import type { ExtensionAPI } from "@opsy/coding-agent";
+import type { ExtensionAPI } from "@opsyhq/coding-agent";
 
 export default function (pi: ExtensionAPI) {
 	let turnCount = 0;

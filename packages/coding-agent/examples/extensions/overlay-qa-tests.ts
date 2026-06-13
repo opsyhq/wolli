@@ -19,9 +19,9 @@
  *   /overlay-streaming  - Multiple input panels with simulated streaming (Tab to cycle focus)
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@opsy/coding-agent";
-import type { Component, OverlayAnchor, OverlayHandle, OverlayOptions, TUI } from "@opsy/tui";
-import { Input, matchesKey, truncateToWidth, visibleWidth } from "@opsy/tui";
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@opsyhq/coding-agent";
+import type { Component, OverlayAnchor, OverlayHandle, OverlayOptions, TUI } from "@opsyhq/tui";
+import { Input, matchesKey, truncateToWidth, visibleWidth } from "@opsyhq/tui";
 import { spawn } from "child_process";
 
 // Global handle for toggle demo (in real code, use a more elegant pattern)

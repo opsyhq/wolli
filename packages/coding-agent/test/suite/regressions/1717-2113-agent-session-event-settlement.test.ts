@@ -1,5 +1,5 @@
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import type { AgentTool } from "@opsy/agent";
+import type { AgentTool } from "@opsyhq/agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "../harness.ts";
