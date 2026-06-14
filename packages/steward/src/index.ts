@@ -13,7 +13,9 @@ export {
 	AgentConfigSchema,
 	agentExists,
 	type CreateAgentOptions,
+	commissionAgent,
 	createAgent,
+	isCommissioned,
 	isValidAgentName,
 	listAgents,
 	loadAgentConfig,
@@ -33,6 +35,7 @@ export {
 	MEMORY_BUDGET,
 	type Memory,
 	readMemoryFile,
+	SOUL_BUDGET,
 	USER_BUDGET,
 	writeMemoryFile,
 } from "./core/memory.ts";
@@ -52,10 +55,24 @@ export {
 	type OpenAgentSessionResult,
 	openAgentSession,
 } from "./core/session.ts";
+export { SessionHost, type SessionHostOptions } from "./core/session-host.ts";
 export { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
 export { type BuildSystemPromptOptions, buildSystemPrompt } from "./core/system-prompt.ts";
+export { type BashToolDetails, type BashToolInput, createBashTool } from "./core/tools/bash.ts";
+export { createEditTool, type EditToolDetails, type EditToolInput } from "./core/tools/edit.ts";
+export { createFindTool, type FindToolDetails, type FindToolInput } from "./core/tools/find.ts";
+export { createGrepTool, type GrepToolDetails, type GrepToolInput } from "./core/tools/grep.ts";
+export { createLsTool, type LsToolDetails, type LsToolInput } from "./core/tools/ls.ts";
 export { createMemoryTool, type MemoryToolDetails, type MemoryToolInput } from "./core/tools/memory.ts";
+export { createReadTool, type ReadToolDetails, type ReadToolInput } from "./core/tools/read.ts";
+export { createWriteTool, type WriteToolInput } from "./core/tools/write.ts";
 export { main } from "./main.ts";
-export { InteractiveMode, type InteractiveModeOptions } from "./modes/interactive/interactive-mode.ts";
-export { getEditorTheme, getMarkdownTheme, getSelectListTheme, style } from "./modes/interactive/theme.ts";
+export { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
+export {
+	getEditorTheme,
+	getMarkdownTheme,
+	getSelectListTheme,
+	initTheme,
+	theme,
+} from "./modes/interactive/theme/theme.ts";
 export { runPrintMode } from "./modes/print-mode.ts";

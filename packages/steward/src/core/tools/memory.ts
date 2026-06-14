@@ -7,6 +7,10 @@
  * tool. Writes are durable immediately but only enter the system prompt on the
  * NEXT session (frozen-snapshot rule), so results say "effective next session".
  *
+ * SOUL.md (who the agent is) is deliberately NOT handled here — it's a free-form
+ * file the agent rewrites with the bash tool. This tool stays line-oriented and
+ * budget-enforced for the two files that benefit from that discipline.
+ *
  * Budget overflow, ambiguous matches, and missing matches are returned as normal
  * tool content (no throw, no write) so the model can adjust.
  */
@@ -18,7 +22,7 @@ import { MEMORY_BUDGET, readMemoryFile, USER_BUDGET, writeMemoryFile } from "../
 
 const memorySchema = Type.Object({
 	file: Type.Union([Type.Literal("MEMORY"), Type.Literal("USER")], {
-		description: "Which curated file to edit: MEMORY (your own notebook) or USER (facts about the user).",
+		description: "Which curated file to edit: MEMORY (your own notebook) or USER (facts about your human).",
 	}),
 	op: Type.Union([Type.Literal("add"), Type.Literal("replace"), Type.Literal("remove")], {
 		description:
@@ -95,7 +99,8 @@ export function createMemoryTool(name: string): AgentTool<typeof memorySchema, M
 		name: "memory",
 		label: "Memory",
 		description:
-			"Edit your curated memory. MEMORY.md is your own durable notebook; USER.md holds facts about the user. " +
+			"Edit your curated memory. MEMORY.md is your own durable notebook; USER.md holds facts about your human. " +
+			"(Your SOUL.md — who you are — is a free-form file you rewrite with the bash tool instead.) " +
 			"Edits are saved immediately but only appear in your prompt on your next session. Keep entries concise.",
 		parameters: memorySchema,
 		executionMode: "sequential",

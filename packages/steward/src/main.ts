@@ -10,16 +10,12 @@
 import { createInterface } from "node:readline";
 import { type Args, parseArgs, printHelp } from "./cli/args.ts";
 import { APP_NAME, VERSION } from "./config.ts";
-import { agentExists, createAgent, listAgents, loadAgentConfig } from "./core/agent-config.ts";
+import { type AgentConfig, agentExists, createAgent, listAgents, loadAgentConfig } from "./core/agent-config.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
-import { loadMemory } from "./core/memory.ts";
 import { resolveCliModel } from "./core/model-resolver.ts";
-import { createAgentSession } from "./core/sdk.ts";
-import { openAgentSession } from "./core/session.ts";
+import { SessionHost } from "./core/session-host.ts";
 import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
-import { buildSystemPrompt } from "./core/system-prompt.ts";
-import { createMemoryTool } from "./core/tools/memory.ts";
 import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
 
@@ -71,15 +67,19 @@ async function runNew(positionals: string[], args: Args): Promise<number> {
 		return 1;
 	}
 
+	let config: AgentConfig;
 	try {
-		const config = createAgent({ name, purpose, model: args.model });
-		console.log(`Created agent "${config.name}".`);
-		console.log(`Purpose: ${config.purpose}`);
-		return 0;
+		config = createAgent({ name, purpose, model: args.model });
 	} catch (error) {
 		process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
 		return 1;
 	}
+	console.log(`Created agent "${config.name}".`);
+	console.log(`Purpose: ${config.purpose}`);
+
+	// Birth: drop straight into the interactive chat so the agent can get to know
+	// its human. (A bare inline/print path has no birth conversation to run.)
+	return runSession(name, positionals.slice(1), args);
 }
 
 function runList(): number {
@@ -101,13 +101,21 @@ async function runAgent(name: string, positionals: string[], args: Args): Promis
 		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
 		return 1;
 	}
+	return runSession(name, positionals, args);
+}
 
-	const config = loadAgentConfig(name);
+/**
+ * Resolve model/auth once, then run the agent — single-shot for inline/`--print`,
+ * otherwise the interactive chat. Session construction (env, prompt, tools) and
+ * in-place swaps (e.g. after commissioning) are owned by the `SessionHost`.
+ */
+async function runSession(name: string, positionals: string[], args: Args): Promise<number> {
+	const initialConfig = loadAgentConfig(name);
 
 	// Model precedence: --model flag → agent.json → shared pi default → built-in.
 	const resolved = resolveCliModel({
 		cliProvider: args.provider,
-		cliModel: args.model ?? config.model ?? sharedDefaultModel() ?? DEFAULT_MODEL,
+		cliModel: args.model ?? initialConfig.model ?? sharedDefaultModel() ?? DEFAULT_MODEL,
 		cliThinking: args.thinking,
 	});
 	if (resolved.warning) {
@@ -130,42 +138,27 @@ async function runAgent(name: string, positionals: string[], args: Args): Promis
 	}
 
 	const thinkingLevel = args.thinking ?? resolved.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
-
-	const { session, env } = await openAgentSession(name, { fresh: args.new });
-
-	// Read curated memory ONCE and freeze it into the prompt. Mid-session edits
-	// via the memory tool persist to disk but only enter the prompt next session.
-	const { memory, user } = loadMemory(name);
-	const systemPrompt = buildSystemPrompt({ config, memory, user });
-
-	const { harness } = await createAgentSession({
-		env,
-		session,
-		model,
-		systemPrompt,
-		thinkingLevel,
-		tools: [createMemoryTool(name)],
-		authStorage,
-	});
-
 	const message = positionals.join(" ").trim();
 
-	// `--print` forces single-shot mode; it requires an inline message.
-	if (args.print) {
-		if (!message) {
+	const host = new SessionHost({ name, model, thinkingLevel, authStorage });
+
+	// `--print` (or a bare inline message) is single-shot; `--print` needs a message.
+	if (args.print || message) {
+		if (args.print && !message) {
 			process.stderr.write(`Print mode needs a message: ${APP_NAME} ${name} --print "<message>"\n`);
 			return 1;
 		}
-		return runPrintMode(harness, { message });
+		await host.start({ fresh: args.new });
+		const code = await runPrintMode(host.harness, { message });
+		await host.cleanup();
+		return code;
 	}
 
-	// An inline message without `--print` is still answered once, then exits.
-	if (message) {
-		return runPrintMode(harness, { message });
-	}
-
-	// No message: open the interactive TUI chat loop.
-	await new InteractiveMode(harness, { name, purpose: config.purpose }).run();
+	// Interactive: one long-lived TUI. The host swaps the session in place on
+	// commission (see InteractiveMode.handleCommissionCommand), so there is no loop here.
+	await host.start({ fresh: args.new });
+	await new InteractiveMode(host).run();
+	await host.cleanup();
 	return 0;
 }
 

@@ -153,13 +153,37 @@ importers:
       '@opsyhq/tui':
         specifier: workspace:*
         version: link:../tui
+      '@silvia-odwyer/photon-node':
+        specifier: 0.3.4
+        version: 0.3.4
+      chalk:
+        specifier: 5.6.2
+        version: 5.6.2
+      cross-spawn:
+        specifier: 7.0.6
+        version: 7.0.6
+      diff:
+        specifier: 8.0.4
+        version: 8.0.4
+      highlight.js:
+        specifier: 10.7.3
+        version: 10.7.3
       proper-lockfile:
         specifier: 4.1.2
         version: 4.1.2
       typebox:
         specifier: 1.1.38
         version: 1.1.38
+      undici:
+        specifier: 8.3.0
+        version: 8.3.0
     devDependencies:
+      '@types/cross-spawn':
+        specifier: 6.0.6
+        version: 6.0.6
+      '@types/diff':
+        specifier: 7.0.2
+        version: 7.0.2
       '@types/node':
         specifier: 24.12.4
         version: 24.12.4

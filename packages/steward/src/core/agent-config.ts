@@ -16,6 +16,7 @@ import {
 	getAgentsRoot,
 	getMemoryPath,
 	getSessionsDir,
+	getSoulPath,
 	getUserMemoryPath,
 	getWorkspaceDir,
 } from "../config.ts";
@@ -28,6 +29,13 @@ export const AgentConfigSchema = Type.Object({
 	purpose: Type.String(),
 	createdAt: Type.String(),
 	model: Type.Optional(Type.String()),
+	/**
+	 * The single human-held latch. `null` (or absent) means the agent is still in
+	 * its birth phase — it maintains its own files but may not act unattended. An
+	 * ISO timestamp grants it that right. Optional/nullable so agent.json written
+	 * before this field still validates (treated as not commissioned).
+	 */
+	commissionedAt: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 });
 
 export type AgentConfig = Static<typeof AgentConfigSchema>;
@@ -109,12 +117,28 @@ export function createAgent(options: CreateAgentOptions): AgentConfig {
 		purpose,
 		createdAt: new Date().toISOString(),
 		...(model ? { model } : {}),
+		commissionedAt: null,
 	};
 	saveAgentConfig(name, config);
 
-	// Empty curated memory files; populated via the memory tool (Phase 2).
+	// Empty curated files; the agent populates them via the self_update tool.
+	if (!existsSync(getSoulPath(name))) writeFileSync(getSoulPath(name), "", "utf-8");
 	if (!existsSync(getMemoryPath(name))) writeFileSync(getMemoryPath(name), "", "utf-8");
 	if (!existsSync(getUserMemoryPath(name))) writeFileSync(getUserMemoryPath(name), "", "utf-8");
 
 	return config;
+}
+
+/** Whether the agent has been commissioned (granted the right to act unattended). */
+export function isCommissioned(config: AgentConfig): boolean {
+	return Boolean(config.commissionedAt);
+}
+
+/** Set commissionedAt once (idempotent: returns existing config if already set). */
+export function commissionAgent(name: string): AgentConfig {
+	const config = loadAgentConfig(name);
+	if (config.commissionedAt) return config;
+	const updated = { ...config, commissionedAt: new Date().toISOString() };
+	saveAgentConfig(name, updated);
+	return updated;
 }

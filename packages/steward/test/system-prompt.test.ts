@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createAgent, loadAgentConfig } from "../src/core/agent-config.ts";
+import { commissionAgent, createAgent, loadAgentConfig } from "../src/core/agent-config.ts";
 import { loadMemory } from "../src/core/memory.ts";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 import { createMemoryTool } from "../src/core/tools/memory.ts";
@@ -27,23 +27,44 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("Keep meeting notes");
 	});
 
-	it("omits the memory block when memory is empty", () => {
-		const prompt = buildSystemPrompt({ config: loadAgentConfig("scribe"), memory: "", user: "" });
-		expect(prompt).not.toContain("Your memory");
+	it("always renders the curated-file sections, empty marked", () => {
+		const prompt = buildSystemPrompt({ config: loadAgentConfig("scribe"), soul: "", memory: "", user: "" });
+		expect(prompt).toContain("### SOUL.md");
+		expect(prompt).toContain("### MEMORY.md");
+		expect(prompt).toContain("### USER.md");
+		expect(prompt).toContain("(empty)");
 	});
 
-	it("includes a delimited, read-only memory block when present", () => {
+	it("includes a delimited, read-only curated block with content when present", () => {
 		const prompt = buildSystemPrompt({
 			config: loadAgentConfig("scribe"),
+			soul: "I am the scribe",
 			memory: "remembered fact",
 			user: "user fact",
 		});
 		expect(prompt).toContain("read-only this session");
 		expect(prompt).toContain("effective next session");
+		expect(prompt).toContain("### SOUL.md");
+		expect(prompt).toContain("I am the scribe");
 		expect(prompt).toContain("### MEMORY.md");
 		expect(prompt).toContain("remembered fact");
 		expect(prompt).toContain("### USER.md");
 		expect(prompt).toContain("user fact");
+	});
+});
+
+describe("birth instruction (commissioning)", () => {
+	it("appends the birth instruction when not yet commissioned", () => {
+		const prompt = buildSystemPrompt({ config: loadAgentConfig("scribe") });
+		expect(prompt).toContain("not yet commissioned");
+		expect(prompt).toContain("/commission");
+	});
+
+	it("omits the birth instruction once commissioned", () => {
+		commissionAgent("scribe");
+		const prompt = buildSystemPrompt({ config: loadAgentConfig("scribe") });
+		expect(prompt).not.toContain("not yet commissioned");
+		expect(prompt).toContain("commissioned: you may now act");
 	});
 });
 

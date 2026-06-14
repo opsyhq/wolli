@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult } from "@opsyhq/agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getMemoryPath, getUserMemoryPath } from "../src/config.ts";
+import { getMemoryPath, getSoulPath, getUserMemoryPath } from "../src/config.ts";
 import { createAgent } from "../src/core/agent-config.ts";
 import { loadMemory, MEMORY_BUDGET, readMemoryFile, writeMemoryFile } from "../src/core/memory.ts";
 import { createMemoryTool, type MemoryToolDetails } from "../src/core/tools/memory.ts";
@@ -105,14 +105,17 @@ describe("memory tool", () => {
 describe("loadMemory", () => {
 	it("returns empty strings for a fresh agent", () => {
 		const memory = loadMemory("scribe");
+		expect(memory.soul).toBe("");
 		expect(memory.memory).toBe("");
 		expect(memory.user).toBe("");
 	});
 
 	it("reads written content verbatim", () => {
+		writeMemoryFile(getSoulPath("scribe"), "I am scribe\n");
 		writeMemoryFile(getMemoryPath("scribe"), "remembered\n");
 		writeMemoryFile(getUserMemoryPath("scribe"), "about user\n");
 		const memory = loadMemory("scribe");
+		expect(memory.soul).toBe("I am scribe\n");
 		expect(memory.memory).toBe("remembered\n");
 		expect(memory.user).toBe("about user\n");
 	});

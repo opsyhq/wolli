@@ -1,8 +1,17 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { agentExists, createAgent, isValidAgentName, listAgents, loadAgentConfig } from "../src/core/agent-config.ts";
+import { getAgentConfigPath, getSoulPath } from "../src/config.ts";
+import {
+	agentExists,
+	commissionAgent,
+	createAgent,
+	isCommissioned,
+	isValidAgentName,
+	listAgents,
+	loadAgentConfig,
+} from "../src/core/agent-config.ts";
 
 let home: string;
 
@@ -65,5 +74,40 @@ describe("agent-config round-trip", () => {
 
 	it("returns an empty list when no agents exist", () => {
 		expect(listAgents()).toEqual([]);
+	});
+});
+
+describe("commissioning", () => {
+	it("creates an agent uncommissioned with a SOUL.md", () => {
+		const created = createAgent({ name: "calories", purpose: "track meals" });
+		expect(created.commissionedAt).toBeNull();
+		expect(isCommissioned(created)).toBe(false);
+		expect(existsSync(getSoulPath("calories"))).toBe(true);
+	});
+
+	it("commissionAgent stamps an ISO timestamp", () => {
+		createAgent({ name: "calories", purpose: "track meals" });
+		const updated = commissionAgent("calories");
+		expect(updated.commissionedAt).toBeTruthy();
+		expect(new Date(updated.commissionedAt as string).toISOString()).toBe(updated.commissionedAt);
+		expect(isCommissioned(updated)).toBe(true);
+		expect(isCommissioned(loadAgentConfig("calories"))).toBe(true);
+	});
+
+	it("is idempotent — a second call leaves the timestamp unchanged", () => {
+		createAgent({ name: "calories", purpose: "track meals" });
+		const first = commissionAgent("calories");
+		const second = commissionAgent("calories");
+		expect(second.commissionedAt).toBe(first.commissionedAt);
+	});
+
+	it("loads agent.json written before commissionedAt existed (back-compat)", () => {
+		createAgent({ name: "legacy", purpose: "old agent" });
+		// Simulate a pre-feature config: no commissionedAt key at all.
+		const legacy = { schemaVersion: 1, name: "legacy", purpose: "old agent", createdAt: new Date().toISOString() };
+		writeFileSync(getAgentConfigPath("legacy"), `${JSON.stringify(legacy, null, 2)}\n`, "utf-8");
+		const loaded = loadAgentConfig("legacy");
+		expect(loaded.commissionedAt).toBeUndefined();
+		expect(isCommissioned(loaded)).toBe(false);
 	});
 });

@@ -9,7 +9,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // =============================================================================
@@ -68,6 +68,35 @@ export function expandTildePath(path: string): string {
 }
 
 // =============================================================================
+// Packaged asset dirs (themes shipped with the package)
+// =============================================================================
+
+/** Dir containing this package's package.json (walks up from the module). */
+export function getPackageDir(): string {
+	return dirname(getPackageJsonPath());
+}
+
+/**
+ * Built-in themes dir shipped with the package. In dev the theme sources live
+ * under src/; once built they live under dist/. Mirrors pi's getThemesDir().
+ */
+export function getThemesDir(): string {
+	const packageDir = getPackageDir();
+	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
+	return join(packageDir, srcOrDist, "modes", "interactive", "theme");
+}
+
+/** User's custom themes dir, e.g. ~/.steward/agent/themes (shared pi agent dir). */
+export function getCustomThemesDir(): string {
+	return join(getSharedAgentDir(), "themes");
+}
+
+/** Path to this package's README.md. Used by the read tool's docs classification. */
+export function getReadmePath(): string {
+	return resolve(join(getPackageDir(), "README.md"));
+}
+
+// =============================================================================
 // Agent home paths (~/.steward/agents/<name>/)
 // =============================================================================
 
@@ -91,6 +120,11 @@ export function getAgentDir(name: string): string {
 /** Path to an agent's agent.json */
 export function getAgentConfigPath(name: string): string {
 	return join(getAgentDir(name), "agent.json");
+}
+
+/** Path to an agent's curated SOUL.md (who it is / what it's for). */
+export function getSoulPath(name: string): string {
+	return join(getAgentDir(name), "SOUL.md");
 }
 
 /** Path to an agent's curated MEMORY.md */
