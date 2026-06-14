@@ -9,7 +9,7 @@
 
 import { createInterface } from "node:readline";
 import { type Args, parseArgs, printHelp } from "./cli/args.ts";
-import { APP_NAME, VERSION } from "./config.ts";
+import { APP_NAME, getAgentDir, VERSION } from "./config.ts";
 import {
 	type AgentConfig,
 	agentExists,
@@ -26,7 +26,8 @@ import { createAgentSession } from "./core/sdk.ts";
 import { openAgentSession } from "./core/session.ts";
 import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
 import { buildSystemPrompt } from "./core/system-prompt.ts";
-import { createSelfUpdateTool } from "./core/tools/memory.ts";
+import { createBashTool } from "./core/tools/bash.ts";
+import { createMemoryTool } from "./core/tools/memory.ts";
 import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
 
@@ -168,7 +169,7 @@ async function runSession(name: string, positionals: string[], args: Args): Prom
 			model,
 			systemPrompt,
 			thinkingLevel,
-			tools: [createSelfUpdateTool(name)],
+			tools: [createMemoryTool(name), createBashTool(env, getAgentDir(name))],
 			authStorage,
 		});
 		return runPrintMode(harness, { message });
@@ -182,7 +183,7 @@ async function runSession(name: string, positionals: string[], args: Args): Prom
 		const { session, env } = await openAgentSession(name, { fresh });
 
 		// Read curated files ONCE and freeze them into the prompt. Mid-session edits
-		// via self_update persist to disk but only enter the prompt next session.
+		// (memory tool / bash) persist to disk but only enter the prompt next session.
 		const { soul, memory, user } = loadMemory(name);
 		const systemPrompt = buildSystemPrompt({ config, soul, memory, user });
 
@@ -192,7 +193,7 @@ async function runSession(name: string, positionals: string[], args: Args): Prom
 			model,
 			systemPrompt,
 			thinkingLevel,
-			tools: [createSelfUpdateTool(name)],
+			tools: [createMemoryTool(name), createBashTool(env, getAgentDir(name))],
 			authStorage,
 		});
 

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { commissionAgent, createAgent, loadAgentConfig } from "../src/core/agent-config.ts";
 import { loadMemory } from "../src/core/memory.ts";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
-import { createSelfUpdateTool } from "../src/core/tools/memory.ts";
+import { createMemoryTool } from "../src/core/tools/memory.ts";
 
 let home: string;
 
@@ -77,7 +77,7 @@ describe("frozen-snapshot invariant", () => {
 		const frozenPrompt = buildSystemPrompt({ config, memory: snapshot.memory, user: snapshot.user });
 
 		// Mid-session: the agent writes a new fact via the memory tool.
-		const result = await createSelfUpdateTool("scribe").execute("call-1", {
+		const result = await createMemoryTool("scribe").execute("call-1", {
 			file: "MEMORY",
 			op: "add",
 			content: "a brand new fact",

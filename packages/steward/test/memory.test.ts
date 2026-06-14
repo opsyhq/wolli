@@ -5,8 +5,8 @@ import type { AgentToolResult } from "@opsyhq/agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getMemoryPath, getSoulPath, getUserMemoryPath } from "../src/config.ts";
 import { createAgent } from "../src/core/agent-config.ts";
-import { loadMemory, MEMORY_BUDGET, readMemoryFile, SOUL_BUDGET, writeMemoryFile } from "../src/core/memory.ts";
-import { createSelfUpdateTool, type MemoryToolDetails } from "../src/core/tools/memory.ts";
+import { loadMemory, MEMORY_BUDGET, readMemoryFile, writeMemoryFile } from "../src/core/memory.ts";
+import { createMemoryTool, type MemoryToolDetails } from "../src/core/tools/memory.ts";
 
 let home: string;
 
@@ -22,14 +22,14 @@ afterEach(() => {
 });
 
 interface MemoryOp {
-	file: "SOUL" | "MEMORY" | "USER";
+	file: "MEMORY" | "USER";
 	op: "add" | "replace" | "remove";
 	content?: string;
 	match?: string;
 }
 
 function run(op: MemoryOp): Promise<AgentToolResult<MemoryToolDetails>> {
-	return createSelfUpdateTool("scribe").execute("call-1", op);
+	return createMemoryTool("scribe").execute("call-1", op);
 }
 
 function firstText(result: AgentToolResult<MemoryToolDetails>): string {
@@ -37,7 +37,7 @@ function firstText(result: AgentToolResult<MemoryToolDetails>): string {
 	return block.type === "text" ? block.text : "";
 }
 
-describe("self_update tool", () => {
+describe("memory tool", () => {
 	it("adds a line to MEMORY.md", async () => {
 		const result = await run({ file: "MEMORY", op: "add", content: "User prefers metric units." });
 		expect(result.details.applied).toBe(true);
@@ -99,21 +99,6 @@ describe("self_update tool", () => {
 		await run({ file: "USER", op: "add", content: "name: Sam" });
 		expect(readMemoryFile(getUserMemoryPath("scribe"))).toContain("name: Sam");
 		expect(readMemoryFile(getMemoryPath("scribe"))).toBe("");
-	});
-
-	it("writes to SOUL.md when file is SOUL", async () => {
-		await run({ file: "SOUL", op: "replace", content: "I am the scribe, keeper of notes." });
-		expect(readMemoryFile(getSoulPath("scribe"))).toContain("keeper of notes");
-		expect(readMemoryFile(getMemoryPath("scribe"))).toBe("");
-		expect(readMemoryFile(getUserMemoryPath("scribe"))).toBe("");
-	});
-
-	it("rejects an over-budget SOUL write and writes nothing", async () => {
-		const big = "x".repeat(SOUL_BUDGET + 100);
-		const result = await run({ file: "SOUL", op: "add", content: big });
-		expect(result.details.applied).toBe(false);
-		expect(firstText(result)).toMatch(/over the .*budget/);
-		expect(readMemoryFile(getSoulPath("scribe"))).toBe("");
 	});
 });
 

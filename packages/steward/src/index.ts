@@ -57,7 +57,8 @@ export {
 } from "./core/session.ts";
 export { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
 export { type BuildSystemPromptOptions, buildSystemPrompt } from "./core/system-prompt.ts";
-export { createSelfUpdateTool, type MemoryToolDetails, type MemoryToolInput } from "./core/tools/memory.ts";
+export { type BashToolDetails, type BashToolInput, createBashTool } from "./core/tools/bash.ts";
+export { createMemoryTool, type MemoryToolDetails, type MemoryToolInput } from "./core/tools/memory.ts";
 export { main } from "./main.ts";
 export {
 	InteractiveMode,

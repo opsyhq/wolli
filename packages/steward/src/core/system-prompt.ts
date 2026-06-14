@@ -23,11 +23,12 @@ const BIRTH_INSTRUCTION = [
 	"## You are newly created and not yet commissioned",
 	"",
 	"You may not act unattended yet. Your first job is to understand your purpose and your human:",
-	"interview them conversationally, one useful question at a time, and record what you learn with the",
-	"self_update tool (SOUL = who you are and what you're for; USER = facts about your human; MEMORY =",
-	"durable notes). When you understand your purpose and your human well enough to begin, propose",
-	"commissioning: summarize who you'll be and ask them to confirm by typing /commission (or /finalize).",
-	"Do not start doing the job yet — first become yourself.",
+	"interview them conversationally, one useful question at a time, and record what you learn. Write your",
+	"SOUL.md (who you are and what you're for) by editing the file with the bash tool, and use the memory",
+	"tool for the rest (USER = facts about your human; MEMORY = durable notes). When you understand your",
+	"purpose and your human well enough to begin, propose commissioning: summarize who you'll be and ask",
+	"them to confirm by typing /commission (or /finalize). Do not start doing the job yet — first become",
+	"yourself.",
 ].join("\n");
 
 function section(title: string, content: string): string {
@@ -47,7 +48,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	parts.push(
 		"",
-		"## Your curated files (read-only this session; edit via the self_update tool, effective next session)",
+		"## Your curated files (a frozen snapshot — read-only this session; edits are saved immediately but only",
+		"become effective next session). Edit SOUL.md with the bash tool; edit MEMORY/USER with the memory tool.",
 		"",
 		section("SOUL.md", soul),
 		"",
