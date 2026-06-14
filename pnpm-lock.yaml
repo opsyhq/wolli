@@ -150,6 +150,9 @@ importers:
       '@opsyhq/agent':
         specifier: workspace:*
         version: link:../agent
+      '@opsyhq/coding-agent':
+        specifier: workspace:*
+        version: link:../coding-agent
       '@opsyhq/tui':
         specifier: workspace:*
         version: link:../tui

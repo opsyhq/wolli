@@ -26,37 +26,20 @@ import {
 	Text,
 	TUI,
 } from "@opsyhq/tui";
-import { commissionAgent } from "../../core/agent-config.ts";
+import { commissionAgent, isCommissioned } from "../../core/agent-config.ts";
+import type { SessionHost } from "../../core/session-host.ts";
 import { collectText, isFailureMessage } from "../message.ts";
 import { getEditorTheme, getMarkdownTheme, style } from "./theme.ts";
 
 /** Window (ms) within which a second Ctrl+C quits instead of clearing the editor. */
 const CTRL_C_EXIT_WINDOW_MS = 500;
 
-export interface InteractiveModeOptions {
-	/** Agent name, shown in the header. */
-	name: string;
-	/** Agent purpose, shown under the name when present. */
-	purpose?: string;
-	/** Whether the agent is already commissioned (gates the /commission command + birth hint). */
-	commissioned?: boolean;
-	/**
-	 * Build a fresh session/harness, used to swap the live session in place after
-	 * commissioning (the system prompt is frozen per session, so the birth
-	 * instruction only drops once we rebuild). Mirrors coding-agent's
-	 * `runtimeHost.newSession()`: the TUI stays up; only the harness is replaced.
-	 */
-	restartSession?: () => Promise<AgentHarness>;
-}
-
 function isAssistantMessage(message: AgentMessage): message is AssistantMessage {
 	return (message as { role?: string }).role === "assistant";
 }
 
 export class InteractiveMode {
-	private host: AgentHarness;
-	private readonly options: InteractiveModeOptions;
-	private commissioned: boolean;
+	private readonly sessionHost: SessionHost;
 	private readonly ui: TUI;
 	private readonly chatContainer: Container;
 	private readonly statusContainer: Container;
@@ -73,10 +56,8 @@ export class InteractiveMode {
 	private lastSigintTime = 0;
 	private stopped = false;
 
-	constructor(host: AgentHarness, options: InteractiveModeOptions) {
-		this.host = host;
-		this.options = options;
-		this.commissioned = options.commissioned ?? false;
+	constructor(host: SessionHost) {
+		this.sessionHost = host;
 		this.ui = new TUI(new ProcessTerminal());
 		this.chatContainer = new Container();
 		this.statusContainer = new Container();
@@ -86,6 +67,11 @@ export class InteractiveMode {
 		this.loader = new Loader(this.ui, style.cyan, style.dim, "Thinking...");
 		// The Loader starts its animation timer on construction; halt it until busy.
 		this.loader.stop();
+	}
+
+	/** The live harness, sourced from the session host (swapped on commission). */
+	private get harness(): AgentHarness {
+		return this.sessionHost.harness;
 	}
 
 	run(): Promise<void> {
@@ -112,7 +98,7 @@ export class InteractiveMode {
 
 	/** (Re)subscribe to the current harness's event stream. */
 	private subscribeToHost(): void {
-		this.unsubscribe = this.host.subscribe((event) => {
+		this.unsubscribe = this.harness.subscribe((event) => {
 			this.handleEvent(event);
 		});
 	}
@@ -128,13 +114,13 @@ export class InteractiveMode {
 	}
 
 	private appendHeader(): void {
-		const { name, purpose } = this.options;
-		const lines = [style.bold(name)];
-		const trimmedPurpose = purpose?.trim();
+		const config = this.sessionHost.config;
+		const lines = [style.bold(config.name)];
+		const trimmedPurpose = config.purpose.trim();
 		if (trimmedPurpose) {
 			lines.push(style.dim(trimmedPurpose));
 		}
-		if (!this.commissioned) {
+		if (!isCommissioned(config)) {
 			lines.push(style.dim("Forming — it will ask to be commissioned; type /commission to finalize manually."));
 		}
 		lines.push(style.dim("Ctrl+C to exit."));
@@ -158,7 +144,7 @@ export class InteractiveMode {
 		this.appendUserMessage(trimmed);
 		this.ui.requestRender();
 		try {
-			await this.host.prompt(trimmed);
+			await this.harness.prompt(trimmed);
 		} catch (error) {
 			if (error instanceof AgentHarnessError && error.code === "busy") return;
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
@@ -168,32 +154,24 @@ export class InteractiveMode {
 
 	/**
 	 * `/commission` — flip the human-held latch, then swap to a fresh session in
-	 * place (like coding-agent's `/new` → `runtimeHost.newSession()`): unsubscribe
-	 * from the old harness, build a new one whose frozen prompt no longer carries
-	 * the birth instruction, and re-subscribe. The TUI is never torn down.
+	 * place via the session host (like coding-agent's `/new` →
+	 * `runtimeHost.newSession()`): unsubscribe from the old harness, have the host
+	 * build a new one whose frozen prompt no longer carries the birth instruction,
+	 * and re-subscribe. The TUI is never torn down.
 	 */
 	private async handleCommission(): Promise<void> {
-		if (this.commissioned) {
+		if (isCommissioned(this.sessionHost.config)) {
 			this.appendErrorLine("Already commissioned.");
 			this.ui.requestRender();
 			return;
 		}
-		if (!this.options.restartSession) {
-			this.appendErrorLine("Commissioning is only available in an interactive session.");
-			this.ui.requestRender();
-			return;
-		}
 
-		commissionAgent(this.options.name);
-		this.commissioned = true;
-
-		const previousHost = this.host;
+		commissionAgent(this.sessionHost.config.name);
 		this.unsubscribe?.();
 		try {
-			this.host = await this.options.restartSession();
+			// On success the host swaps in the new harness; on failure it keeps the old.
+			await this.sessionHost.newSession();
 		} catch (error) {
-			// Rebuild failed: fall back to the (still-valid) old harness.
-			this.host = previousHost;
 			this.subscribeToHost();
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
 			this.ui.requestRender();
@@ -308,7 +286,7 @@ export class InteractiveMode {
 	private async handleCtrlC(): Promise<void> {
 		if (this.busy) {
 			try {
-				await this.host.abort();
+				await this.harness.abort();
 			} catch {
 				// Abort races are non-fatal; the agent_end event still settles busy state.
 			}

@@ -30,6 +30,7 @@
 	},
 	"dependencies": {
 		"@opsyhq/agent": "workspace:*",
+		"@opsyhq/coding-agent": "workspace:*",
 		"@opsyhq/tui": "workspace:*",
 		"@earendil-works/pi-ai": "^0.79.3",
 		"proper-lockfile": "4.1.2",

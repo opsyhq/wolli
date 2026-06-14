@@ -16,6 +16,10 @@
 		".": {
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
+		},
+		"./tools": {
+			"types": "./dist/core/tools/index.d.ts",
+			"import": "./dist/core/tools/index.js"
 		}
 	},
 	"files": [

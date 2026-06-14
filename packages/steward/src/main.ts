@@ -8,28 +8,14 @@
  */
 
 import { createInterface } from "node:readline";
-import type { AgentHarness } from "@opsyhq/agent";
-import type { NodeExecutionEnv } from "@opsyhq/agent/node";
 import { type Args, parseArgs, printHelp } from "./cli/args.ts";
-import { APP_NAME, getAgentDir, VERSION } from "./config.ts";
-import {
-	type AgentConfig,
-	agentExists,
-	createAgent,
-	isCommissioned,
-	listAgents,
-	loadAgentConfig,
-} from "./core/agent-config.ts";
+import { APP_NAME, VERSION } from "./config.ts";
+import { type AgentConfig, agentExists, createAgent, listAgents, loadAgentConfig } from "./core/agent-config.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
-import { loadMemory } from "./core/memory.ts";
 import { resolveCliModel } from "./core/model-resolver.ts";
-import { createAgentSession } from "./core/sdk.ts";
-import { openAgentSession } from "./core/session.ts";
+import { SessionHost } from "./core/session-host.ts";
 import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
-import { buildSystemPrompt } from "./core/system-prompt.ts";
-import { createBashTool } from "./core/tools/bash.ts";
-import { createMemoryTool } from "./core/tools/memory.ts";
 import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
 
@@ -120,10 +106,8 @@ async function runAgent(name: string, positionals: string[], args: Args): Promis
 
 /**
  * Resolve model/auth once, then run the agent — single-shot for inline/`--print`,
- * otherwise the interactive chat. Interactive mode loops: when the agent is
- * commissioned in-chat (`/commission`), `run()` resolves `{ restart: true }` and
- * we reopen a fresh session whose prompt no longer carries the birth instruction
- * (the system prompt is frozen for a session's lifetime, so a restart is required).
+ * otherwise the interactive chat. Session construction (env, prompt, tools) and
+ * in-place swaps (e.g. after commissioning) are owned by the `SessionHost`.
  */
 async function runSession(name: string, positionals: string[], args: Args): Promise<number> {
 	const initialConfig = loadAgentConfig(name);
@@ -156,66 +140,25 @@ async function runSession(name: string, positionals: string[], args: Args): Prom
 	const thinkingLevel = args.thinking ?? resolved.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
 	const message = positionals.join(" ").trim();
 
-	// `--print` forces single-shot mode; it requires an inline message.
+	const host = new SessionHost({ name, model, thinkingLevel, authStorage });
+
+	// `--print` (or a bare inline message) is single-shot; `--print` needs a message.
 	if (args.print || message) {
 		if (args.print && !message) {
 			process.stderr.write(`Print mode needs a message: ${APP_NAME} ${name} --print "<message>"\n`);
 			return 1;
 		}
-		const { session, env } = await openAgentSession(name, { fresh: args.new });
-		const { soul, memory, user } = loadMemory(name);
-		const systemPrompt = buildSystemPrompt({ config: initialConfig, soul, memory, user });
-		const { harness } = await createAgentSession({
-			env,
-			session,
-			model,
-			systemPrompt,
-			thinkingLevel,
-			tools: [createMemoryTool(name), createBashTool(env, getAgentDir(name))],
-			authStorage,
-		});
-		return runPrintMode(harness, { message });
+		await host.start({ fresh: args.new });
+		const code = await runPrintMode(host.harness, { message });
+		await host.cleanup();
+		return code;
 	}
 
-	// Interactive: one long-lived TUI. A fresh harness is built up front and
-	// rebuilt on demand (e.g. after commissioning) via `restartSession`, which
-	// swaps the session in place — the TUI is never torn down or re-looped.
-	// Mirrors coding-agent's `runtimeHost.newSession()`.
-	let currentEnv: NodeExecutionEnv | undefined;
-	const openHarness = async (fresh: boolean): Promise<AgentHarness> => {
-		const previousEnv = currentEnv;
-		// Re-read: commissionedAt may have changed since the previous harness.
-		const config = loadAgentConfig(name);
-		const { session, env } = await openAgentSession(name, { fresh });
-		currentEnv = env;
-
-		// Read curated files ONCE and freeze them into the prompt. Mid-session edits
-		// (memory tool / bash) persist to disk but only enter the prompt next session.
-		const { soul, memory, user } = loadMemory(name);
-		const systemPrompt = buildSystemPrompt({ config, soul, memory, user });
-
-		const { harness } = await createAgentSession({
-			env,
-			session,
-			model,
-			systemPrompt,
-			thinkingLevel,
-			tools: [createMemoryTool(name), createBashTool(env, getAgentDir(name))],
-			authStorage,
-		});
-		// Release the superseded session's env once the new one is live.
-		await previousEnv?.cleanup();
-		return harness;
-	};
-
-	const harness = await openHarness(args.new ?? false);
-	await new InteractiveMode(harness, {
-		name,
-		purpose: initialConfig.purpose,
-		commissioned: isCommissioned(initialConfig),
-		restartSession: () => openHarness(true),
-	}).run();
-	await currentEnv?.cleanup();
+	// Interactive: one long-lived TUI. The host swaps the session in place on
+	// commission (see InteractiveMode.handleCommission), so there is no loop here.
+	await host.start({ fresh: args.new });
+	await new InteractiveMode(host).run();
+	await host.cleanup();
 	return 0;
 }
 
