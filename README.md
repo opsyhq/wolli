@@ -1,6 +1,4 @@
-# Opsy
-
-**Persistent, purposeful AI agents.**
+# What is my purpose?
 
 ```
 $ steward new calories
