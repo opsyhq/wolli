@@ -21,10 +21,13 @@ import { loadMemory } from "./memory.ts";
 import { createAgentSession } from "./sdk.ts";
 import { openAgentSession } from "./session.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
-// pi's file tools, vendored under tools/ (copied 1-1, see those files); bash is
-// the engine-backed deviation. memory is steward's own curated-notes tool.
+// pi's tools, vendored under tools/ (copied 1-1, see those files); bash is the
+// engine-backed deviation. memory is steward's own curated-notes tool.
 import { createBashTool } from "./tools/bash.ts";
 import { createEditTool } from "./tools/edit.ts";
+import { createFindTool } from "./tools/find.ts";
+import { createGrepTool } from "./tools/grep.ts";
+import { createLsTool } from "./tools/ls.ts";
 import { createMemoryTool } from "./tools/memory.ts";
 import { createReadTool } from "./tools/read.ts";
 import { createWriteTool } from "./tools/write.ts";
@@ -83,7 +86,7 @@ export class SessionHost {
 
 		// Tools operate in the agent's home dir, where SOUL/MEMORY/USER.md and the
 		// workspace/ subdir live. memory is steward's curated-notes tool; the rest
-		// are pi's exact read/write/edit/bash.
+		// are pi's read/write/edit/ls/grep/find plus the engine-backed bash.
 		const agentDir = getAgentDir(name);
 		const { harness } = await createAgentSession({
 			env,
@@ -96,6 +99,9 @@ export class SessionHost {
 				createReadTool(agentDir),
 				createWriteTool(agentDir),
 				createEditTool(agentDir),
+				createLsTool(agentDir),
+				createGrepTool(agentDir),
+				createFindTool(agentDir),
 				createBashTool(env, agentDir),
 			],
 			authStorage,

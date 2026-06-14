@@ -7,7 +7,18 @@
  * address their own workspace files, not user-supplied screenshot paths.
  */
 
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";
 import { resolvePath } from "../../utils/paths.ts";
+
+export async function pathExists(filePath: string): Promise<boolean> {
+	try {
+		await access(filePath, constants.F_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Resolve a path relative to the given cwd.

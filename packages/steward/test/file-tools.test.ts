@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,8 +7,16 @@ import { getAgentDir, getSoulPath } from "../src/config.ts";
 import { createAgent } from "../src/core/agent-config.ts";
 import { readMemoryFile } from "../src/core/memory.ts";
 import { createEditTool } from "../src/core/tools/edit.ts";
+import { createGrepTool } from "../src/core/tools/grep.ts";
+import { createLsTool } from "../src/core/tools/ls.ts";
 import { createReadTool } from "../src/core/tools/read.ts";
 import { createWriteTool } from "../src/core/tools/write.ts";
+
+/** grep/find shell out to ripgrep/fd; skip those cases when the binary is absent. */
+function hasTool(name: string): boolean {
+	const lookup = process.platform === "win32" ? "where" : "which";
+	return spawnSync(lookup, [name]).status === 0;
+}
 
 let home: string;
 let dir: string;
@@ -48,5 +57,19 @@ describe("file tools bound to the agent home", () => {
 			edits: [{ oldText: "role: notes", newText: "role: keeper of notes" }],
 		});
 		expect(readMemoryFile(getSoulPath("scribe"))).toContain("keeper of notes");
+	});
+
+	it("ls lists the agent home, including SOUL.md and workspace/", async () => {
+		const result = await createLsTool(dir).execute("c1", {});
+		const text = firstText(result);
+		expect(text).toContain("SOUL.md");
+		expect(text).toContain("workspace/");
+	});
+
+	it.runIf(hasTool("rg"))("grep finds a match in the agent's files", async () => {
+		await createWriteTool(dir).execute("c1", { path: "MEMORY.md", content: "prefers metric units\n" });
+		const result = await createGrepTool(dir).execute("c2", { pattern: "metric" });
+		expect(firstText(result)).toContain("MEMORY.md");
+		expect(firstText(result)).toContain("metric");
 	});
 });
