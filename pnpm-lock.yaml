@@ -142,6 +142,40 @@ importers:
         specifier: 0.3.9
         version: 0.3.9
 
+  packages/steward:
+    dependencies:
+      '@earendil-works/pi-ai':
+        specifier: ^0.79.3
+        version: 0.79.3(ws@8.21.0)(zod@4.4.3)
+      '@opsyhq/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@opsyhq/tui':
+        specifier: workspace:*
+        version: link:../tui
+      proper-lockfile:
+        specifier: 4.1.2
+        version: 4.1.2
+      typebox:
+        specifier: 1.1.38
+        version: 1.1.38
+    devDependencies:
+      '@types/node':
+        specifier: 24.12.4
+        version: 24.12.4
+      '@types/proper-lockfile':
+        specifier: 4.1.4
+        version: 4.1.4
+      shx:
+        specifier: 0.4.0
+        version: 0.4.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@24.12.4)(jiti@2.7.0)(yaml@2.9.0)
+
   packages/tui:
     dependencies:
       get-east-asian-width:

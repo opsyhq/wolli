@@ -8,7 +8,9 @@
 			"@opsyhq/tui": ["./packages/tui/src/index.ts"],
 			"@opsyhq/tui/*": ["./packages/tui/src/*"],
 			"@opsyhq/coding-agent": ["./packages/coding-agent/src/index.ts"],
-			"@opsyhq/coding-agent/*": ["./packages/coding-agent/src/*"]
+			"@opsyhq/coding-agent/*": ["./packages/coding-agent/src/*"],
+			"@opsyhq/steward": ["./packages/steward/src/index.ts"],
+			"@opsyhq/steward/*": ["./packages/steward/src/*"]
 		}
 	},
 	"include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"],
