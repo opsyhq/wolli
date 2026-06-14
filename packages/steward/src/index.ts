@@ -58,7 +58,11 @@ export {
 export { SessionHost, type SessionHostOptions } from "./core/session-host.ts";
 export { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
 export { type BuildSystemPromptOptions, buildSystemPrompt } from "./core/system-prompt.ts";
+export { type BashToolDetails, type BashToolInput, createBashTool } from "./core/tools/bash.ts";
+export { createEditTool, type EditToolDetails, type EditToolInput } from "./core/tools/edit.ts";
 export { createMemoryTool, type MemoryToolDetails, type MemoryToolInput } from "./core/tools/memory.ts";
+export { createReadTool, type ReadToolDetails, type ReadToolInput } from "./core/tools/read.ts";
+export { createWriteTool, type WriteToolInput } from "./core/tools/write.ts";
 export { main } from "./main.ts";
 export { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 export { getEditorTheme, getMarkdownTheme, getSelectListTheme, style } from "./modes/interactive/theme.ts";

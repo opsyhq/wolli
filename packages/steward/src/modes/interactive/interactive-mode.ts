@@ -135,7 +135,7 @@ export class InteractiveMode {
 		// Slash commands are intercepted before reaching the model.
 		if (trimmed === "/commission" || trimmed === "/finalize") {
 			this.editor.setText("");
-			await this.handleCommission();
+			await this.handleCommissionCommand();
 			return;
 		}
 
@@ -159,7 +159,7 @@ export class InteractiveMode {
 	 * build a new one whose frozen prompt no longer carries the birth instruction,
 	 * and re-subscribe. The TUI is never torn down.
 	 */
-	private async handleCommission(): Promise<void> {
+	private async handleCommissionCommand(): Promise<void> {
 		if (isCommissioned(this.sessionHost.config)) {
 			this.appendErrorLine("Already commissioned.");
 			this.ui.requestRender();

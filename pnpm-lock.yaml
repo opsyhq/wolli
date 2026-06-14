@@ -150,12 +150,12 @@ importers:
       '@opsyhq/agent':
         specifier: workspace:*
         version: link:../agent
-      '@opsyhq/coding-agent':
-        specifier: workspace:*
-        version: link:../coding-agent
       '@opsyhq/tui':
         specifier: workspace:*
         version: link:../tui
+      diff:
+        specifier: 8.0.4
+        version: 8.0.4
       proper-lockfile:
         specifier: 4.1.2
         version: 4.1.2
@@ -163,6 +163,9 @@ importers:
         specifier: 1.1.38
         version: 1.1.38
     devDependencies:
+      '@types/diff':
+        specifier: 7.0.2
+        version: 7.0.2
       '@types/node':
         specifier: 24.12.4
         version: 24.12.4

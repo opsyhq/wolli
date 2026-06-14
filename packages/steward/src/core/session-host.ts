@@ -14,8 +14,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentHarness, ThinkingLevel } from "@opsyhq/agent";
 import type { NodeExecutionEnv } from "@opsyhq/agent/node";
-// Mirror the real coding agent exactly: reuse pi's read/write/edit/bash tools.
-import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@opsyhq/coding-agent/tools";
 import { getAgentDir } from "../config.ts";
 import { type AgentConfig, loadAgentConfig } from "./agent-config.ts";
 import type { AuthStorage } from "./auth-storage.ts";
@@ -23,7 +21,13 @@ import { loadMemory } from "./memory.ts";
 import { createAgentSession } from "./sdk.ts";
 import { openAgentSession } from "./session.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
+// pi's file tools, vendored under tools/ (copied 1-1, see those files); bash is
+// the engine-backed deviation. memory is steward's own curated-notes tool.
+import { createBashTool } from "./tools/bash.ts";
+import { createEditTool } from "./tools/edit.ts";
 import { createMemoryTool } from "./tools/memory.ts";
+import { createReadTool } from "./tools/read.ts";
+import { createWriteTool } from "./tools/write.ts";
 
 export interface SessionHostOptions {
 	name: string;
@@ -92,7 +96,7 @@ export class SessionHost {
 				createReadTool(agentDir),
 				createWriteTool(agentDir),
 				createEditTool(agentDir),
-				createBashTool(agentDir),
+				createBashTool(env, agentDir),
 			],
 			authStorage,
 		});

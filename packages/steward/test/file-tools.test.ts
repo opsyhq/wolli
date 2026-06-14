@@ -1,11 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createEditTool, createReadTool, createWriteTool } from "@opsyhq/coding-agent/tools";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAgentDir, getSoulPath } from "../src/config.ts";
 import { createAgent } from "../src/core/agent-config.ts";
 import { readMemoryFile } from "../src/core/memory.ts";
+import { createEditTool } from "../src/core/tools/edit.ts";
+import { createReadTool } from "../src/core/tools/read.ts";
+import { createWriteTool } from "../src/core/tools/write.ts";
 
 let home: string;
 let dir: string;
@@ -27,10 +29,10 @@ function firstText(result: { content: ReadonlyArray<{ type: string; text?: strin
 	return block && block.type === "text" ? (block.text ?? "") : "";
 }
 
-// These are pi's exact tools (from @opsyhq/coding-agent/tools), bound to the
-// agent's home dir — the same wiring SessionHost uses. We assert they reach the
-// agent's own files (SOUL.md) so a regression in cwd binding is caught.
-describe("pi file tools bound to the agent home", () => {
+// These are pi's file tools, vendored into steward and bound to the agent's home
+// dir — the same wiring SessionHost uses. We assert they reach the agent's own
+// files (SOUL.md) so a regression in cwd binding is caught.
+describe("file tools bound to the agent home", () => {
 	it("write → read round-trips SOUL.md", async () => {
 		await createWriteTool(dir).execute("c1", { path: "SOUL.md", content: "I am the scribe.\n" });
 		expect(readMemoryFile(getSoulPath("scribe"))).toContain("I am the scribe.");

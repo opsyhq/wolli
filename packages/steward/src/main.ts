@@ -155,7 +155,7 @@ async function runSession(name: string, positionals: string[], args: Args): Prom
 	}
 
 	// Interactive: one long-lived TUI. The host swaps the session in place on
-	// commission (see InteractiveMode.handleCommission), so there is no loop here.
+	// commission (see InteractiveMode.handleCommissionCommand), so there is no loop here.
 	await host.start({ fresh: args.new });
 	await new InteractiveMode(host).run();
 	await host.cleanup();
