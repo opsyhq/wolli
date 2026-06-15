@@ -53,6 +53,14 @@ export const APP_TITLE: string = APP_NAME;
 export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".steward";
 export const VERSION: string = pkg.version || "0.0.0";
 
+/**
+ * Detect if we're running as a Bun compiled binary (copied from pi `config.ts:19`).
+ * Additive export consumed by the extension loader to choose jiti virtualModules vs
+ * aliases. Bun binaries have import.meta.url containing "$bunfs", "~BUN", or "%7EBUN".
+ */
+export const isBunBinary =
+	import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
+
 // e.g., STEWARD_HOME
 export const ENV_HOME = `${APP_NAME.toUpperCase()}_HOME`;
 

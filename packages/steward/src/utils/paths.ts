@@ -1,12 +1,13 @@
 /**
  * Path helpers.
  *
- * `normalizePath`/`resolvePath` are copied from `@opsyhq/coding-agent`'s
- * utils/paths.ts, kept to the subset steward uses (auth-storage and the file
- * tools). The richer canonicalize / cloud-sync / relative-path helpers of the
- * full version are omitted.
+ * `normalizePath`/`resolvePath`/`canonicalizePath` are copied from
+ * `@opsyhq/coding-agent`'s utils/paths.ts, kept to the subset steward uses
+ * (auth-storage, the file tools, and skills discovery). The richer cloud-sync /
+ * relative-path helpers of the full version are omitted.
  */
 
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,6 +55,15 @@ export function resolvePath(input: string, baseDir: string = process.cwd(), opti
 	const normalized = normalizePath(input, options);
 	const normalizedBaseDir = normalizePath(baseDir);
 	return isAbsolute(normalized) ? nodeResolvePath(normalized) : nodeResolvePath(normalizedBaseDir, normalized);
+}
+
+/** Resolve symlinks to a real path, falling back to the input if that fails. */
+export function canonicalizePath(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
 }
 
 export function getCwdRelativePath(filePath: string, cwd: string): string | undefined {

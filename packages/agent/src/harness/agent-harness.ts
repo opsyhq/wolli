@@ -196,6 +196,8 @@ export class AgentHarness<
 	private followUpQueueMode: QueueMode;
 	private nextTurnQueue: AgentMessage[] = [];
 	private handlers = new Map<string, Set<AgentHarnessHandler>>();
+	// Optional pre-persistence interceptor for `message_end`. See onMessageEnd().
+	private messageEndInterceptor?: (message: AgentMessage) => Promise<void> | void;
 
 	constructor(options: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>) {
 		this.env = options.env;
@@ -509,6 +511,13 @@ export class AgentHarness<
 
 	private async handleAgentEvent(event: AgentEvent, signal?: AbortSignal): Promise<void> {
 		if (event.type === "message_end") {
+			// Give a registered interceptor a chance to inspect/mutate the finalized
+			// message before it is persisted. Agent-core holds this same object in its
+			// in-memory state, so an in-place mutation keeps state, this persisted copy,
+			// and later turn/agent events in sync. Runs only when onMessageEnd() set one.
+			if (this.messageEndInterceptor) {
+				await this.messageEndInterceptor(event.message);
+			}
 			await this.session.appendMessage(event.message);
 			await this.emitAny(event, signal);
 			return;
@@ -1060,5 +1069,25 @@ export class AgentHarness<
 		}
 		handlers.add(handler as AgentHarnessHandler);
 		return () => handlers!.delete(handler as AgentHarnessHandler);
+	}
+
+	/**
+	 * Register a pre-persistence interceptor for `message_end`. The interceptor runs
+	 * just BEFORE the finalized assistant/tool message is appended to the session, so
+	 * it may mutate the passed message object in place to change what gets persisted
+	 * (and what agent-core's in-memory state — which references the same object —
+	 * carries into later turn/agent events). Returns an unregister function. At most
+	 * one interceptor is active; registering replaces any prior one. No-op unless
+	 * registered, so default harness behavior is unchanged.
+	 *
+	 * This is the seam an embedder uses to apply external `message_end` mutations
+	 * (e.g. extension hooks): unlike `subscribe()`/`on()`, whose return values for
+	 * message_end are discarded, the interceptor runs on the persistence path.
+	 */
+	onMessageEnd(interceptor: (message: AgentMessage) => Promise<void> | void): () => void {
+		this.messageEndInterceptor = interceptor;
+		return () => {
+			if (this.messageEndInterceptor === interceptor) this.messageEndInterceptor = undefined;
+		};
 	}
 }
