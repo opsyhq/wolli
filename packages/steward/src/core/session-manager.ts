@@ -41,7 +41,7 @@ import type {
 export type { BranchSummaryEntry, CompactionEntry } from "@opsyhq/agent";
 export type { SessionTreeEntry as SessionEntry } from "@opsyhq/agent";
 
-/** Session header (first JSONL line). Mirrors pi's `SessionHeader`. */
+/** Session header (first JSONL line). */
 export interface SessionHeader {
 	type: "session";
 	version?: number;
@@ -51,7 +51,7 @@ export interface SessionHeader {
 	parentSession?: string;
 }
 
-/** Tree node for `getTree()` — defensive copy of session structure (pi shape). */
+/** Tree node for `getTree()` — defensive copy of session structure. */
 export interface SessionTreeNode {
 	entry: SessionTreeEntry;
 	children: SessionTreeNode[];
@@ -122,7 +122,7 @@ export class SessionManager {
 			try {
 				parsed = JSON.parse(line);
 			} catch {
-				continue; // skip malformed lines (matches pi's tolerant parser)
+				continue; // skip malformed lines
 			}
 			if (parsed.type === "session") {
 				snapshot.header = parsed as SessionHeader;
@@ -151,7 +151,7 @@ export class SessionManager {
 	}
 
 	// =========================================================================
-	// Read surface (ReadonlySessionManager) — vendored from pi, sync over JSONL
+	// Read surface (ReadonlySessionManager) — sync over JSONL
 	// =========================================================================
 
 	getCwd(): string {

@@ -1,9 +1,7 @@
 /**
  * System prompt construction.
  *
- * Same file/name/signature as coding-agent's core/system-prompt.ts
- * (`buildSystemPrompt(options): string` + `BuildSystemPromptOptions`). Steward's
- * prompt is built from the agent's identity (name + purpose) plus a frozen
+ * The prompt is built from the agent's identity (name + purpose) plus a frozen
  * snapshot of curated memory (read once at session start — see core/memory.ts).
  */
 
@@ -23,7 +21,7 @@ export interface BuildSystemPromptOptions {
 	memory?: string;
 	/** Frozen USER.md snapshot. Empty string when absent. */
 	user?: string;
-	/** Skills discovered for this agent, formatted into the frozen prompt (mirrors pi). */
+	/** Skills discovered for this agent, formatted into the frozen prompt. */
 	skills?: Skill[];
 }
 
@@ -77,7 +75,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		parts.push("", BIRTH_INSTRUCTION);
 	}
 
-	// Skills are appended to the frozen prompt (mirrors pi). formatSkillsForPrompt
+	// Skills are appended to the frozen prompt. formatSkillsForPrompt
 	// returns "" when there are no model-invocable skills, leaving the prompt unchanged.
 	const skillsText = formatSkillsForPrompt(options.skills ?? []);
 	if (skillsText) {

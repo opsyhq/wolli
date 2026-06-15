@@ -15,27 +15,20 @@ export interface BuiltinSlashCommand {
 	description: string;
 }
 
+/**
+ * steward's built-in interactive slash commands — the ones `InteractiveMode.handleSubmit`
+ * intercepts before a prompt reaches the model, surfaced to the editor autocomplete by
+ * `createBaseAutocompleteProvider`.
+ *
+ * Divergence: an earlier port copied pi's full 22-command list verbatim, but steward
+ * implements none of those extras (settings/model/export/fork/…). Listing them would offer
+ * the human commands that do nothing but get echoed to the model as text. Trimmed to what
+ * `handleSubmit` actually dispatches so the menu only ever offers real commands. `deploy`
+ * is steward-specific (pi has no deploy); it is valid only while forming.
+ */
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
-	{ name: "settings", description: "Open settings menu" },
-	{ name: "model", description: "Select model (opens selector UI)" },
-	{ name: "scoped-models", description: "Enable/disable models for Ctrl+P cycling" },
-	{ name: "export", description: "Export session (HTML default, or specify path: .html/.jsonl)" },
-	{ name: "import", description: "Import and resume a session from a JSONL file" },
-	{ name: "share", description: "Share session as a secret GitHub gist" },
-	{ name: "copy", description: "Copy last agent message to clipboard" },
-	{ name: "name", description: "Set session display name" },
-	{ name: "session", description: "Show session info and stats" },
-	{ name: "changelog", description: "Show changelog entries" },
-	{ name: "hotkeys", description: "Show all keyboard shortcuts" },
-	{ name: "fork", description: "Create a new fork from a previous user message" },
-	{ name: "clone", description: "Duplicate the current session at the current position" },
-	{ name: "tree", description: "Navigate session tree (switch branches)" },
-	{ name: "trust", description: "Save project trust decision for future sessions" },
-	{ name: "login", description: "Configure provider authentication" },
-	{ name: "logout", description: "Remove provider authentication" },
+	{ name: "deploy", description: "Deploy the agent once its purpose and SOUL.md are ready" },
 	{ name: "new", description: "Start a new session" },
 	{ name: "compact", description: "Manually compact the session context" },
-	{ name: "resume", description: "Resume a different session" },
-	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];
