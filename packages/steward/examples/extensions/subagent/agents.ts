@@ -4,7 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentDir, parseFrontmatter } from "@opsyhq/steward";
+import { getSharedAgentDir, parseFrontmatter } from "@opsyhq/steward";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -95,7 +95,7 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
 }
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
-	const userDir = path.join(getAgentDir(), "agents");
+	const userDir = path.join(getSharedAgentDir(), "agents");
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");

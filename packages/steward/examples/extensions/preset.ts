@@ -42,7 +42,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@opsyhq/steward";
-import { DynamicBorder, getAgentDir } from "@opsyhq/steward";
+import { DynamicBorder, getSharedAgentDir } from "@opsyhq/steward";
 import { Container, Key, type SelectItem, SelectList, Text } from "@opsyhq/tui";
 
 // Preset configuration
@@ -68,7 +68,7 @@ interface PresetsConfig {
  * Project-local presets override global presets with the same name.
  */
 function loadPresets(cwd: string): PresetsConfig {
-	const globalPath = join(getAgentDir(), "presets.json");
+	const globalPath = join(getSharedAgentDir(), "presets.json");
 	const projectPath = join(cwd, ".steward", "presets.json");
 
 	let globalPresets: PresetsConfig = {};
@@ -200,7 +200,10 @@ export default function presetExtension(steward: ExtensionAPI) {
 		const presetNames = Object.keys(presets);
 
 		if (presetNames.length === 0) {
-			ctx.ui.notify("No presets defined. Add presets to ~/.steward/agents/<name>/presets.json or .steward/presets.json", "warning");
+			ctx.ui.notify(
+				"No presets defined. Add presets to ~/.steward/agents/<name>/presets.json or .steward/presets.json",
+				"warning",
+			);
 			return;
 		}
 
@@ -309,7 +312,10 @@ export default function presetExtension(steward: ExtensionAPI) {
 	async function cyclePreset(ctx: ExtensionContext): Promise<void> {
 		const presetNames = getPresetOrder();
 		if (presetNames.length === 0) {
-			ctx.ui.notify("No presets defined. Add presets to ~/.steward/agents/<name>/presets.json or .steward/presets.json", "warning");
+			ctx.ui.notify(
+				"No presets defined. Add presets to ~/.steward/agents/<name>/presets.json or .steward/presets.json",
+				"warning",
+			);
 			return;
 		}
 

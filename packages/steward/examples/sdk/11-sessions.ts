@@ -1,52 +1,41 @@
 /**
  * Session Management
  *
- * Control session persistence: in-memory, new file, continue, or open specific.
+ * Steward keys sessions by AGENT, not by cwd. openAgentSession() resumes the
+ * agent's latest session or starts a fresh one. The underlying JsonlSessionRepo
+ * lists and opens individual sessions.
  */
 
-import { createAgentSession, SessionManager } from "@opsyhq/steward";
+import { AuthStorage, createAgentSession, ModelRegistry, openAgentSession } from "@opsyhq/steward";
 
-// In-memory (no persistence)
-const { session: inMemory } = await createAgentSession({
-	sessionManager: SessionManager.inMemory(),
-});
-console.log("In-memory session:", inMemory.sessionFile ?? "(none)");
-inMemory.dispose();
-
-// New persistent session
-const { session: newSession } = await createAgentSession({
-	sessionManager: SessionManager.create(process.cwd()),
-});
-console.log("New session file:", newSession.sessionFile);
-newSession.dispose();
-
-// Continue most recent session (or create new if none)
-const { session: continued, modelFallbackMessage } = await createAgentSession({
-	sessionManager: SessionManager.continueRecent(process.cwd()),
-});
-if (modelFallbackMessage) console.log("Note:", modelFallbackMessage);
-console.log("Continued session:", continued.sessionFile);
-continued.dispose();
-
-// List and open specific session
-const sessions = await SessionManager.list(process.cwd());
-console.log(`\nFound ${sessions.length} sessions:`);
-for (const info of sessions.slice(0, 3)) {
-	console.log(`  ${info.id.slice(0, 8)}... - "${info.firstMessage.slice(0, 30)}..."`);
+const authStorage = AuthStorage.create();
+const [model] = ModelRegistry.create(authStorage).getAvailable();
+if (!model) {
+	throw new Error("No models available. Add credentials with the steward CLI.");
 }
 
-if (sessions.length > 0) {
-	const { session: opened } = await createAgentSession({
-		sessionManager: SessionManager.open(sessions[0].path),
-	});
-	console.log(`\nOpened: ${opened.sessionId}`);
-	opened.dispose();
+// Resume the agent's most recent session (creates one if none exist yet).
+const resumed = await openAgentSession("assistant");
+console.log("Resumed session:", (await resumed.session.getMetadata()).id);
+
+// Start a brand-new session instead of resuming.
+const fresh = await openAgentSession("assistant", { fresh: true });
+console.log("Fresh session:", (await fresh.session.getMetadata()).id);
+
+// The repo lists every session for this agent.
+const all = await resumed.repo.list({ cwd: resumed.cwd });
+console.log(`\nFound ${all.length} sessions:`);
+for (const meta of all.slice(0, 3)) {
+	console.log(`  ${meta.id.slice(0, 8)}... - ${meta.path}`);
 }
 
-// Custom session directory (no cwd encoding)
-// const customDir = "/path/to/my-sessions";
-// const { session } = await createAgentSession({
-//   sessionManager: SessionManager.create(process.cwd(), customDir),
-// });
-// SessionManager.list(process.cwd(), customDir);
-// SessionManager.continueRecent(process.cwd(), customDir);
+// Bind a harness to whichever session you opened.
+const { env, session } = fresh;
+const { harness } = await createAgentSession({
+	env,
+	session,
+	model,
+	systemPrompt: "You are a helpful assistant.",
+	authStorage,
+});
+console.log("\nHarness bound to session:", (await session.getMetadata()).id, "model:", harness.getModel().id);

@@ -1,52 +1,38 @@
 /**
  * API Keys and OAuth
  *
- * Configure API key resolution via AuthStorage and ModelRegistry.
+ * Configure credential resolution via AuthStorage, then resolve models with it.
+ * AuthStorage checks runtime overrides → auth.json (api keys + OAuth, tokens
+ * auto-refreshed) → environment variables.
  */
 
-import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "@opsyhq/steward";
+import { AuthStorage, createAgentSession, ModelRegistry, openAgentSession } from "@opsyhq/steward";
 
-// Default: AuthStorage uses ~/.steward/agents/<name>/auth.json
-// ModelRegistry loads built-in + custom models from ~/.steward/agents/<name>/models.json
+// Default: ~/.steward/agent/auth.json + models.json.
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 
-const { session: defaultAuthSession } = await createAgentSession({
-	sessionManager: SessionManager.inMemory(),
-	authStorage,
-	modelRegistry,
-});
-console.log("Session with default auth storage and model registry");
-defaultAuthSession.dispose();
+// Custom locations for auth.json and models.json.
+const customAuth = AuthStorage.create("/tmp/my-app/auth.json");
+const customRegistry = ModelRegistry.create(customAuth, "/tmp/my-app/models.json");
+console.log("Custom registry models:", customRegistry.getAvailable().length);
 
-// Custom auth storage location
-const customAuthStorage = AuthStorage.create("/tmp/my-app/auth.json");
-const customModelRegistry = ModelRegistry.create(customAuthStorage, "/tmp/my-app/models.json");
-
-const { session: customAuthSession } = await createAgentSession({
-	sessionManager: SessionManager.inMemory(),
-	authStorage: customAuthStorage,
-	modelRegistry: customModelRegistry,
-});
-console.log("Session with custom auth storage location");
-customAuthSession.dispose();
-
-// Runtime API key override (not persisted to disk)
+// Runtime API key override (not persisted to disk).
 authStorage.setRuntimeApiKey("anthropic", "sk-my-temp-key");
-const { session: runtimeKeySession } = await createAgentSession({
-	sessionManager: SessionManager.inMemory(),
-	authStorage,
-	modelRegistry,
-});
-console.log("Session with runtime API key override");
-runtimeKeySession.dispose();
 
-// No models.json - only built-in models
-const simpleRegistry = ModelRegistry.inMemory(authStorage);
-const { session: builtInModelsSession } = await createAgentSession({
-	sessionManager: SessionManager.inMemory(),
-	authStorage,
-	modelRegistry: simpleRegistry,
-});
-console.log("Session with only built-in models");
-builtInModelsSession.dispose();
+// Built-in models only (ignore models.json on disk).
+const builtInOnly = ModelRegistry.inMemory(authStorage);
+console.log("Built-in models:", builtInOnly.getAvailable().length);
+
+const [model] = modelRegistry.getAvailable();
+if (model) {
+	const { env, session } = await openAgentSession("assistant");
+	const { harness } = await createAgentSession({
+		env,
+		session,
+		model,
+		systemPrompt: "You are a helpful assistant.",
+		authStorage, // credential resolution flows through this store
+	});
+	console.log("Harness ready with model:", harness.getModel().id);
+}

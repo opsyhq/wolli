@@ -23,7 +23,12 @@ import type { JsonlSessionMetadata, LeafEntry, Session, SessionTreeEntry } from 
 // The names `extensions/types.ts` imports from "../session-manager.ts".
 // SessionEntry/CompactionEntry/BranchSummaryEntry are the engine's structurally
 // identical equivalents, re-aliased here.
-export type { BranchSummaryEntry, CompactionEntry, SessionTreeEntry as SessionEntry } from "@opsyhq/agent";
+export type {
+	BranchSummaryEntry,
+	CompactionEntry,
+	MessageEntry as SessionMessageEntry,
+	SessionTreeEntry as SessionEntry,
+} from "@opsyhq/agent";
 
 /** Session header (first JSONL line). */
 export interface SessionHeader {

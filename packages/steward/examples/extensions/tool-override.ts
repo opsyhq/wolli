@@ -21,13 +21,13 @@
  */
 
 import type { TextContent } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, getAgentDir, withFileMutationQueue } from "@opsyhq/steward";
+import { type ExtensionAPI, getSharedAgentDir, withFileMutationQueue } from "@opsyhq/steward";
 import { constants, readFileSync } from "fs";
 import { access, appendFile, readFile } from "fs/promises";
 import { join, resolve } from "path";
 import { Type } from "typebox";
 
-const LOG_FILE = join(getAgentDir(), "read-access.log");
+const LOG_FILE = join(getSharedAgentDir(), "read-access.log");
 
 // Paths that are blocked from reading
 const BLOCKED_PATTERNS = [

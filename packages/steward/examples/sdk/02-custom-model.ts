@@ -1,53 +1,52 @@
 /**
  * Custom Model Selection
  *
- * Shows how to select a specific model and thinking level.
+ * Find a model via pi-ai or the registry, then build a session with a
+ * specific model and thinking level.
  */
 
 import { getModel } from "@earendil-works/pi-ai";
-import { AuthStorage, createAgentSession, ModelRegistry } from "@opsyhq/steward";
+import { AuthStorage, createAgentSession, ModelRegistry, openAgentSession } from "@opsyhq/steward";
 
-// Set up auth storage and model registry
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 
-// Option 1: Find a specific built-in model by provider/id
-const opus = getModel("anthropic", "claude-opus-4-5");
+// Option 1: a specific built-in model by provider/id.
+const opus = getModel("anthropic", "claude-opus-4-8");
 if (opus) {
 	console.log(`Found model: ${opus.provider}/${opus.id}`);
 }
 
-// Option 2: Find model via registry (includes custom models from models.json)
-const customModel = modelRegistry.find("my-provider", "my-model");
-if (customModel) {
-	console.log(`Found custom model: ${customModel.provider}/${customModel.id}`);
+// Option 2: via the registry (includes custom models from models.json).
+const custom = modelRegistry.find("my-provider", "my-model");
+if (custom) {
+	console.log(`Found custom model: ${custom.provider}/${custom.id}`);
 }
 
-// Option 3: Pick from available models (have valid API keys)
-const available = await modelRegistry.getAvailable();
+// Option 3: only models that have valid credentials.
+const available = modelRegistry.getAvailable();
 console.log(
 	"Available models:",
 	available.map((m) => `${m.provider}/${m.id}`),
 );
 
 if (available.length > 0) {
-	const { session } = await createAgentSession({
+	const { env, session } = await openAgentSession("assistant");
+	const { harness } = await createAgentSession({
+		env,
+		session,
 		model: available[0],
-		thinkingLevel: "medium", // off, low, medium, high
+		thinkingLevel: "medium", // off | minimal | low | medium | high | xhigh
+		systemPrompt: "You are a helpful assistant.",
 		authStorage,
-		modelRegistry,
 	});
 
-	try {
-		session.subscribe((event) => {
-			if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-				process.stdout.write(event.assistantMessageEvent.delta);
-			}
-		});
+	harness.subscribe((event) => {
+		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+			process.stdout.write(event.assistantMessageEvent.delta);
+		}
+	});
 
-		await session.prompt("Say hello in one sentence.");
-		console.log();
-	} finally {
-		session.dispose();
-	}
+	await harness.prompt("Say hello in one sentence.");
+	process.stdout.write("\n");
 }

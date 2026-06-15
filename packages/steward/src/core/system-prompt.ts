@@ -23,6 +23,10 @@ export interface BuildSystemPromptOptions {
 	user?: string;
 	/** Skills discovered for this agent, formatted into the frozen prompt. */
 	skills?: Skill[];
+	/** Names of the tools active this session, so extensions can tailor guidance. */
+	selectedTools?: string[];
+	/** Text appended to the end of the system prompt. */
+	appendSystemPrompt?: string;
 }
 
 const BIRTH_INSTRUCTION = [
@@ -97,6 +101,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const skillsText = formatSkillsForPrompt(options.skills ?? []);
 	if (skillsText) {
 		parts.push(skillsText);
+	}
+
+	if (options.appendSystemPrompt) {
+		parts.push("", options.appendSystemPrompt);
 	}
 
 	return parts.join("\n");

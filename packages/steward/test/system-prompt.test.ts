@@ -51,6 +51,17 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("### USER.md");
 		expect(prompt).toContain("user fact");
 	});
+
+	it("appends appendSystemPrompt text at the end", () => {
+		const base = buildSystemPrompt({ config: loadAgentConfig("scribe") });
+		const prompt = buildSystemPrompt({
+			config: loadAgentConfig("scribe"),
+			appendSystemPrompt: "Always answer in haiku.",
+		});
+		expect(prompt).toContain("Always answer in haiku.");
+		expect(prompt.endsWith("Always answer in haiku.")).toBe(true);
+		expect(prompt).toBe(`${base}\n\nAlways answer in haiku.`);
+	});
 });
 
 describe("birth instruction (deploy)", () => {

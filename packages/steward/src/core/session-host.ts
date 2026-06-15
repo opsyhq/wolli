@@ -750,13 +750,6 @@ export class SessionHost {
 		this._skills = skills;
 		this._promptTemplates = promptTemplates;
 
-		// Skills are appended to the frozen prompt. The structured options
-		// are retained so extensions can read them via ctx.getSystemPromptOptions().
-		const systemPromptOptions: BuildSystemPromptOptions = { config, cwd: agentDir, soul, memory, user, skills };
-		const systemPrompt = buildSystemPrompt(systemPromptOptions);
-		this._systemPrompt = systemPrompt;
-		this._systemPromptOptions = systemPromptOptions;
-
 		// Tools operate in the agent's home dir, where SOUL/MEMORY/USER.md and the
 		// workspace/ subdir live. memory is steward's curated-notes tool; the rest
 		// are read/write/edit/ls/grep/find plus bash. bash uses the default local
@@ -784,6 +777,22 @@ export class SessionHost {
 			.map((rt) => wrapToolDefinition(rt.definition, () => runner.createContext()));
 		this._baseTools = baseTools;
 		this._extensionTools = extensionTools;
+
+		// Skills are appended to the frozen prompt. The structured options
+		// are retained so extensions can read them via ctx.getSystemPromptOptions().
+		const selectedTools = [...baseTools, ...extensionTools].map((t) => t.name);
+		const systemPromptOptions: BuildSystemPromptOptions = {
+			config,
+			cwd: agentDir,
+			soul,
+			memory,
+			user,
+			skills,
+			selectedTools,
+		};
+		const systemPrompt = buildSystemPrompt(systemPromptOptions);
+		this._systemPrompt = systemPrompt;
+		this._systemPromptOptions = systemPromptOptions;
 
 		return { runner, skills, promptTemplates, systemPrompt, baseTools, extensionTools, errors };
 	}

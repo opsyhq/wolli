@@ -1,48 +1,55 @@
 /**
  * Tools Configuration
  *
- * Use tool names to choose which built-in tools are enabled.
+ * Pass steward's built-in tool factories to choose which tools the agent has.
+ * Each factory is bound to the directory the tool operates in — here the agent's
+ * own workspace, returned by openAgentSession() as `cwd`.
  *
- * Tool names are matched against all available tools. If you use a custom `cwd`,
- * createAgentSession() applies that cwd when it builds the actual built-in tools.
- *
- * For custom tools, see 06-extensions.ts - custom tools are registered via the
- * extensions system using steward.registerTool().
+ * For custom tools, see ../extensions/ — extensions register tools via
+ * steward.registerTool().
  */
 
-import { createAgentSession, SessionManager } from "@opsyhq/steward";
+import {
+	AuthStorage,
+	createAgentSession,
+	createBashTool,
+	createEditTool,
+	createFindTool,
+	createGrepTool,
+	createLsTool,
+	createReadTool,
+	createWriteTool,
+	ModelRegistry,
+	openAgentSession,
+} from "@opsyhq/steward";
 
-// Read-only mode (no edit/write)
-const { session: readOnlySession } = await createAgentSession({
-	tools: ["read", "grep", "find", "ls"],
-	sessionManager: SessionManager.inMemory(),
-});
-console.log("Read-only session created");
-readOnlySession.dispose();
+const authStorage = AuthStorage.create();
+const modelRegistry = ModelRegistry.create(authStorage);
+const [model] = modelRegistry.getAvailable();
+if (!model) {
+	throw new Error("No models available. Add credentials with the steward CLI.");
+}
 
-// Custom tool selection
-const { session: customToolsSession } = await createAgentSession({
-	tools: ["read", "bash", "grep"],
-	sessionManager: SessionManager.inMemory(),
-});
-console.log("Custom tools session created");
-customToolsSession.dispose();
+const { env, session, cwd } = await openAgentSession("assistant");
 
-// With custom cwd
-const customCwd = "/path/to/project";
-const { session: customCwdSession } = await createAgentSession({
-	cwd: customCwd,
-	tools: ["read", "bash", "edit", "write"],
-	sessionManager: SessionManager.inMemory(customCwd),
+// Read-only: exploration tools, no edit/write/bash.
+const { harness: readOnly } = await createAgentSession({
+	env,
+	session,
+	model,
+	systemPrompt: "You are a read-only assistant.",
+	tools: [createReadTool(cwd), createGrepTool(cwd), createFindTool(cwd), createLsTool(cwd)],
+	authStorage,
 });
-console.log("Custom cwd session created");
-customCwdSession.dispose();
+console.log("Read-only harness ready:", readOnly.getModel().id);
 
-// Or pick specific tools for custom cwd
-const { session: specificToolsSession } = await createAgentSession({
-	cwd: customCwd,
-	tools: ["read", "bash", "grep"],
-	sessionManager: SessionManager.inMemory(customCwd),
+// Full read/write tool set.
+const { harness: full } = await createAgentSession({
+	env,
+	session,
+	model,
+	systemPrompt: "You are a coding assistant.",
+	tools: [createReadTool(cwd), createWriteTool(cwd), createEditTool(cwd), createBashTool(cwd)],
+	authStorage,
 });
-console.log("Specific tools with custom cwd session created");
-specificToolsSession.dispose();
+console.log("Full harness ready:", full.getModel().id);
