@@ -1,10 +1,8 @@
 /**
  * Path helpers.
  *
- * `normalizePath`/`resolvePath`/`canonicalizePath` are copied from
- * `@opsyhq/coding-agent`'s utils/paths.ts, kept to the subset steward uses
- * (auth-storage, the file tools, and skills discovery). The richer cloud-sync /
- * relative-path helpers of the full version are omitted.
+ * Kept to the subset steward uses (auth-storage, the file tools, and skills
+ * discovery). The richer cloud-sync / relative-path helpers are omitted.
  */
 
 import { realpathSync } from "node:fs";

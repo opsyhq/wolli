@@ -1,13 +1,12 @@
 /**
  * Interactive TUI chat mode.
  *
- * Mirrors `@opsyhq/coding-agent`'s `InteractiveMode` class shape (`constructor(host,
- * options)`, `run()`, `stop()`) but stays minimal: it bridges the `AgentHarness`
- * event stream onto a small retained-mode component tree (a chat log `Container`, a
- * status `Container` holding a `Loader`, and an `Editor`). Streaming assistant text
- * is routed through an `AssistantMessageComponent`, whose `updateContent(message)` is
- * called in place on each delta so the prefix cache and the renderer both stay warm —
- * and so thinking blocks render in order rather than being dropped.
+ * Bridges the `AgentHarness` event stream onto a small retained-mode component tree (a
+ * chat log `Container`, a status `Container` holding a `Loader`, and an `Editor`).
+ * Streaming assistant text is routed through an `AssistantMessageComponent`, whose
+ * `updateContent(message)` is called in place on each delta so the prefix cache and the
+ * renderer both stay warm — and so thinking blocks render in order rather than being
+ * dropped.
  *
  * Subscribe handlers must stay fast and non-throwing — a throw inside one surfaces as
  * an `AgentHarnessError("hook")` and would abort the turn.
@@ -16,6 +15,8 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { type AgentHarness, AgentHarnessError, type AgentHarnessEvent, type AgentMessage } from "@opsyhq/agent";
 import {
+	type AutocompleteProvider,
+	CombinedAutocompleteProvider,
 	Container,
 	Editor,
 	getKeybindings,
@@ -23,19 +24,22 @@ import {
 	type MarkdownTheme,
 	matchesKey,
 	ProcessTerminal,
+	type SlashCommand,
 	Spacer,
 	setKeybindings,
 	Text,
 	TUI,
 } from "@opsyhq/tui";
-import { getSoulPath } from "../../config.ts";
 import { deployAgent, isDeployed } from "../../core/agent-config.ts";
 import { executeBashWithOperations } from "../../core/bash-executor.ts";
+import type { AutocompleteProviderFactory } from "../../core/extensions/index.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
-import { readMemoryFile } from "../../core/memory.ts";
 import type { SessionHost } from "../../core/session-host.ts";
+import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
+import type { SourceInfo } from "../../core/source-info.ts";
 import { createLocalBashOperations } from "../../core/tools/bash.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
+import { ensureTool } from "../../utils/tools-manager.ts";
 import { isFailureMessage } from "../message.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
@@ -49,20 +53,19 @@ import { getEditorTheme, getMarkdownTheme, initTheme, theme } from "./theme/them
 const CTRL_C_EXIT_WINDOW_MS = 500;
 
 /**
- * Sent to the agent when the human types `/deploy` before the agent has authored
- * its SOUL.md — it nudges the agent to call the deploy tool. The `/deploy` itself
- * is the human's consent, so the follow-up confirm is skipped (deployPreApproved).
+ * Sent to the agent when the human types `/deploy` — it nudges the agent to call the
+ * deploy tool with its distilled purpose + final SOUL.md. The tool runs, then the
+ * human confirms via the Yes/No dialog before the latch flips; `/deploy` is just the
+ * nudge, not the consent (so there is one path: tool → confirm → deploy).
  */
 const DEPLOY_INSTRUCTION =
 	"Your human asked you to deploy. If you're ready, call the deploy tool now with your distilled purpose and final SOUL.md.";
 
 /**
- * Mirrors `@opsyhq/coding-agent`'s `InteractiveModeOptions` (constructor opts
- * decided by the CLI/main layer and read in the startup method — pi's pattern for
- * `initialMessage`/`initialMessages`). steward's analogue is `initialAssistantMessage`:
- * pi's `initialMessage` seeds a *user* prompt and runs a turn, whereas a newly born
- * agent opens the chat itself, so the message is seeded as an *assistant* turn with
- * no model round-trip. The text is decided at the top (`main.ts`), not here.
+ * Constructor opts decided by the CLI/main layer and read in the startup method.
+ * Whereas pi's `initialMessage` seeds a *user* prompt and runs a turn, a newly born
+ * agent opens the chat itself, so `initialAssistantMessage` is seeded as an *assistant*
+ * turn with no model round-trip. The text is decided at the top (`main.ts`), not here.
  */
 export interface InteractiveModeOptions {
 	/**
@@ -103,29 +106,39 @@ export class InteractiveMode {
 	private streamingComponent?: AssistantMessageComponent;
 	private lastSigintTime = 0;
 	private stopped = false;
-	// Live tool components keyed by toolCallId, mirroring pi's InteractiveMode. A
-	// component is created when its tool call first appears (streaming args or
-	// execution start), updated as output streams, and dropped from the map once
-	// the tool ends (it stays in the chat log for display).
+	// Live tool components keyed by toolCallId. A component is created when its tool
+	// call first appears (streaming args or execution start), updated as output
+	// streams, and dropped from the map once the tool ends (it stays in the chat log
+	// for display).
 	private readonly pendingTools = new Map<string, ToolExecutionComponent>();
 	private toolOutputExpanded = false;
-	// User-typed shell (`!cmd` / `!!cmd`), mirroring pi's InteractiveMode. `isBashMode`
-	// tracks the editor `!`-prefix for border coloring; `bashComponent` is the live
-	// panel; `bashAbortController` lets Ctrl+C cancel the running command.
+	// User-typed shell (`!cmd` / `!!cmd`). `isBashMode` tracks the editor `!`-prefix
+	// for border coloring; `bashComponent` is the live panel; `bashAbortController`
+	// lets Ctrl+C cancel the running command.
 	private isBashMode = false;
 	private bashComponent?: BashExecutionComponent;
 	private bashAbortController?: AbortController;
 	// Deploy flow state. The deploy tool (forming-only) writes the agent's purpose +
 	// SOUL.md but does NOT flip the latch — the human confirms here, symmetric with
 	// SOUL being written-but-unconfirmed. `extensionSelector` is the Yes/No dialog
-	// (see showExtensionConfirm). `deployPreApproved` is set when the human
-	// typed `/deploy` (their consent is implicit, so the confirm is skipped).
-	// `deployToolCallId`/`deployToolErrored` track the in-flight deploy tool
-	// call so agent_end knows it ran and whether it succeeded.
+	// (see showExtensionConfirm). `deployToolCallId`/`deployToolErrored` track the
+	// in-flight deploy tool call so agent_end knows it ran and whether it succeeded.
 	private extensionSelector?: ExtensionSelectorComponent;
-	private deployPreApproved = false;
 	private deployToolCallId?: string;
 	private deployToolErrored = false;
+	// Editor autocomplete (the slash-command menu). The engine —
+	// `CombinedAutocompleteProvider` plus the SelectList dropdown — lives in
+	// `@opsyhq/tui`; this layer only builds the provider from the live command set and
+	// pushes it into the editor. `autocompleteProviderWrappers` is the extension-stacking
+	// hook: always empty in steward, which has no interactive `ExtensionUIContext` bridge
+	// yet (extensions get the runner's noOpUIContext, so `ctx.addAutocompleteProvider` can
+	// never fire). `fdPath` is resolved lazily (initAutocompleteFd) and only powers
+	// `@`-fuzzy file search; slash-command and directory (readdir) completion work without
+	// it. (Divergence: pi also retains the composed provider in a field to re-push onto
+	// editors it swaps in at runtime; steward has one fixed editor and never swaps, so
+	// there is no reader and nothing to retain.)
+	private readonly autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
+	private fdPath: string | null = null;
 
 	constructor(host: SessionHost, options: InteractiveModeOptions = {}) {
 		this.sessionHost = host;
@@ -144,7 +157,6 @@ export class InteractiveMode {
 			this.ui,
 			(text) => theme.fg("accent", text),
 			(text) => theme.fg("muted", text),
-			// Mirrors `@opsyhq/coding-agent`'s `defaultWorkingMessage` ("Working...").
 			"Working...",
 		);
 		// The Loader starts its animation timer on construction; halt it until busy.
@@ -160,8 +172,8 @@ export class InteractiveMode {
 		this.editor.onSubmit = (text) => {
 			void this.handleSubmit(text);
 		};
-		// Mirrors pi's `defaultEditor.onChange`: recolor the editor border the moment
-		// the `!` bash-mode prefix is typed or removed.
+		// Recolor the editor border the moment the `!` bash-mode prefix is typed or
+		// removed.
 		this.editor.onChange = (text: string) => {
 			const wasBashMode = this.isBashMode;
 			this.isBashMode = text.trimStart().startsWith("!");
@@ -169,6 +181,10 @@ export class InteractiveMode {
 				this.updateEditorBorderColor();
 			}
 		};
+		// Wire the slash-command autocomplete menu; the `fd` binary (for `@`-fuzzy file
+		// search) is resolved in the background and the provider rebuilt when it lands.
+		this.setupAutocompleteProvider();
+		void this.initAutocompleteFd();
 		this.subscribeToHost();
 		this.removeInputListener = this.ui.addInputListener((data) => this.handleGlobalInput(data));
 
@@ -182,8 +198,7 @@ export class InteractiveMode {
 		this.ui.setFocus(this.editor);
 		this.ui.start();
 
-		// Mirrors pi's startup read of `this.options.initialMessage` (interactive-mode.ts:796),
-		// but seeds an assistant opener instead of running a user turn: a newly born agent
+		// Seed an assistant opener instead of running a user turn: a newly born agent
 		// opens the chat itself. Fire-and-forget — run() returns the exit promise.
 		if (this.options.initialAssistantMessage) {
 			void this.seedInitialAssistantMessage(this.options.initialAssistantMessage);
@@ -192,6 +207,110 @@ export class InteractiveMode {
 		return new Promise<void>((resolve) => {
 			this.resolveExit = resolve;
 		});
+	}
+
+	/**
+	 * Build the base autocomplete provider from the live command set. Substrate
+	 * divergences:
+	 *   - pi reads three separate session accessors (promptTemplates, extension commands,
+	 *     skills); steward's harness session is private, but `SessionHost.getCommands()`
+	 *     already merges exactly those three into `SlashCommandInfo[]`, so pi's three
+	 *     branches collapse into one loop here.
+	 *   - pi attaches a dynamic `getArgumentCompletions` to the `model` builtin; steward has
+	 *     no `/model` interactive command, so there is nothing to attach it to.
+	 */
+	private createBaseAutocompleteProvider(): AutocompleteProvider {
+		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
+			name: command.name,
+			description: command.description,
+		}));
+
+		const builtinCommandNames = new Set(slashCommands.map((command) => command.name));
+		const dynamicCommands: SlashCommand[] = this.sessionHost
+			.getCommands()
+			.filter((command) => !builtinCommandNames.has(command.name))
+			.map((command) => ({
+				name: command.name,
+				description: this.prefixAutocompleteDescription(command.description, command.sourceInfo),
+			}));
+
+		return new CombinedAutocompleteProvider(
+			[...slashCommands, ...dynamicCommands],
+			this.sessionHost.getCwd(),
+			this.fdPath,
+		);
+	}
+
+	/**
+	 * Compose the base provider with any extension wrapper factories and push it into the
+	 * editor. Collapsed to steward's single editor (pi sets the provider on both
+	 * `defaultEditor` and a swappable `editor`). The wrapper loop never runs, since
+	 * `autocompleteProviderWrappers` is always empty in steward (no interactive
+	 * `ExtensionUIContext` bridge — see the field comment).
+	 */
+	private setupAutocompleteProvider(): void {
+		let provider = this.createBaseAutocompleteProvider();
+		const triggerCharacters: string[] = [];
+		for (const wrapProvider of this.autocompleteProviderWrappers) {
+			provider = wrapProvider(provider);
+			triggerCharacters.push(...(provider.triggerCharacters ?? []));
+		}
+		if (triggerCharacters.length > 0) {
+			provider.triggerCharacters = [...new Set(triggerCharacters)];
+		}
+
+		this.editor.setAutocompleteProvider(provider);
+	}
+
+	/**
+	 * Resolve the `fd` binary in the background, then rebuild the provider so `@`-fuzzy file
+	 * search lights up. Substrate divergence: pi resolves `fd` in an async startup method
+	 * before its first `setupAutocompleteProvider`; steward builds the editor and calls setup
+	 * synchronously in `run()` (slash-command and directory completion need no fd), then
+	 * rebuilds the provider here once fd lands.
+	 */
+	private async initAutocompleteFd(): Promise<void> {
+		try {
+			this.fdPath = await ensureTool("fd", true);
+		} catch {
+			// fd is optional; slash-command and readdir-based path completion already work.
+			return;
+		}
+		this.setupAutocompleteProvider();
+	}
+
+	/**
+	 * Build the `[source]` tag prefixed onto extension/prompt/skill command descriptions in
+	 * the autocomplete menu. Omits pi's git-URL branch: pi formats git sources via
+	 * `parseGitUrl` (utils/git.ts), which steward does not vendor — so git sources fall
+	 * through to the bare scope prefix, exactly pi's own behavior when `parseGitUrl` returns
+	 * null.
+	 */
+	private getAutocompleteSourceTag(sourceInfo?: SourceInfo): string | undefined {
+		if (!sourceInfo) {
+			return undefined;
+		}
+
+		const scopePrefix = sourceInfo.scope === "user" ? "u" : sourceInfo.scope === "project" ? "p" : "t";
+		const source = sourceInfo.source.trim();
+
+		if (source === "auto" || source === "local" || source === "cli") {
+			return scopePrefix;
+		}
+
+		if (source.startsWith("npm:")) {
+			return `${scopePrefix}:${source}`;
+		}
+
+		return scopePrefix;
+	}
+
+	private prefixAutocompleteDescription(description: string | undefined, sourceInfo?: SourceInfo): string | undefined {
+		const sourceTag = this.getAutocompleteSourceTag(sourceInfo);
+		if (!sourceTag) {
+			return description;
+		}
+		return description ? `[${sourceTag}] ${description}` : `[${sourceTag}]`;
 	}
 
 	/**
@@ -240,10 +359,9 @@ export class InteractiveMode {
 		if (!isDeployed(config)) {
 			lines.push(theme.fg("dim", "Forming — it'll ask to deploy when ready, or type /deploy."));
 		}
-		// pi's `rawKeyHint("!", "to run bash")` / `rawKeyHint("!!", "to run bash (no
-		// context)")` (interactive-mode.ts:657-658), joined with pi's compact " · "
-		// separator. Deviation: pi carries these in its `ExpandableText` startup header;
-		// steward's header is a reduced plain-text form, so the hints live here instead.
+		// Bash key hints, joined with a compact " · " separator. Deviation: pi carries
+		// these in its `ExpandableText` startup header; steward's header is a reduced
+		// plain-text form, so the hints live here instead.
 		lines.push(
 			[rawKeyHint("!", "to run bash"), rawKeyHint("!!", "to run bash (no context)")].join(theme.fg("muted", " · ")),
 		);
@@ -256,12 +374,32 @@ export class InteractiveMode {
 		const trimmed = text.trim();
 		if (trimmed.length === 0 || this.busy) return;
 
-		// Slash commands are intercepted before reaching the model. `/deploy` is the
-		// human's go-ahead to deploy; it takes no arguments — the agent authors its
-		// own purpose.
+		// Built-in slash commands are intercepted before reaching the model via a
+		// hardcoded dispatch in onSubmit. `/deploy` is the human's go-ahead to deploy
+		// (no args — the agent authors its own purpose).
 		if (trimmed === "/deploy") {
 			this.editor.setText("");
 			await this.handleDeployCommand();
+			return;
+		}
+		// `/new` — start a fresh session and clear the chat.
+		if (trimmed === "/new") {
+			this.editor.setText("");
+			await this.handleNewCommand();
+			return;
+		}
+		// `/compact [instructions]` — compact the session history.
+		if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
+			const customInstructions = trimmed.startsWith("/compact ") ? trimmed.slice(9).trim() || undefined : undefined;
+			this.editor.setText("");
+			await this.handleCompactCommand(customInstructions);
+			return;
+		}
+		// `/quit` — exit. `stop()` is the native equivalent of pi's `shutdown()`
+		// (resolveExit + main.cleanup own the rest). See its divergences.
+		if (trimmed === "/quit") {
+			this.editor.setText("");
+			this.stop();
 			return;
 		}
 
@@ -304,10 +442,10 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * `/deploy` — the human's go-ahead to deploy. If the agent has already authored
-	 * its SOUL.md (called the deploy tool), this is the final confirm and we deploy
-	 * now. Otherwise it nudges the agent to call the deploy tool; either way
-	 * `deployPreApproved` records the consent so the post-tool confirm is skipped.
+	 * `/deploy` — the human's nudge to deploy. It cannot deploy on its own: it prompts
+	 * the agent to author its purpose + final SOUL.md via the deploy tool, and the
+	 * post-tool Yes/No confirm (finalizeDeploy) is what actually flips the latch. One
+	 * path only — `/deploy` always nudges, the tool runs, the human confirms, deploy.
 	 */
 	private async handleDeployCommand(): Promise<void> {
 		if (isDeployed(this.sessionHost.config)) {
@@ -315,16 +453,8 @@ export class InteractiveMode {
 			this.ui.requestRender();
 			return;
 		}
-		this.deployPreApproved = true;
-
-		// SOUL.md already written → the human's /deploy is the final go-ahead.
-		if (this.soulIsReady()) {
-			await this.doDeploy();
-			return;
-		}
-
-		// Not ready yet → nudge the agent to author its purpose + SOUL.md via the
-		// deploy tool. `deployPreApproved` means finalizeDeploy won't re-ask to confirm.
+		// Nudge the agent to author its purpose + SOUL.md via the deploy tool. When the
+		// tool finishes (agent_end), finalizeDeploy asks the human to confirm.
 		this.appendUserMessage("/deploy");
 		this.statusContainer.clear();
 		this.ui.requestRender();
@@ -337,42 +467,39 @@ export class InteractiveMode {
 		}
 	}
 
-	/** True once the agent has authored a non-empty SOUL.md (via the deploy tool). */
-	private soulIsReady(): boolean {
-		return readMemoryFile(getSoulPath(this.sessionHost.config.name)).trim().length > 0;
-	}
-
 	/**
-	 * Called at agent_end when the deploy tool ran successfully. If the human hasn't
-	 * pre-approved (no `/deploy`), confirm with a Yes/No dialog; otherwise deploy.
+	 * Called at agent_end when the deploy tool ran successfully. Always confirm with a
+	 * Yes/No dialog before deploying — symmetric with how `@opsyhq/coding-agent` confirms
+	 * any extension action: the tool finishes, the UI asks, the human decides.
 	 */
 	private async finalizeDeploy(): Promise<void> {
 		this.deployToolCallId = undefined;
-		if (!this.deployPreApproved) {
-			const confirmed = await this.showExtensionConfirm(
-				`Deploy "${this.sessionHost.config.name}"?`,
-				"Its purpose and SOUL.md are written. Deploying starts a fresh session.",
+		const confirmed = await this.showExtensionConfirm(
+			`Deploy "${this.sessionHost.config.name}"?`,
+			"Its purpose and SOUL.md are written. Deploying starts a fresh session.",
+		);
+		if (!confirmed) {
+			this.chatContainer.addChild(
+				new Text(theme.fg("dim", "Deploy cancelled — keep forming, or /deploy when ready."), 1, 0),
 			);
-			if (!confirmed) {
-				this.chatContainer.addChild(
-					new Text(theme.fg("dim", "Deploy cancelled — keep forming, or /deploy when ready."), 1, 0),
-				);
-				this.ui.requestRender();
-				return;
-			}
+			this.ui.requestRender();
+			return;
 		}
 		await this.doDeploy();
 	}
 
 	/**
-	 * Flip the human-held latch, then swap to a fresh session in place via the session
-	 * host (like coding-agent's `/new` → `runtimeHost.newSession()`): unsubscribe from
-	 * the old harness, have the host build a new one whose frozen prompt no longer
-	 * carries the birth instruction, and re-subscribe. The TUI is never torn down.
+	 * Swap the live harness for a fresh session in place (the shared core of `/new` and
+	 * deploy). steward's `sessionHost.newSession()` only swaps the harness, so the dance
+	 * around it lives here: unsubscribe from the old harness, have the host build a new one
+	 * (whose frozen prompt reflects the current config), re-subscribe, and reset the
+	 * transient per-session UI state. The TUI is never torn down.
+	 *
+	 * Transcript-neutral — callers decide whether to clear the chat log (deploy keeps it,
+	 * `/new` clears it). Returns `false` (after surfacing the error and keeping the old
+	 * harness live) if the swap failed.
 	 */
-	private async doDeploy(): Promise<void> {
-		const name = this.sessionHost.config.name;
-		deployAgent(name);
+	private async swapToNewSession(): Promise<boolean> {
 		this.unsubscribe?.();
 		try {
 			// On success the host swaps in the new harness; on failure it keeps the old.
@@ -381,7 +508,7 @@ export class InteractiveMode {
 			this.subscribeToHost();
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
 			this.ui.requestRender();
-			return;
+			return false;
 		}
 		this.subscribeToHost();
 
@@ -391,12 +518,71 @@ export class InteractiveMode {
 		this.bashAbortController?.abort();
 		this.bashAbortController = undefined;
 		this.bashComponent = undefined;
-		this.deployPreApproved = false;
 		this.deployToolCallId = undefined;
 		this.deployToolErrored = false;
 		this.setBusy(false);
+		return true;
+	}
+
+	/**
+	 * Flip the human-held latch, then swap to a fresh session in place (see
+	 * swapToNewSession). The new harness's frozen prompt no longer carries the birth
+	 * instruction. The deploy transcript is kept on screen — only `/new` clears the chat.
+	 */
+	private async doDeploy(): Promise<void> {
+		const name = this.sessionHost.config.name;
+		deployAgent(name);
+		if (!(await this.swapToNewSession())) return;
 		this.chatContainer.addChild(new Text(theme.fg("dim", "✓ Deployed — fresh session started."), 1, 0));
 		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
+	}
+
+	/**
+	 * `/new` — start a fresh session. Substrate-forced divergences from pi:
+	 *  - pi's `runtimeHost.newSession()` owns the harness + subscription swap; steward's
+	 *    only swaps the harness, so this reuses `swapToNewSession()` (the same dance
+	 *    deploy uses) rather than pi's one-liner.
+	 *  - pi's `result.cancelled` (newSession can prompt-to-save) has no steward analog —
+	 *    steward's `newSession()` never cancels.
+	 *  - pi's `renderCurrentSessionState()` rebuilds the view from the now-empty session;
+	 *    steward has no such method, so it clears the chat log and re-renders the header.
+	 *  - pi's `handleFatalRuntimeError` is `swapToNewSession`'s `appendErrorLine` path.
+	 */
+	private async handleNewCommand(): Promise<void> {
+		if (!(await this.swapToNewSession())) return;
+		this.chatContainer.clear();
+		this.appendHeader();
+		this.chatContainer.addChild(new Text(theme.fg("dim", "✓ New session started."), 1, 0));
+		this.chatContainer.addChild(new Spacer(1));
+		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
+	}
+
+	/**
+	 * `/compact [instructions]` — compact the session history. Substrate-forced
+	 * divergences from pi:
+	 *  - pi reads `sessionManager.getEntries()` directly; steward's harness keeps its
+	 *    session private, so the host exposes the live entries (`sessionHost.getEntries()`).
+	 *  - pi's `showWarning` has no steward analog — its warning surface is `appendErrorLine`.
+	 *  - pi calls `this.session.compact()` and swallows the error (compaction failures
+	 *    surface as session events); steward calls `harness.compact()` directly and that
+	 *    THROWS, so failures are surfaced here instead.
+	 */
+	private async handleCompactCommand(customInstructions?: string): Promise<void> {
+		const messageCount = this.sessionHost.getEntries().filter((e) => e.type === "message").length;
+		if (messageCount < 2) {
+			this.appendErrorLine("Nothing to compact (no messages yet).");
+			this.ui.requestRender();
+			return;
+		}
+		this.statusContainer.clear();
+		try {
+			await this.harness.compact(customInstructions);
+		} catch (error) {
+			if (error instanceof AgentHarnessError && error.code === "busy") return;
+			this.appendErrorLine(error instanceof Error ? error.message : String(error));
+		}
 		this.ui.requestRender();
 	}
 
@@ -445,8 +631,7 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Run a user-typed shell command (`!cmd` / `!!cmd`). Mirrors pi's
-	 * `handleBashCommand` (interactive-mode.ts ~5613).
+	 * Run a user-typed shell command (`!cmd` / `!!cmd`).
 	 *
 	 * Deviation from `@opsyhq/coding-agent`: pi routes through `session.executeBash`,
 	 * which adds extension `user_bash` interception, `recordBashResult` (the command +
@@ -577,9 +762,8 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Get a registered tool definition by name (for custom rendering). Mirrors
-	 * `@opsyhq/coding-agent`'s `getRegisteredToolDefinition`, which returns the
-	 * session's per-extension tool definition.
+	 * Get a registered tool definition by name (for custom rendering). In pi this returns
+	 * the session's per-extension tool definition.
 	 *
 	 * Deviation from `@opsyhq/coding-agent`: steward has no extension tool
 	 * registry — every tool is built-in, and `ToolExecutionComponent`
@@ -647,8 +831,8 @@ export class InteractiveMode {
 				this.chatContainer.removeChild(this.streamingComponent);
 				this.streamingComponent = undefined;
 			}
-			// Mirror pi's message_end: settle any still-pending tool components with
-			// the error so they stop showing as in-flight, then drop them.
+			// Settle any still-pending tool components with the error so they stop
+			// showing as in-flight, then drop them.
 			const errorMessage =
 				message.errorMessage || (message.stopReason === "aborted" ? "Operation aborted" : "Error");
 			for (const [, component] of this.pendingTools.entries()) {
@@ -665,7 +849,7 @@ export class InteractiveMode {
 		}
 		if (!this.streamingComponent) this.beginAssistantMessage();
 		this.streamingComponent?.updateContent(message);
-		// Args are now complete - trigger diff computation for edit tools (pi parity).
+		// Args are now complete - trigger diff computation for edit tools.
 		for (const [, component] of this.pendingTools.entries()) {
 			component.setArgsComplete();
 		}
@@ -693,8 +877,7 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Recolor the editor border for bash mode. Mirrors pi's `updateEditorBorderColor`
-	 * (interactive-mode.ts:3549).
+	 * Recolor the editor border for bash mode.
 	 *
 	 * Deviation from `@opsyhq/coding-agent`: pi's non-bash branch uses
 	 * `theme.getThinkingBorderColor(this.session.thinkingLevel)`. Steward freezes the
@@ -739,9 +922,8 @@ export class InteractiveMode {
 	}
 
 	private async handleCtrlC(): Promise<void> {
-		// A running user-bash command takes Ctrl+C first. Mirrors pi's `abortBash()`
-		// (`this._bashAbortController?.abort()`), which Esc/Ctrl+C trigger while a `!`
-		// command is in flight.
+		// A running user-bash command takes Ctrl+C first (aborts the in-flight `!`
+		// command).
 		if (this.bashAbortController) {
 			this.bashAbortController.abort();
 			return;

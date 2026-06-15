@@ -1,10 +1,10 @@
 /**
  * App identity and agent-home paths.
  *
- * Mirrors `@opsyhq/coding-agent`'s config.ts: the app name and config dir are
- * derived from package.json's `piConfig` block, and every on-disk location is a
- * `getXxxDir`/`getXxxPath` getter. Steward's getters are parameterized by agent
- * name because sessions/memory are keyed by agent, not by cwd.
+ * The app name and config dir are derived from package.json's `piConfig` block,
+ * and every on-disk location is a `getXxxDir`/`getXxxPath` getter. Steward's
+ * getters are parameterized by agent name because sessions/memory are keyed by
+ * agent, not by cwd.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -54,8 +54,8 @@ export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".steward";
 export const VERSION: string = pkg.version || "0.0.0";
 
 /**
- * Detect if we're running as a Bun compiled binary (copied from pi `config.ts:19`).
- * Additive export consumed by the extension loader to choose jiti virtualModules vs
+ * Detect if we're running as a Bun compiled binary.
+ * Consumed by the extension loader to choose jiti virtualModules vs
  * aliases. Bun binaries have import.meta.url containing "$bunfs", "~BUN", or "%7EBUN".
  */
 export const isBunBinary =
@@ -65,8 +65,8 @@ export const isBunBinary =
 export const ENV_HOME = `${APP_NAME.toUpperCase()}_HOME`;
 
 // Override for the shared pi credential dir, e.g. STEWARD_CODING_AGENT_DIR.
-// Mirrors `@opsyhq/coding-agent`'s ENV_AGENT_DIR so steward resolves the exact
-// same `~/.steward/agent/` the pi CLI already wrote auth.json/settings.json into.
+// Resolves the exact same `~/.steward/agent/` the pi CLI already wrote
+// auth.json/settings.json into.
 export const ENV_SHARED_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
 
 export function expandTildePath(path: string): string {
@@ -86,7 +86,7 @@ export function getPackageDir(): string {
 
 /**
  * Built-in themes dir shipped with the package. In dev the theme sources live
- * under src/; once built they live under dist/. Mirrors pi's getThemesDir().
+ * under src/; once built they live under dist/.
  */
 export function getThemesDir(): string {
 	const packageDir = getPackageDir();

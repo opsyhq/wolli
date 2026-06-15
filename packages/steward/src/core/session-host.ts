@@ -1,9 +1,8 @@
 /**
  * Session host — owns building and swapping an agent's session/harness.
  *
- * Steward's minimal analogue of `@opsyhq/coding-agent`'s `AgentSessionRuntime`
- * (the "runtimeHost"). It is the single home for the session lifecycle: it
- * resolves the env, freezes the system prompt, wires the tools, and on
+ * It is the single home for the session lifecycle: it resolves the env,
+ * freezes the system prompt, wires the tools, and on
  * `newSession()` tears the current env down and builds a fresh harness. The
  * interactive mode holds a `SessionHost` and calls `newSession()` to swap in
  * place — required because the system prompt is frozen for a session's lifetime,
@@ -150,9 +149,9 @@ export class SessionHost {
 	private _skills: Skill[] = [];
 	/** Prompt templates discovered this session — surfaced as prompt-source commands. */
 	private _promptTemplates: PromptTemplate[] = [];
-	/** The frozen system prompt (mirrors `ctx.getSystemPrompt()`). */
+	/** The frozen system prompt, backing `ctx.getSystemPrompt()`. */
 	private _systemPrompt = "";
-	/** The options the frozen prompt was built from (mirrors `ctx.getSystemPromptOptions()`). */
+	/** The options the frozen prompt was built from, backing `ctx.getSystemPromptOptions()`. */
 	private _systemPromptOptions?: BuildSystemPromptOptions;
 	/** Live streaming flag, kept in sync by the subscribe() translator. */
 	private _isStreaming = false;
@@ -194,12 +193,59 @@ export class SessionHost {
 
 	/**
 	 * The dir tools operate in — the agent's home dir, where SOUL/MEMORY/USER.md
-	 * and workspace/ live. Mirrors `@opsyhq/coding-agent`'s `SessionManager.getCwd()`,
-	 * which the interactive mode passes into each `ToolExecutionComponent` so its
-	 * built-in renderers can reconstruct from cwd.
+	 * and workspace/ live. The interactive mode passes this into each
+	 * `ToolExecutionComponent` so its built-in renderers can reconstruct from cwd.
 	 */
 	getCwd(): string {
 		return getAgentDir(this.options.name);
+	}
+
+	/**
+	 * Live session entries (read-only) — the interactive `/compact` guard counts
+	 * messages from these. Exposed on the host because `AgentHarness` keeps its `session`
+	 * private, so the interactive mode can't read entries off the harness directly.
+	 */
+	getEntries(): SessionTreeEntry[] {
+		if (!this._sessionManager) throw new Error("SessionHost not started.");
+		return this._sessionManager.getEntries();
+	}
+
+	/**
+	 * Live slash-command metadata — extension + prompt + skill commands, read-only. Mirrors
+	 * the `getCommands` action wired into `runner.bindCore`, but that copy is a closure
+	 * inside `build()`, unreachable from the interactive mode — which needs the same list to
+	 * feed editor autocomplete (`createBaseAutocompleteProvider`). Exposed here for the same
+	 * reason as `getEntries`: the interactive mode can't read these off the private harness
+	 * session. Built-in interactive commands (`BUILTIN_SLASH_COMMANDS`) are layered in by the
+	 * caller, matching pi's `createBaseAutocompleteProvider`.
+	 */
+	getCommands(): SlashCommandInfo[] {
+		const commands: SlashCommandInfo[] = [];
+		for (const command of this.extensionRunner.getRegisteredCommands()) {
+			commands.push({
+				name: command.invocationName,
+				description: command.description,
+				source: "extension",
+				sourceInfo: command.sourceInfo,
+			});
+		}
+		for (const template of this._promptTemplates) {
+			commands.push({
+				name: template.name,
+				description: template.description,
+				source: "prompt",
+				sourceInfo: template.sourceInfo,
+			});
+		}
+		for (const skill of this._skills) {
+			commands.push({
+				name: skill.name,
+				description: skill.description,
+				source: "skill",
+				sourceInfo: skill.sourceInfo,
+			});
+		}
+		return commands;
 	}
 
 	/** Build the first session. */
@@ -279,7 +325,7 @@ export class SessionHost {
 		}
 
 		// Let extensions contribute additional skill/prompt/theme paths before the
-		// prompt is frozen. Fires after the runner exists (mirrors pi's post-load step).
+		// prompt is frozen. Fires after the runner exists.
 		const discovered = await runner.emitResourcesDiscover(agentDir, fresh ? "reload" : "startup");
 
 		// Read curated files ONCE and freeze them into the prompt. Mid-session edits
@@ -300,7 +346,7 @@ export class SessionHost {
 		this._skills = skills;
 		this._promptTemplates = promptTemplates;
 
-		// Skills are appended to the frozen prompt (mirrors pi). The structured options
+		// Skills are appended to the frozen prompt. The structured options
 		// are retained so extensions can read them via ctx.getSystemPromptOptions().
 		const systemPromptOptions: BuildSystemPromptOptions = { config, cwd: agentDir, soul, memory, user, skills };
 		const systemPrompt = buildSystemPrompt(systemPromptOptions);
@@ -309,9 +355,9 @@ export class SessionHost {
 
 		// Tools operate in the agent's home dir, where SOUL/MEMORY/USER.md and the
 		// workspace/ subdir live. memory is steward's curated-notes tool; the rest
-		// are pi's read/write/edit/ls/grep/find plus bash, wired exactly as pi wires
-		// them — bash uses pi's default local shell operations (it streams output
-		// itself via the renderer's onUpdate), so there are no overrides.
+		// are read/write/edit/ls/grep/find plus bash. bash uses the default local
+		// shell operations (it streams output itself via the renderer's onUpdate),
+		// so there are no overrides.
 		const baseTools: AgentTool[] = [
 			createMemoryTool(name),
 			// The deploy tool only exists while forming — the agent uses it to author

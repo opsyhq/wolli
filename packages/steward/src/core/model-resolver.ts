@@ -1,12 +1,8 @@
 /**
  * Model resolution.
  *
- * The pure matching helpers (`isAlias`, `findExactModelReferenceMatch`,
- * `tryMatchModel`, `parseModelPattern`, `buildFallbackModel`,
- * `defaultModelPerProvider`) are copied verbatim from `@opsyhq/coding-agent`'s
- * core/model-resolver.ts. The only adaptation is the source of the candidate
- * list: steward has no `ModelRegistry`, so `resolveCliModel` reads pi-ai's
- * built-in catalog via `getAllModels()`.
+ * steward has no `ModelRegistry`, so `resolveCliModel` reads pi-ai's
+ * built-in catalog via `getAllModels()` as the source of the candidate list.
  */
 
 import { type Api, getModels, getProviders, type KnownProvider, type Model } from "@earendil-works/pi-ai";

@@ -55,7 +55,7 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@opsyhq/tui": _bundledPiTui,
 	"@earendil-works/pi-ai": _bundledPiAi,
 	"@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
-	// Divergence: the host-package identity string is steward's own package name.
+	// The host-package identity string is steward's own package name.
 	"@opsyhq/steward": _bundledPiCodingAgent,
 };
 
@@ -103,7 +103,7 @@ function getAliases(): Record<string, string> {
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai/oauth");
 
 	_aliases = {
-		// Divergence: the host-package identity string is steward's own package name.
+		// The host-package identity string is steward's own package name.
 		"@opsyhq/steward": piCodingAgentEntry,
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,

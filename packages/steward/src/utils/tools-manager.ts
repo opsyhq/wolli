@@ -1,9 +1,7 @@
 /**
  * External tool resolution for grep/find.
  *
- * Mirrors the `ensureTool(name)` contract of `@opsyhq/coding-agent`'s
- * utils/tools-manager.ts so grep.ts/find.ts can be copied verbatim. The
- * deviation: pi auto-downloads ripgrep/fd into a managed bin dir; steward only
+ * pi auto-downloads ripgrep/fd into a managed bin dir; steward only
  * resolves them from PATH (no network/binary management). When the tool isn't
  * installed this returns null and the caller surfaces a clear error — the agent
  * can fall back to the bash tool.
