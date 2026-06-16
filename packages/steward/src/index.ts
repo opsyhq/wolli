@@ -33,6 +33,32 @@ export {
 	type OAuthCredential,
 } from "./core/auth-storage.ts";
 export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
+export {
+	IntegrationAccountStorage,
+	type IntegrationAccountStorageData,
+	type IntegrationAccountRecord,
+} from "./core/integration-account-storage.ts";
+// Integration system
+export {
+	createIntegrationRuntime,
+	discoverAndLoadIntegrations,
+	type Integration,
+	type IntegrationAction,
+	type IntegrationActionContext,
+	type IntegrationConfig,
+	type IntegrationError,
+	type IntegrationErrorListener,
+	type IntegrationFactory,
+	type IntegrationHandle,
+	type IntegrationRunContext,
+	type IntegrationRuntime,
+	type IntegrationRuntimeState,
+	IntegrationRunner,
+	type IntegrationsAPI,
+	loadIntegrationFromFactory,
+	loadIntegrations,
+	type LoadIntegrationsResult,
+} from "./core/integrations/index.ts";
 // Extension system
 export type {
 	AgentEndEvent,

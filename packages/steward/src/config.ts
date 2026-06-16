@@ -139,6 +139,11 @@ export function getAgentConfigPath(name: string): string {
 	return join(getAgentDir(name), "agent.json");
 }
 
+/** Path to an agent's integrations.json (per-agent `(service, account)` credential registry). */
+export function getAgentIntegrationsPath(name: string): string {
+	return join(getAgentDir(name), "integrations.json");
+}
+
 /** Path to an agent's curated SOUL.md (who it is / what it's for). */
 export function getSoulPath(name: string): string {
 	return join(getAgentDir(name), "SOUL.md");

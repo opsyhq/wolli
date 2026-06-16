@@ -40,7 +40,7 @@ import {
 	type ThinkingLevel,
 } from "@opsyhq/agent";
 import type { NodeExecutionEnv } from "@opsyhq/agent/node";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir, getAgentIntegrationsPath } from "../config.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { type AgentConfig, isDeployed, loadAgentConfig } from "./agent-config.ts";
 import type { AuthStorage } from "./auth-storage.ts";
@@ -59,6 +59,9 @@ import type {
 	ToolInfo,
 	ToolResultEvent,
 } from "./extensions/types.ts";
+import type { IntegrationAccountStorage } from "./integration-account-storage.ts";
+import { discoverAndLoadIntegrations } from "./integrations/loader.ts";
+import { IntegrationRunner } from "./integrations/runner.ts";
 import { loadMemory } from "./memory.ts";
 import { createCustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -90,6 +93,11 @@ export interface SessionHostOptions {
 	model: Model<Api>;
 	thinkingLevel: ThinkingLevel;
 	authStorage: AuthStorage;
+	/**
+	 * Per-agent integration account store. Constructed once (process-scoped) and
+	 * must survive `/reload` so per-account state isn't lost.
+	 */
+	integrationAccounts: IntegrationAccountStorage;
 }
 
 /** Options for `SessionHost.prompt()`. */
@@ -187,6 +195,8 @@ export class SessionHost {
 
 	// Extension subsystem state. Each is (re)built per session.
 	private _extensionRunner?: ExtensionRunner;
+	/** Integration producer runner. (Re)built per session; stopped before the new one starts. */
+	private _integrationRunner?: IntegrationRunner;
 	private _sessionManager?: SessionManager;
 	private _modelRegistry?: ModelRegistry;
 	/** Teardown fns for the current harness's event wiring (subscribe + on + onMessageEnd). */
@@ -203,6 +213,8 @@ export class SessionHost {
 	private _extensionCount = 0;
 	/** Extension load failures from the last build, surfaced in the resource summary. */
 	private _loadErrors: { path: string; error: string }[] = [];
+	/** Integration load + account-store parse failures from the last build, surfaced in the resource summary. */
+	private _integrationLoadErrors: { path: string; error: string }[] = [];
 	/** Skill name collisions from the last build, surfaced in the resource summary. */
 	private _skillDiagnostics: ResourceDiagnostic[] = [];
 	/** The frozen system prompt, backing `ctx.getSystemPrompt()`. */
@@ -364,6 +376,7 @@ export class SessionHost {
 		const runner = this.extensionRunner;
 		const diagnostics: ResourceDiagnostic[] = [
 			...this._loadErrors.map(({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path })),
+			...this._integrationLoadErrors.map(({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path })),
 			...this._skillDiagnostics,
 			...runner.getCommandDiagnostics(),
 			...runner.getShortcutDiagnostics(),
@@ -415,6 +428,7 @@ export class SessionHost {
 	async reload(): Promise<void> {
 		const harness = this.harness;
 		const previousRunner = this.extensionRunner;
+		const previousIntegrationRunner = this._integrationRunner;
 		const previousFlagValues = previousRunner.getFlagValues();
 
 		// Shut the outgoing runtime down while its ctx is still valid, so extensions can
@@ -423,15 +437,16 @@ export class SessionHost {
 
 		const config = loadAgentConfig(this.options.name);
 		const agentDir = getAgentDir(this.options.name);
-		const { runner, skills, promptTemplates, baseTools, extensionTools } = await this.buildResources({
-			config,
-			agentDir,
-			name: this.options.name,
-			sessionManager: this._sessionManager!,
-			modelRegistry: this._modelRegistry!,
-			discoverReason: "reload",
-			seedFlagValues: previousFlagValues,
-		});
+		const { runner, integrationRunner, skills, promptTemplates, baseTools, extensionTools } =
+			await this.buildResources({
+				config,
+				agentDir,
+				name: this.options.name,
+				sessionManager: this._sessionManager!,
+				modelRegistry: this._modelRegistry!,
+				discoverReason: "reload",
+				seedFlagValues: previousFlagValues,
+			});
 		this._config = config;
 
 		// Re-point the live harness at the rebuilt resources + tools. Active selection =
@@ -454,6 +469,10 @@ export class SessionHost {
 		// wiring already reads `this.extensionRunner` live, so it re-points at the new
 		// runner without re-subscribing.
 		this.bindExtensionCore(runner, harness);
+		// Stop the previous producer before starting the new one (see build() for why).
+		await previousIntegrationRunner?.stop();
+		integrationRunner.bindCore();
+		await integrationRunner.start();
 		this._applyInteractiveContext(runner);
 
 		if (runner.hasHandlers("session_start")) {
@@ -600,6 +619,7 @@ export class SessionHost {
 		const { name, model, thinkingLevel, authStorage } = this.options;
 		const previousEnv = this.env;
 		const previousRunner = this._extensionRunner;
+		const previousIntegrationRunner = this._integrationRunner;
 		const previousUnsubscribe = this._unsubscribe;
 
 		// Re-read: deployedAt may have changed since the previous harness.
@@ -619,14 +639,15 @@ export class SessionHost {
 
 		// Discover extensions, load skills/prompts, freeze the prompt, assemble tools.
 		// `reload` (fresh) discovers as a new-session reload; resume/first-start as startup.
-		const { runner, skills, promptTemplates, systemPrompt, baseTools, extensionTools } = await this.buildResources({
-			config,
-			agentDir,
-			name,
-			sessionManager,
-			modelRegistry,
-			discoverReason: fresh ? "reload" : "startup",
-		});
+		const { runner, integrationRunner, skills, promptTemplates, systemPrompt, baseTools, extensionTools } =
+			await this.buildResources({
+				config,
+				agentDir,
+				name,
+				sessionManager,
+				modelRegistry,
+				discoverReason: fresh ? "reload" : "startup",
+			});
 
 		const { harness } = await createAgentSession({
 			env,
@@ -648,6 +669,12 @@ export class SessionHost {
 		// then translate the harness's events into extension events. Order: bind before wire
 		// so handlers that fire during session_start see a fully-bound context.
 		this.bindExtensionCore(runner, harness);
+		// Integration producers hold exclusive live connections (e.g. Telegram 409), so the
+		// previous runner is stopped BEFORE the new one starts — deliberately the reverse of
+		// the extension runner's new-before-old swap below. The credential store is untouched.
+		await previousIntegrationRunner?.stop();
+		integrationRunner.bindCore();
+		await integrationRunner.start();
 		this._applyInteractiveContext(runner);
 		this._unsubscribe = this.wireExtensionEvents(harness);
 
@@ -697,6 +724,7 @@ export class SessionHost {
 		seedFlagValues?: Map<string, boolean | string>;
 	}): Promise<{
 		runner: ExtensionRunner;
+		integrationRunner: IntegrationRunner;
 		skills: Skill[];
 		promptTemplates: PromptTemplate[];
 		systemPrompt: string;
@@ -709,9 +737,36 @@ export class SessionHost {
 		// Discover + load extensions, then build the runner. Steward scopes extensions
 		// per-agent: they are discovered from the agent's own `<agentDir>/extensions/` dir.
 		// There is no project-local extension concept — each agent owns its extensions, and
-		// the shared dir is the credential store, not an extension home. cwd is the agent dir
+		// the shared dir is the account store, not an extension home. cwd is the agent dir
 		// (used only as the runtime cwd and to resolve explicitly configured paths).
-		const { extensions, errors, runtime } = await discoverAndLoadExtensions([], agentDir, agentDir);
+		// Discover + load integrations and build their runner BEFORE extensions, so the
+		// extension loader can wire `getIntegration` at extension-load time. This ordering
+		// is load-bearing. The account store is process-scoped (survives reload).
+		const {
+			integrations,
+			errors: integrationErrors,
+			runtime: integrationRuntime,
+		} = await discoverAndLoadIntegrations([], agentDir, agentDir);
+		const integrationAccounts = this.options.integrationAccounts;
+		const integrationRunner = new IntegrationRunner(integrations, integrationRuntime, agentDir, integrationAccounts);
+		this._integrationRunner = integrationRunner;
+		// Surface integration load failures + account-store parse failures (e.g. a malformed
+		// integrations.json that would otherwise silently yield zero accounts) through the
+		// resource-summary diagnostics path, alongside the extension load errors below.
+		this._integrationLoadErrors = [
+			...integrationErrors,
+			...integrationAccounts
+				.drainErrors()
+				.map((error) => ({ path: getAgentIntegrationsPath(name), error: error.message })),
+		];
+
+		const { extensions, errors, runtime } = await discoverAndLoadExtensions(
+			[],
+			agentDir,
+			agentDir,
+			undefined,
+			integrationRunner,
+		);
 		const runner = new ExtensionRunner(extensions, runtime, agentDir, sessionManager, modelRegistry);
 		this._extensionRunner = runner;
 		this._extensionCount = extensions.length;
@@ -794,7 +849,7 @@ export class SessionHost {
 		this._systemPrompt = systemPrompt;
 		this._systemPromptOptions = systemPromptOptions;
 
-		return { runner, skills, promptTemplates, systemPrompt, baseTools, extensionTools, errors };
+		return { runner, integrationRunner, skills, promptTemplates, systemPrompt, baseTools, extensionTools, errors };
 	}
 
 	/**
@@ -1231,6 +1286,8 @@ export class SessionHost {
 
 	/** Release the live session's env. Best-effort. */
 	async cleanup(): Promise<void> {
+		// Stop live integration producers at process exit — they hold real connections.
+		await this._integrationRunner?.stop();
 		await this.env?.cleanup();
 		this.env = undefined;
 	}
