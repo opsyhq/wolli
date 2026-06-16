@@ -10,8 +10,8 @@ import { randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sanitizeBinaryOutput } from "@opsyhq/agent";
 import { stripAnsi } from "../utils/ansi.ts";
-import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import type { BashOperations } from "./tools/bash.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 
