@@ -707,10 +707,10 @@ export class SessionHost {
 		const { config, agentDir, name, sessionManager, modelRegistry, discoverReason, seedFlagValues } = params;
 
 		// Discover + load extensions, then build the runner. Steward scopes extensions
-		// per-agent — both project-local (`<agentDir>/.steward/extensions/`) and "global"
-		// (`<agentDir>/extensions/`) resolve under the agent's own home, because steward's
-		// shared dir is the credential store, not an extension home. So cwd and agentDir
-		// are both the per-agent dir here.
+		// per-agent: they are discovered from the agent's own `<agentDir>/extensions/` dir.
+		// There is no project-local extension concept — each agent owns its extensions, and
+		// the shared dir is the credential store, not an extension home. cwd is the agent dir
+		// (used only as the runtime cwd and to resolve explicitly configured paths).
 		const { extensions, errors, runtime } = await discoverAndLoadExtensions([], agentDir, agentDir);
 		const runner = new ExtensionRunner(extensions, runtime, agentDir, sessionManager, modelRegistry);
 		this._extensionRunner = runner;

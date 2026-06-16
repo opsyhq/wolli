@@ -2,7 +2,7 @@
 
 Extensions are TypeScript modules that extend Steward's behavior. They can subscribe to lifecycle events, register custom tools callable by the LLM, add commands, and more.
 
-> **Placement for /reload:** Put extensions in an agent's `~/.steward/agents/<name>/extensions/` or project-local `.steward/extensions/` for auto-discovery. Use `--extension ./path.ts` only for quick tests. Extensions in auto-discovered locations can be hot-reloaded with `/reload`.
+> **Placement for /reload:** Put extensions in an agent's `~/.steward/agents/<name>/extensions/` for auto-discovery. Use `--extension ./path.ts` only for quick tests. Extensions in auto-discovered locations can be hot-reloaded with `/reload`.
 
 **Key capabilities:**
 - **Custom tools** - Register tools the LLM can call via `steward.registerTool()`
@@ -107,14 +107,12 @@ steward <name> -e ./my-extension.ts
 
 > **Security:** Extensions run with your full system permissions and can execute arbitrary code. Only install from sources you trust.
 
-Extensions are auto-discovered per agent. Both project-local and "global" locations resolve under the agent's own home, because each agent owns its extensions.
+Extensions are auto-discovered from the agent's own home, because each agent owns its extensions. There is no project-local extension location.
 
 | Location | Scope |
 |----------|-------|
 | `~/.steward/agents/<name>/extensions/*.ts` | The agent (all sessions) |
 | `~/.steward/agents/<name>/extensions/*/index.ts` | The agent (subdirectory) |
-| `.steward/extensions/*.ts` | Project-local (under the agent's home) |
-| `.steward/extensions/*/index.ts` | Project-local (subdirectory) |
 
 Additional paths via `settings.json`:
 

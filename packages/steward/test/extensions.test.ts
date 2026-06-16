@@ -135,7 +135,7 @@ beforeEach(() => {
 	sharedDir = mkdtempSync(join(tmpdir(), "steward-ext-shared-"));
 	markerDir = mkdtempSync(join(tmpdir(), "steward-ext-marker-"));
 	process.env.STEWARD_HOME = home;
-	process.env.STEWARD_CODING_AGENT_DIR = sharedDir;
+	process.env.STEWARD_SHARED_DIR = sharedDir;
 	process.env.STEWARD_TEST_MARKER_DIR = markerDir;
 
 	createAgent({ name: AGENT });
@@ -154,7 +154,7 @@ beforeEach(() => {
 afterEach(async () => {
 	for (const registration of registrations.splice(0)) registration.unregister();
 	delete process.env.STEWARD_HOME;
-	delete process.env.STEWARD_CODING_AGENT_DIR;
+	delete process.env.STEWARD_SHARED_DIR;
 	delete process.env.STEWARD_TEST_MARKER_DIR;
 	rmSync(home, { recursive: true, force: true });
 	rmSync(sharedDir, { recursive: true, force: true });
