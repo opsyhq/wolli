@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAgentDir } from "../src/config.ts";
 import { createAgent } from "../src/core/agent-config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { IntegrationCredentialStore } from "../src/core/integration-credentials.ts";
 import { convertToLlm, createBashExecutionMessage } from "../src/core/messages.ts";
 import { openAgentSession } from "../src/core/session.ts";
 import { SessionHost } from "../src/core/session-host.ts";
@@ -126,6 +127,7 @@ function makeHost(): { host: SessionHost; registration: ReturnType<typeof regist
 		model: registration.getModel() as unknown as Model<Api>,
 		thinkingLevel: "off",
 		authStorage: AuthStorage.create(join(sharedDir, "auth.json")),
+		integrationCredentials: IntegrationCredentialStore.inMemory(),
 	});
 	return { host, registration };
 }

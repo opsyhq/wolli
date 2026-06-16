@@ -29,6 +29,8 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import type { IntegrationRunner } from "../integrations/runner.ts";
+import type { IntegrationHandle } from "../integrations/types.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import type {
 	Extension,
@@ -42,8 +44,8 @@ import type {
 	ToolDefinition,
 } from "./types.ts";
 
-/** Modules available to extensions via virtualModules (for compiled Bun binary) */
-const VIRTUAL_MODULES: Record<string, unknown> = {
+/** Modules available to extensions (and the integration loader) via virtualModules — for the compiled Bun binary. */
+export const VIRTUAL_MODULES: Record<string, unknown> = {
 	typebox: _bundledTypebox,
 	"typebox/compile": _bundledTypeboxCompile,
 	"typebox/value": _bundledTypeboxValue,
@@ -66,7 +68,7 @@ const require = createRequire(import.meta.url);
  */
 let _aliases: Record<string, string> | null = null;
 
-function getAliases(): Record<string, string> {
+export function getAliases(): Record<string, string> {
 	if (_aliases) return _aliases;
 
 	const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -186,7 +188,19 @@ function createExtensionAPI(
 	runtime: ExtensionRuntime,
 	cwd: string,
 	eventBus: EventBus,
+	integrationRunner?: IntegrationRunner,
 ): ExtensionAPI {
+	// When no integration runner is wired (extension loaded outside a SessionHost), hand
+	// back a deferred handle so `getIntegration(...)` itself doesn't throw at load time —
+	// only its `.on`/`.call` throw if actually used.
+	const deferredIntegrationHandle = (name: string): IntegrationHandle => ({
+		on() {
+			throw new Error(`integration runtime not initialized (getIntegration("${name}"))`);
+		},
+		call() {
+			return Promise.reject(new Error(`integration runtime not initialized (getIntegration("${name}"))`));
+		},
+	});
 	const api = {
 		// Registration methods - write to extension
 		on(event: string, handler: HandlerFn): void {
@@ -329,6 +343,14 @@ function createExtensionAPI(
 			runtime.unregisterProvider(name, extension.path);
 		},
 
+		getIntegration(name: string, account?: string): IntegrationHandle {
+			runtime.assertActive();
+			if (!integrationRunner) {
+				return deferredIntegrationHandle(name);
+			}
+			return integrationRunner.getIntegration(name, account);
+		},
+
 		events: eventBus,
 	} as ExtensionAPI;
 
@@ -377,6 +399,7 @@ async function loadExtension(
 	cwd: string,
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
+	integrationRunner?: IntegrationRunner,
 ): Promise<{ extension: Extension | null; error: string | null }> {
 	const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
@@ -387,7 +410,7 @@ async function loadExtension(
 		}
 
 		const extension = createExtension(extensionPath, resolvedPath);
-		const api = createExtensionAPI(extension, runtime, cwd, eventBus);
+		const api = createExtensionAPI(extension, runtime, cwd, eventBus, integrationRunner);
 		await factory(api);
 
 		return { extension, error: null };
@@ -406,10 +429,11 @@ export async function loadExtensionFromFactory(
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
 	extensionPath = "<inline>",
+	integrationRunner?: IntegrationRunner,
 ): Promise<Extension> {
 	const extension = createExtension(extensionPath, extensionPath);
 	const resolvedCwd = resolvePath(cwd);
-	const api = createExtensionAPI(extension, runtime, resolvedCwd, eventBus);
+	const api = createExtensionAPI(extension, runtime, resolvedCwd, eventBus, integrationRunner);
 	await factory(api);
 	return extension;
 }
@@ -422,6 +446,7 @@ export async function loadExtensions(
 	cwd: string,
 	eventBus?: EventBus,
 	runtime?: ExtensionRuntime,
+	integrationRunner?: IntegrationRunner,
 ): Promise<LoadExtensionsResult> {
 	const extensions: Extension[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
@@ -430,7 +455,13 @@ export async function loadExtensions(
 	const resolvedRuntime = runtime ?? createExtensionRuntime();
 
 	for (const extPath of paths) {
-		const { extension, error } = await loadExtension(extPath, resolvedCwd, resolvedEventBus, resolvedRuntime);
+		const { extension, error } = await loadExtension(
+			extPath,
+			resolvedCwd,
+			resolvedEventBus,
+			resolvedRuntime,
+			integrationRunner,
+		);
 
 		if (error) {
 			errors.push({ path: extPath, error });
@@ -566,6 +597,7 @@ export async function discoverAndLoadExtensions(
 	cwd: string,
 	agentDir: string = getAgentDir(),
 	eventBus?: EventBus,
+	integrationRunner?: IntegrationRunner,
 ): Promise<LoadExtensionsResult> {
 	const resolvedCwd = resolvePath(cwd);
 	const resolvedAgentDir = resolvePath(agentDir);
@@ -604,5 +636,5 @@ export async function discoverAndLoadExtensions(
 		addPaths([resolved]);
 	}
 
-	return loadExtensions(allPaths, resolvedCwd, eventBus);
+	return loadExtensions(allPaths, resolvedCwd, eventBus, undefined, integrationRunner);
 }

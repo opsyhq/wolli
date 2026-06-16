@@ -49,6 +49,7 @@ import type { BashResult } from "../bash-executor.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
+import type { IntegrationHandle } from "../integrations/types.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
@@ -1355,6 +1356,22 @@ export interface ExtensionAPI {
 	 * steward.unregisterProvider("my-proxy");
 	 */
 	unregisterProvider(name: string): void;
+
+	/**
+	 * Get a handle to a configured integration `(name, account)` — listen to its
+	 * events with `.on(event, handler)` and invoke its actions with `.call(action,
+	 * params)`. `account` defaults to `"default"`.
+	 *
+	 * Throws if the integration or account is not configured. The integration itself
+	 * is defined in the agent's `integrations/` folder; credentials live in the
+	 * per-agent `integrations.json`.
+	 *
+	 * @example
+	 * const telegram = steward.getIntegration("telegram", "default");
+	 * telegram.on("message", (msg) => steward.appendEntry("tg_message", msg));
+	 * await telegram.call("sendMessage", { chatId, text: "hi" });
+	 */
+	getIntegration(name: string, account?: string): IntegrationHandle;
 
 	/** Shared event bus for extension communication. */
 	events: EventBus;
