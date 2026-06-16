@@ -592,6 +592,25 @@ export class SessionHost {
 	}
 
 	/**
+	 * Clear the queued (steer + follow-up) messages without aborting the running turn and
+	 * return them, so the interactive mode can restore them to the editor (dequeue).
+	 */
+	async clearQueue(): Promise<{ steering: AgentMessage[]; followUp: AgentMessage[] }> {
+		const { steer, followUp } = await this.harness.clearQueue();
+		return { steering: steer, followUp };
+	}
+
+	/** Pending steer-queued messages (read-only snapshot). */
+	getSteeringMessages(): AgentMessage[] {
+		return this.harness.getSteeringMessages();
+	}
+
+	/** Pending follow-up-queued messages (read-only snapshot). */
+	getFollowUpMessages(): AgentMessage[] {
+		return this.harness.getFollowUpMessages();
+	}
+
+	/**
 	 * Run a leading-slash extension command if one matches. Returns true when a command
 	 * handled the input (so the caller sends nothing to the model).
 	 */

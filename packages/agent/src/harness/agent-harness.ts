@@ -702,6 +702,30 @@ export class AgentHarness<
 		await this.emitQueueUpdate();
 	}
 
+	/** Pending steer-queued messages (read-only snapshot). */
+	getSteeringMessages(): UserMessage[] {
+		return [...this.steerQueue];
+	}
+
+	/** Pending follow-up-queued messages (read-only snapshot). */
+	getFollowUpMessages(): UserMessage[] {
+		return [...this.followUpQueue];
+	}
+
+	/**
+	 * Clear the steer + follow-up queues without aborting the running turn, emit the
+	 * resulting (empty) queue update, and return the cleared messages. This is `abort()`'s
+	 * queue-clearing without the abort — used to pull queued messages back into the editor.
+	 */
+	async clearQueue(): Promise<{ steer: UserMessage[]; followUp: UserMessage[] }> {
+		const steer = [...this.steerQueue];
+		const followUp = [...this.followUpQueue];
+		this.steerQueue = [];
+		this.followUpQueue = [];
+		await this.emitQueueUpdate();
+		return { steer, followUp };
+	}
+
 	async appendMessage(message: AgentMessage): Promise<void> {
 		try {
 			if (this.phase === "idle") {

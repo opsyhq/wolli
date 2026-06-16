@@ -12,7 +12,7 @@
  * an `AgentHarnessError("hook")` and would abort the turn.
  */
 
-import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
 	type AgentHarness,
 	AgentHarnessError,
@@ -38,6 +38,7 @@ import {
 	Spacer,
 	setKeybindings,
 	Text,
+	TruncatedText,
 	TUI,
 } from "@opsyhq/tui";
 import { deployAgent, isDeployed } from "../../core/agent-config.ts";
@@ -73,7 +74,7 @@ import { CustomMessageComponent } from "./components/custom-message.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
-import { rawKeyHint } from "./components/keybinding-hints.ts";
+import { keyDisplayText, rawKeyHint } from "./components/keybinding-hints.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
@@ -142,6 +143,9 @@ export class InteractiveMode {
 	private readonly options: InteractiveModeOptions;
 	private readonly ui: TUI;
 	private readonly chatContainer: Container;
+	// Dim "Steering:/Follow-up:" lines for messages queued while a turn is streaming,
+	// rendered between the chat log and the status line.
+	private readonly pendingMessagesContainer: Container;
 	private readonly statusContainer: Container;
 	private readonly editorContainer: Container;
 	private readonly keybindings: KeybindingsManager;
@@ -231,6 +235,7 @@ export class InteractiveMode {
 		setKeybindings(this.keybindings);
 		this.ui = new TUI(new ProcessTerminal());
 		this.chatContainer = new Container();
+		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.editorContainer = new Container();
 		this.headerContainer = new Container();
@@ -288,6 +293,7 @@ export class InteractiveMode {
 
 		this.ui.addChild(this.headerContainer);
 		this.ui.addChild(this.chatContainer);
+		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.widgetContainerAbove);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.editorContainer);
@@ -507,7 +513,7 @@ export class InteractiveMode {
 
 	private async handleSubmit(text: string): Promise<void> {
 		const trimmed = text.trim();
-		if (trimmed.length === 0 || this.busy) return;
+		if (trimmed.length === 0) return;
 
 		// Built-in slash commands are intercepted before reaching the model via a
 		// hardcoded dispatch in onSubmit. `/deploy` is the human's go-ahead to deploy
@@ -567,9 +573,22 @@ export class InteractiveMode {
 			}
 		}
 
+		// While a turn is streaming, a typed message steers (queues) it instead of starting a
+		// new turn: it shows in the pending area, then promotes to a bubble when drained.
+		if (this.busy) {
+			this.editor.addToHistory?.(trimmed);
+			this.editor.setText("");
+			await this.sessionHost.prompt(trimmed, { streamingBehavior: "steer" });
+			this.updatePendingMessagesDisplay();
+			this.ui.requestRender();
+			return;
+		}
+
+		// Idle: start a new turn. The bubble is drawn from the resulting `message_start`
+		// event (no optimistic echo), so a message injected outside the editor renders the
+		// same way.
 		this.editor.setText("");
 		this.statusContainer.clear();
-		this.appendUserMessage(trimmed);
 		this.ui.requestRender();
 		try {
 			await this.sessionHost.prompt(trimmed);
@@ -592,9 +611,10 @@ export class InteractiveMode {
 			this.ui.requestRender();
 			return;
 		}
-		// Nudge the agent to author its purpose + SOUL.md via the deploy tool. When the
-		// tool finishes (agent_end), finalizeDeploy asks the human to confirm.
-		this.appendUserMessage("/deploy");
+		// Nudge the agent to author its purpose + SOUL.md via the deploy tool. When the tool
+		// finishes (agent_end), finalizeDeploy asks the human to confirm. The nudge is a
+		// command, not a user turn, so no `/deploy` bubble is rendered (its DEPLOY_INSTRUCTION
+		// is suppressed in handleEvent's user message_start branch).
 		this.statusContainer.clear();
 		this.ui.requestRender();
 		try {
@@ -1382,15 +1402,29 @@ export class InteractiveMode {
 				this.setBusy(true);
 				break;
 			case "message_start":
-				// Failure messages are surfaced at message_end; don't open a bubble for them.
-				if (isAssistantMessage(event.message) && !isFailureMessage(event.message)) this.beginAssistantMessage();
+				if (event.message.role === "user") {
+					// User-role turns (typed, or injected from an integration like Telegram)
+					// render their bubble straight from the event. The `/deploy` nudge is a
+					// command, not a user turn, so its injected instruction shows no bubble.
+					if (this.getUserMessageText(event.message) === DEPLOY_INSTRUCTION) break;
+					this.addMessageToChat(event.message);
+					this.updatePendingMessagesDisplay();
+				} else if (isAssistantMessage(event.message) && !isFailureMessage(event.message)) {
+					// Failure messages are surfaced at message_end; don't open a bubble for them.
+					this.beginAssistantMessage();
+				}
 				break;
 			case "message_update":
 				if (isAssistantMessage(event.message) && !isFailureMessage(event.message))
 					this.updateAssistantMessage(event.message);
 				break;
 			case "message_end":
+				// The user bubble was drawn at message_start; nothing to finalize.
+				if (event.message.role === "user") break;
 				if (isAssistantMessage(event.message)) this.finalizeAssistantMessage(event.message);
+				break;
+			case "queue_update":
+				this.updatePendingMessagesDisplay();
 				break;
 			case "tool_execution_start": {
 				// Track the deploy tool so agent_end knows it ran (the tool writes the
@@ -1471,8 +1505,8 @@ export class InteractiveMode {
 	// the aborted-tool stamp.
 	// =========================================================================
 
-	/** Extract the plain-text portion of a user message. */
-	private getUserMessageText(message: Message): string {
+	/** Extract the plain-text portion of a user message (""  for any other role). */
+	private getUserMessageText(message: AgentMessage): string {
 		if (message.role !== "user") return "";
 		const textBlocks =
 			typeof message.content === "string"
@@ -1660,13 +1694,93 @@ export class InteractiveMode {
 		this.renderInitialMessages();
 	}
 
-	private appendUserMessage(text: string): void {
-		// The prompt renders as a `userMessageBg` bubble with a Markdown body in
-		// `userMessageText`. It keeps steward's trailing Spacer(1) convention so the
-		// assistant/error/aborted paths' spacing stays consistent.
-		this.chatContainer.addChild(new UserMessageComponent(text, this.markdownTheme));
-		this.chatContainer.addChild(new Spacer(1));
-		this.streamingComponent = undefined;
+	/**
+	 * Get all queued messages (read-only). Steward has a single queue source (the harness),
+	 * so this flattens its steer/follow-up snapshots to text via `getUserMessageText`.
+	 */
+	private getAllQueuedMessages(): { steering: string[]; followUp: string[] } {
+		return {
+			steering: this.sessionHost
+				.getSteeringMessages()
+				.map((m) => this.getUserMessageText(m))
+				.filter((t) => t.length > 0),
+			followUp: this.sessionHost
+				.getFollowUpMessages()
+				.map((m) => this.getUserMessageText(m))
+				.filter((t) => t.length > 0),
+		};
+	}
+
+	/** Clear all queued messages and return their contents (the harness drain is async). */
+	private async clearAllQueues(): Promise<{ steering: string[]; followUp: string[] }> {
+		const { steering, followUp } = await this.sessionHost.clearQueue();
+		return {
+			steering: steering.map((m) => this.getUserMessageText(m)).filter((t) => t.length > 0),
+			followUp: followUp.map((m) => this.getUserMessageText(m)).filter((t) => t.length > 0),
+		};
+	}
+
+	private updatePendingMessagesDisplay(): void {
+		this.pendingMessagesContainer.clear();
+		const { steering: steeringMessages, followUp: followUpMessages } = this.getAllQueuedMessages();
+		if (steeringMessages.length > 0 || followUpMessages.length > 0) {
+			this.pendingMessagesContainer.addChild(new Spacer(1));
+			for (const message of steeringMessages) {
+				const text = theme.fg("dim", `Steering: ${message}`);
+				this.pendingMessagesContainer.addChild(new TruncatedText(text, 1, 0));
+			}
+			for (const message of followUpMessages) {
+				const text = theme.fg("dim", `Follow-up: ${message}`);
+				this.pendingMessagesContainer.addChild(new TruncatedText(text, 1, 0));
+			}
+			const dequeueHint = keyDisplayText("app.message.dequeue");
+			const hintText = theme.fg("dim", `↳ ${dequeueHint} to edit all queued messages`);
+			this.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
+		}
+	}
+
+	private async handleFollowUp(): Promise<void> {
+		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
+		if (!text) return;
+
+		// Alt+Enter queues a follow-up message (waits until agent finishes)
+		if (this.busy) {
+			this.editor.addToHistory?.(text);
+			this.editor.setText("");
+			await this.sessionHost.prompt(text, { streamingBehavior: "followUp" });
+			this.updatePendingMessagesDisplay();
+			this.ui.requestRender();
+		}
+		// If not streaming, Alt+Enter acts like regular Enter (trigger onSubmit)
+		else if (this.editor.onSubmit) {
+			this.editor.setText("");
+			this.editor.onSubmit(text);
+		}
+	}
+
+	private async handleDequeue(): Promise<void> {
+		const restored = await this.restoreQueuedMessagesToEditor();
+		if (restored === 0) {
+			this.showStatus("No queued messages to restore");
+		} else {
+			this.showStatus(`Restored ${restored} queued message${restored > 1 ? "s" : ""} to editor`);
+		}
+	}
+
+	private async restoreQueuedMessagesToEditor(): Promise<number> {
+		const { steering, followUp } = await this.clearAllQueues();
+		const allQueued = [...steering, ...followUp];
+		if (allQueued.length === 0) {
+			this.updatePendingMessagesDisplay();
+			return 0;
+		}
+		const queuedText = allQueued.join("\n\n");
+		const currentText = this.editor.getText();
+		const combinedText = [queuedText, currentText].filter((t) => t.trim()).join("\n\n");
+		this.editor.setText(combinedText);
+		this.updatePendingMessagesDisplay();
+		this.ui.requestRender();
+		return allQueued.length;
 	}
 
 	private beginAssistantMessage(): void {
@@ -1863,6 +1977,19 @@ export class InteractiveMode {
 		if (getKeybindings().matches(data, "app.tools.expand")) {
 			this.toggleToolOutputExpansion();
 			return { consume: true };
+		}
+		// Queue the editor text as a follow-up (alt+enter) or restore all queued messages to
+		// the editor (alt+up). Resolved here because the Editor has no `onAction`; skipped
+		// while a dialog owns the editor (it consumes its own keys).
+		if (!this.extensionSelector && !this.extensionInput && !this.extensionEditor) {
+			if (getKeybindings().matches(data, "app.message.followUp")) {
+				void this.handleFollowUp();
+				return { consume: true };
+			}
+			if (getKeybindings().matches(data, "app.message.dequeue")) {
+				void this.handleDequeue();
+				return { consume: true };
+			}
 		}
 		// Extension-registered shortcuts. Skipped while a dialog owns the editor (it has
 		// focus and consumes its own keys), matching the editor-focused dispatch elsewhere.
