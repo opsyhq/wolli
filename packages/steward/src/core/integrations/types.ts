@@ -48,7 +48,6 @@ export interface IntegrationRunContext {
 	emit(event: string, data: unknown): void;
 	/** Aborted on `stop()`; one `run()` per (service, account). */
 	signal: AbortSignal;
-	// Not in v1: ctx.state (durable per-account cursor) and ctx.agent.invoke (event → agent turn).
 }
 
 export interface IntegrationActionContext {

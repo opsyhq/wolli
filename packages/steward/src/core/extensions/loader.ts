@@ -9,9 +9,11 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as _bundledPiAi from "@earendil-works/pi-ai";
 import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
+import * as _bundledGrammyRunner from "@grammyjs/runner";
 import * as _bundledPiAgentCore from "@opsyhq/agent";
 import type { KeyId } from "@opsyhq/tui";
 import * as _bundledPiTui from "@opsyhq/tui";
+import * as _bundledGrammy from "grammy";
 import { createJiti } from "jiti/static";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
@@ -56,6 +58,9 @@ export const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@opsyhq/tui": _bundledPiTui,
 	"@earendil-works/pi-ai": _bundledPiAi,
 	"@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
+	// grammY + its long-poll runner, used by the Telegram integration example.
+	grammy: _bundledGrammy,
+	"@grammyjs/runner": _bundledGrammyRunner,
 	// The host-package identity string is steward's own package name.
 	"@opsyhq/steward": _bundledPiCodingAgent,
 };
@@ -77,6 +82,9 @@ export function getAliases(): Record<string, string> {
 	const typeboxEntry = require.resolve("typebox");
 	const typeboxCompileEntry = require.resolve("typebox/compile");
 	const typeboxValueEntry = require.resolve("typebox/value");
+
+	const grammyEntry = require.resolve("grammy");
+	const grammyRunnerEntry = require.resolve("@grammyjs/runner");
 
 	const packagesRoot = path.resolve(__dirname, "../../../../");
 	const resolveWorkspaceOrImport = (workspaceRelativePath: string, specifier: string): string | null => {
@@ -112,6 +120,8 @@ export function getAliases(): Record<string, string> {
 		"@sinclair/typebox": typeboxEntry,
 		"@sinclair/typebox/compile": typeboxCompileEntry,
 		"@sinclair/typebox/value": typeboxValueEntry,
+		grammy: grammyEntry,
+		"@grammyjs/runner": grammyRunnerEntry,
 	};
 	// Only alias entries that resolved. In the real runtime all of these resolve; under
 	// Vitest SSR (no import.meta.resolve) the bundled library entries may be omitted and
