@@ -21,7 +21,7 @@ import * as _bundledTypeboxCompile from "typebox/compile";
 import * as _bundledTypeboxValue from "typebox/value";
 // `getSharedAgentDir` is aliased to `getAgentDir` so the zero-arg call site below
 // stays the same.
-import { CONFIG_DIR_NAME, getSharedAgentDir as getAgentDir, isBunBinary } from "../../config.ts";
+import { getSharedAgentDir as getAgentDir, isBunBinary } from "../../config.ts";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @opsyhq/steward.
 import * as _bundledPiCodingAgent from "../../index.ts";
@@ -582,15 +582,11 @@ export async function discoverAndLoadExtensions(
 		}
 	};
 
-	// 1. Project-local extensions: cwd/${CONFIG_DIR_NAME}/extensions/
-	const localExtDir = path.join(resolvedCwd, CONFIG_DIR_NAME, "extensions");
-	addPaths(discoverExtensionsInDir(localExtDir));
-
-	// 2. Global extensions: agentDir/extensions/
+	// 1. Agent extensions: agentDir/extensions/
 	const globalExtDir = path.join(resolvedAgentDir, "extensions");
 	addPaths(discoverExtensionsInDir(globalExtDir));
 
-	// 3. Explicitly configured paths
+	// 2. Explicitly configured paths
 	for (const p of configuredPaths) {
 		const resolved = resolvePath(p, resolvedCwd, { normalizeUnicodeSpaces: true });
 		if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {

@@ -5,7 +5,7 @@
  * that lists all available slash commands in the current session.
  *
  * Usage:
- * 1. Copy this file to ~/.steward/agents/<name>/extensions/ or your project's .steward/extensions/
+ * 1. Copy this file to ~/.steward/agents/<name>/extensions/
  * 2. Use /commands to see available commands
  * 3. Use /commands extensions to filter by source
  */

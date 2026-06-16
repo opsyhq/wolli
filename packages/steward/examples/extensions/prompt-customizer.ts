@@ -8,7 +8,7 @@
  * are currently active, respecting whatever the user has configured.
  *
  * Usage:
- * 1. Copy this file to ~/.steward/agents/<name>/extensions/ or your project's .steward/extensions/
+ * 1. Copy this file to ~/.steward/agents/<name>/extensions/
  * 2. Use the extension — it automatically adapts to your active tools and skills
  */
 

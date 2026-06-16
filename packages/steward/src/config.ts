@@ -64,9 +64,9 @@ export const isBunBinary =
 // e.g., STEWARD_HOME
 export const ENV_HOME = `${APP_NAME.toUpperCase()}_HOME`;
 
-// Override for the shared credential dir, e.g. STEWARD_CODING_AGENT_DIR.
+// Override for the shared credential dir, e.g. STEWARD_SHARED_DIR.
 // Resolves the shared `~/.steward/agent/` holding auth.json/settings.json.
-export const ENV_SHARED_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
+export const ENV_SHARED_AGENT_DIR = `${APP_NAME.toUpperCase()}_SHARED_DIR`;
 
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
@@ -173,7 +173,7 @@ export function getWorkspaceDir(name: string): string {
 // resolve the singular shared `agent` dir, distinct from steward's own per-agent
 // homes under `agents/<name>/` (plural).
 
-/** Shared agent dir, e.g. ~/.steward/agent (override with STEWARD_CODING_AGENT_DIR). */
+/** Shared agent dir, e.g. ~/.steward/agent (override with STEWARD_SHARED_DIR). */
 export function getSharedAgentDir(): string {
 	const envDir = process.env[ENV_SHARED_AGENT_DIR];
 	if (envDir) return expandTildePath(envDir);
