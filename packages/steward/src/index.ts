@@ -34,10 +34,10 @@ export {
 } from "./core/auth-storage.ts";
 export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
 export {
+	IntegrationAccountStorage,
+	type IntegrationAccountStorageData,
 	type IntegrationAccountRecord,
-	IntegrationCredentialStore,
-	type IntegrationCredentialStoreData,
-} from "./core/integration-credentials.ts";
+} from "./core/integration-account-storage.ts";
 // Integration system
 export {
 	createIntegrationRuntime,

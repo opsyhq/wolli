@@ -16,7 +16,7 @@
 
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { IntegrationCredentialStore } from "../src/core/integration-credentials.ts";
+import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import {
 	createIntegrationRuntime,
 	type IntegrationError,
@@ -84,11 +84,11 @@ describe("integration runner", () => {
 		const runtime = createIntegrationRuntime();
 		const integration = await loadIntegrationFromFactory(heartbeat, process.cwd(), runtime, "<heartbeat>");
 
-		const credentials = IntegrationCredentialStore.inMemory({
+		const accounts = IntegrationAccountStorage.inMemory({
 			heartbeat: { default: { intervalMs: 5 } },
 		});
 
-		const runner = new IntegrationRunner([integration], runtime, process.cwd(), credentials);
+		const runner = new IntegrationRunner([integration], runtime, process.cwd(), accounts);
 
 		const errors: IntegrationError[] = [];
 		runner.onError((error) => errors.push(error));

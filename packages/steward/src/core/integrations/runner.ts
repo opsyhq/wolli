@@ -5,12 +5,12 @@
  * Lifecycle differs deliberately from extensions: producers hold exclusive live
  * connections (e.g. Telegram's 409-on-double-poll), so on reload the host stops the
  * previous runner BEFORE starting the new one (extensions, being pure dispatch, swap
- * new-before-old). The credential store is process-scoped and never torn down here.
+ * new-before-old). The account store is process-scoped and never torn down here.
  */
 
 import * as path from "node:path";
 import { Compile } from "typebox/compile";
-import type { IntegrationCredentialStore } from "../integration-credentials.ts";
+import type { IntegrationAccountStorage } from "../integration-account-storage.ts";
 import type {
 	Integration,
 	IntegrationActionContext,
@@ -53,7 +53,7 @@ const STOP_GRACE_MS = 2000;
 export class IntegrationRunner {
 	private runtime: IntegrationRuntime;
 	private cwd: string;
-	private credentialStore: IntegrationCredentialStore;
+	private accountStorage: IntegrationAccountStorage;
 	/** service → registered definition (first registration per service wins). */
 	private definitions: Map<string, RegisteredDef> = new Map();
 	/** `${service} ${accountId}` → live entry. */
@@ -64,11 +64,11 @@ export class IntegrationRunner {
 		integrations: Integration[],
 		runtime: IntegrationRuntime,
 		cwd: string,
-		credentialStore: IntegrationCredentialStore,
+		accountStorage: IntegrationAccountStorage,
 	) {
 		this.runtime = runtime;
 		this.cwd = cwd;
-		this.credentialStore = credentialStore;
+		this.accountStorage = accountStorage;
 
 		for (const integration of integrations) {
 			for (const [service, config] of integration.definitions) {
@@ -118,7 +118,7 @@ export class IntegrationRunner {
 	 * Pre-compile the hot-path validators and rebind the runtime's registration
 	 * methods for immediate post-bind effect. Does NOT start producers (see `start`).
 	 *
-	 * Account-schema validation is owned by the credential store's `resolveAccount`
+	 * Account-schema validation is owned by the account store's `resolveAccount`
 	 * (cold path), so `bindCore` compiles only the event/action validators.
 	 */
 	bindCore(): void {
@@ -173,14 +173,14 @@ export class IntegrationRunner {
 			if (!run) continue;
 			const service = def.service;
 
-			for (const accountId of this.credentialStore.list(service)) {
+			for (const accountId of this.accountStorage.listAccounts(service)) {
 				const key = this.liveKey(service, accountId);
 				const existing = this.live.get(key);
 				if (existing?.done !== undefined) continue; // producer already attached
 
 				let account: unknown;
 				try {
-					account = this.credentialStore.resolveAccount(service, accountId, def.config.account);
+					account = this.accountStorage.resolveAccount(service, accountId, def.config.account);
 				} catch (err) {
 					this.emitError({
 						integrationPath: def.integrationPath,
@@ -305,8 +305,8 @@ export class IntegrationRunner {
 		if (!def) {
 			throw new Error(`integration '${service}' not found`);
 		}
-		if (!this.credentialStore.has(service, account)) {
-			const configured = this.credentialStore.list(service);
+		if (!this.accountStorage.has(service, account)) {
+			const configured = this.accountStorage.listAccounts(service);
 			throw new Error(
 				`account '${account}' not configured for '${service}'${
 					configured.length > 0 ? ` (configured: ${configured.join(", ")})` : ""
@@ -358,7 +358,7 @@ export class IntegrationRunner {
 			throw new Error(`invalid params for action '${action}'${detail ? `: ${detail}` : ""}`);
 		}
 
-		const resolvedAccount = this.credentialStore.resolveAccount(service, account, def.config.account);
+		const resolvedAccount = this.accountStorage.resolveAccount(service, account, def.config.account);
 		// Reuse the live producer's controller when present; otherwise a per-call controller
 		// (and a per-call client — no shared rate-limit bucket; acceptable v1).
 		const entry = this.live.get(this.liveKey(service, account));
@@ -393,7 +393,7 @@ export class IntegrationRunner {
 	/**
 	 * Stop every live producer: abort its signal, call its disposer (try/catch), then
 	 * await `done` against a grace timeout. Listener sets are kept so a subsequent
-	 * `start()` re-attaches; the credential store is left intact.
+	 * `start()` re-attaches; the account store is left intact.
 	 */
 	async stop(): Promise<void> {
 		for (const entry of this.live.values()) {

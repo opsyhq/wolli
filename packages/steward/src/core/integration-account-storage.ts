@@ -1,10 +1,12 @@
 /**
- * Per-agent credential storage for integrations.
+ * Per-agent account storage for integrations.
  *
- * The on-disk shape is nested `Record<service, Record<accountId, AccountRecord>>`
- * (integrations are multi-account), and `resolveAccount` resolves + schema-validates
- * a record on read. The store lives at `~/.steward/agents/<name>/integrations.json`,
- * is process-scoped, and must survive `/reload` so per-account state isn't lost.
+ * Each account record holds whatever one configured account needs — credentials
+ * and plain config alike (e.g. heartbeat's `{ intervalMs }`). The on-disk shape is
+ * nested `Record<service, Record<accountId, AccountRecord>>` (integrations are
+ * multi-account), and `resolveAccount` resolves + schema-validates a record on read.
+ * The store lives at `~/.steward/agents/<name>/integrations.json`, is process-scoped,
+ * and must survive `/reload` so per-account state isn't lost.
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
@@ -20,38 +22,37 @@ import { resolveConfigValue } from "./resolve-config-value.ts";
 export type IntegrationAccountRecord = Record<string, unknown>;
 
 /** Nested on-disk shape: service → accountId → record. */
-export type IntegrationCredentialStoreData = Record<string, Record<string, IntegrationAccountRecord>>;
+export type IntegrationAccountStorageData = Record<string, Record<string, IntegrationAccountRecord>>;
 
 type LockResult<T> = {
 	result: T;
 	next?: string;
 };
 
-const CRED_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
+const ACCOUNT_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
 
-export interface IntegrationCredentialBackend {
+export interface IntegrationAccountStorageBackend {
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
-	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
 }
 
-export class FileIntegrationCredentialBackend implements IntegrationCredentialBackend {
-	private credPath: string;
+export class FileIntegrationAccountStorageBackend implements IntegrationAccountStorageBackend {
+	private storagePath: string;
 
-	constructor(credPath: string) {
-		this.credPath = normalizePath(credPath);
+	constructor(storagePath: string) {
+		this.storagePath = normalizePath(storagePath);
 	}
 
 	private ensureParentDir(): void {
-		const dir = dirname(this.credPath);
+		const dir = dirname(this.storagePath);
 		if (!existsSync(dir)) {
 			mkdirSync(dir, { recursive: true, mode: 0o700 });
 		}
 	}
 
 	private ensureFileExists(): void {
-		if (!existsSync(this.credPath)) {
-			writeFileSync(this.credPath, "{}", CRED_FILE_WRITE_OPTIONS);
-			chmodSync(this.credPath, 0o600);
+		if (!existsSync(this.storagePath)) {
+			writeFileSync(this.storagePath, "{}", ACCOUNT_FILE_WRITE_OPTIONS);
+			chmodSync(this.storagePath, 0o600);
 		}
 	}
 
@@ -79,7 +80,7 @@ export class FileIntegrationCredentialBackend implements IntegrationCredentialBa
 			}
 		}
 
-		throw (lastError as Error) ?? new Error("Failed to acquire integration credential lock");
+		throw (lastError as Error) ?? new Error("Failed to acquire integration account lock");
 	}
 
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {
@@ -88,12 +89,12 @@ export class FileIntegrationCredentialBackend implements IntegrationCredentialBa
 
 		let release: (() => void) | undefined;
 		try {
-			release = this.acquireLockSyncWithRetry(this.credPath);
-			const current = existsSync(this.credPath) ? readFileSync(this.credPath, "utf-8") : undefined;
+			release = this.acquireLockSyncWithRetry(this.storagePath);
+			const current = existsSync(this.storagePath) ? readFileSync(this.storagePath, "utf-8") : undefined;
 			const { result, next } = fn(current);
 			if (next !== undefined) {
-				writeFileSync(this.credPath, next, CRED_FILE_WRITE_OPTIONS);
-				chmodSync(this.credPath, 0o600);
+				writeFileSync(this.storagePath, next, ACCOUNT_FILE_WRITE_OPTIONS);
+				chmodSync(this.storagePath, 0o600);
 			}
 			return result;
 		} finally {
@@ -102,59 +103,9 @@ export class FileIntegrationCredentialBackend implements IntegrationCredentialBa
 			}
 		}
 	}
-
-	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
-		this.ensureParentDir();
-		this.ensureFileExists();
-
-		let release: (() => Promise<void>) | undefined;
-		let lockCompromised = false;
-		let lockCompromisedError: Error | undefined;
-		const throwIfCompromised = () => {
-			if (lockCompromised) {
-				throw lockCompromisedError ?? new Error("Integration credential lock was compromised");
-			}
-		};
-
-		try {
-			release = await lockfile.lock(this.credPath, {
-				retries: {
-					retries: 10,
-					factor: 2,
-					minTimeout: 100,
-					maxTimeout: 10000,
-					randomize: true,
-				},
-				stale: 30000,
-				onCompromised: (err) => {
-					lockCompromised = true;
-					lockCompromisedError = err;
-				},
-			});
-
-			throwIfCompromised();
-			const current = existsSync(this.credPath) ? readFileSync(this.credPath, "utf-8") : undefined;
-			const { result, next } = await fn(current);
-			throwIfCompromised();
-			if (next !== undefined) {
-				writeFileSync(this.credPath, next, CRED_FILE_WRITE_OPTIONS);
-				chmodSync(this.credPath, 0o600);
-			}
-			throwIfCompromised();
-			return result;
-		} finally {
-			if (release) {
-				try {
-					await release();
-				} catch {
-					// Ignore unlock errors when lock is compromised.
-				}
-			}
-		}
-	}
 }
 
-export class InMemoryIntegrationCredentialBackend implements IntegrationCredentialBackend {
+export class InMemoryIntegrationAccountStorageBackend implements IntegrationAccountStorageBackend {
 	private value: string | undefined;
 
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {
@@ -164,43 +115,35 @@ export class InMemoryIntegrationCredentialBackend implements IntegrationCredenti
 		}
 		return result;
 	}
-
-	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
-		const { result, next } = await fn(this.value);
-		if (next !== undefined) {
-			this.value = next;
-		}
-		return result;
-	}
 }
 
 /**
- * Per-agent integration credential store backed by a nested JSON file.
+ * Per-agent integration account store backed by a nested JSON file.
  */
-export class IntegrationCredentialStore {
-	private data: IntegrationCredentialStoreData = {};
+export class IntegrationAccountStorage {
+	private data: IntegrationAccountStorageData = {};
 	private loadError: Error | null = null;
 	private errors: Error[] = [];
-	private storage: IntegrationCredentialBackend;
+	private storage: IntegrationAccountStorageBackend;
 
-	private constructor(storage: IntegrationCredentialBackend) {
+	private constructor(storage: IntegrationAccountStorageBackend) {
 		this.storage = storage;
 		this.reload();
 	}
 
 	/** Per-agent store at `~/.steward/agents/<name>/integrations.json`. */
-	static create(agentName: string): IntegrationCredentialStore {
-		return new IntegrationCredentialStore(new FileIntegrationCredentialBackend(getAgentIntegrationsPath(agentName)));
+	static create(agentName: string): IntegrationAccountStorage {
+		return new IntegrationAccountStorage(new FileIntegrationAccountStorageBackend(getAgentIntegrationsPath(agentName)));
 	}
 
-	static fromStorage(storage: IntegrationCredentialBackend): IntegrationCredentialStore {
-		return new IntegrationCredentialStore(storage);
+	static fromStorage(storage: IntegrationAccountStorageBackend): IntegrationAccountStorage {
+		return new IntegrationAccountStorage(storage);
 	}
 
-	static inMemory(data: IntegrationCredentialStoreData = {}): IntegrationCredentialStore {
-		const storage = new InMemoryIntegrationCredentialBackend();
+	static inMemory(data: IntegrationAccountStorageData = {}): IntegrationAccountStorage {
+		const storage = new InMemoryIntegrationAccountStorageBackend();
 		storage.withLock(() => ({ result: undefined, next: JSON.stringify(data, null, 2) }));
-		return IntegrationCredentialStore.fromStorage(storage);
+		return IntegrationAccountStorage.fromStorage(storage);
 	}
 
 	private recordError(error: unknown): void {
@@ -208,14 +151,14 @@ export class IntegrationCredentialStore {
 		this.errors.push(normalizedError);
 	}
 
-	private parseStorageData(content: string | undefined): IntegrationCredentialStoreData {
+	private parseStorageData(content: string | undefined): IntegrationAccountStorageData {
 		if (!content) {
 			return {};
 		}
-		return JSON.parse(content) as IntegrationCredentialStoreData;
+		return JSON.parse(content) as IntegrationAccountStorageData;
 	}
 
-	/** Reload credentials from storage. */
+	/** Reload accounts from storage. */
 	reload(): void {
 		let content: string | undefined;
 		try {
@@ -239,7 +182,7 @@ export class IntegrationCredentialStore {
 		try {
 			this.storage.withLock((current) => {
 				const currentData = this.parseStorageData(current);
-				const merged: IntegrationCredentialStoreData = { ...currentData };
+				const merged: IntegrationAccountStorageData = { ...currentData };
 				if (accounts && Object.keys(accounts).length > 0) {
 					merged[service] = accounts;
 				} else {
@@ -283,7 +226,7 @@ export class IntegrationCredentialStore {
 	}
 
 	/** Account ids configured under one service. */
-	list(service: string): string[] {
+	listAccounts(service: string): string[] {
 		return this.data[service] ? Object.keys(this.data[service]) : [];
 	}
 
@@ -292,7 +235,7 @@ export class IntegrationCredentialStore {
 		return Object.keys(this.data);
 	}
 
-	getAll(): IntegrationCredentialStoreData {
+	getAll(): IntegrationAccountStorageData {
 		return { ...this.data };
 	}
 
@@ -316,7 +259,7 @@ export class IntegrationCredentialStore {
 	resolveAccount(service: string, accountId: string, schema?: TSchema): IntegrationAccountRecord {
 		const record = this.get(service, accountId);
 		if (!record) {
-			const configured = this.list(service);
+			const configured = this.listAccounts(service);
 			throw new Error(
 				`account '${accountId}' not configured for '${service}'${
 					configured.length > 0 ? ` (configured: ${configured.join(", ")})` : ""

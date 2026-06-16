@@ -20,7 +20,7 @@ import {
 } from "./core/agent-config.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
-import { IntegrationCredentialStore } from "./core/integration-credentials.ts";
+import { IntegrationAccountStorage } from "./core/integration-account-storage.ts";
 import { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel } from "./core/model-resolver.ts";
 import { SessionHost } from "./core/session-host.ts";
@@ -155,8 +155,8 @@ async function runSession(
 	const initialConfig = loadAgentConfig(name);
 
 	const authStorage = AuthStorage.create();
-	// Integration creds are per-agent (`~/.steward/agents/<name>/integrations.json`).
-	const integrationCredentials = IntegrationCredentialStore.create(name);
+	// Integration accounts are per-agent (`~/.steward/agents/<name>/integrations.json`).
+	const integrationAccounts = IntegrationAccountStorage.create(name);
 	const modelRegistry = ModelRegistry.create(authStorage);
 
 	// Model precedence: --model flag → agent.json → shared default → built-in.
@@ -187,7 +187,7 @@ async function runSession(
 	const thinkingLevel = args.thinking ?? resolved.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
 	const message = positionals.join(" ").trim();
 
-	const host = new SessionHost({ name, model, thinkingLevel, authStorage, integrationCredentials });
+	const host = new SessionHost({ name, model, thinkingLevel, authStorage, integrationAccounts });
 
 	// A forming agent stays in its single birth session, so the seeded "What is my
 	// purpose?" and the whole forming conversation are always resumed; `--new` only
