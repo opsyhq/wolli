@@ -14,5 +14,5 @@
 		}
 	},
 	"include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"],
-	"exclude": ["**/node_modules/**", "**/dist/**", "packages/coding-agent/examples/**"]
+	"exclude": ["**/node_modules/**", "**/dist/**", "packages/coding-agent/**"]
 }
