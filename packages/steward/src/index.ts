@@ -33,32 +33,6 @@ export {
 	type OAuthCredential,
 } from "./core/auth-storage.ts";
 export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
-export {
-	IntegrationAccountStorage,
-	type IntegrationAccountStorageData,
-	type IntegrationAccountRecord,
-} from "./core/integration-account-storage.ts";
-// Integration system
-export {
-	createIntegrationRuntime,
-	discoverAndLoadIntegrations,
-	type Integration,
-	type IntegrationAction,
-	type IntegrationActionContext,
-	type IntegrationConfig,
-	type IntegrationError,
-	type IntegrationErrorListener,
-	type IntegrationFactory,
-	type IntegrationHandle,
-	type IntegrationRunContext,
-	type IntegrationRuntime,
-	type IntegrationRuntimeState,
-	IntegrationRunner,
-	type IntegrationsAPI,
-	loadIntegrationFromFactory,
-	loadIntegrations,
-	type LoadIntegrationsResult,
-} from "./core/integrations/index.ts";
 // Extension system
 export type {
 	AgentEndEvent,
@@ -160,6 +134,32 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
+export {
+	type IntegrationAccountRecord,
+	IntegrationAccountStorage,
+	type IntegrationAccountStorageData,
+} from "./core/integration-account-storage.ts";
+// Integration system
+export {
+	createIntegrationRuntime,
+	discoverAndLoadIntegrations,
+	type Integration,
+	type IntegrationAction,
+	type IntegrationActionContext,
+	type IntegrationConfig,
+	type IntegrationError,
+	type IntegrationErrorListener,
+	type IntegrationFactory,
+	type IntegrationHandle,
+	type IntegrationRunContext,
+	IntegrationRunner,
+	type IntegrationRuntime,
+	type IntegrationRuntimeState,
+	type IntegrationsAPI,
+	type LoadIntegrationsResult,
+	loadIntegrationFromFactory,
+	loadIntegrations,
+} from "./core/integrations/index.ts";
 export {
 	loadMemory,
 	MEMORY_BUDGET,

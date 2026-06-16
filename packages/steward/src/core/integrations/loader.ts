@@ -41,7 +41,8 @@ export function createIntegrationRuntime(): IntegrationRuntime {
 		assertActive,
 		invalidate: (message) => {
 			state.staleMessage ??=
-				message ?? "This integration ctx is stale after a reload. Do not register against a captured steward after reload.";
+				message ??
+				"This integration ctx is stale after a reload. Do not register against a captured steward after reload.";
 		},
 		// Pre-bind no-ops: the API writes definitions directly. bindCore() rebinds these.
 		registerIntegration: () => {},

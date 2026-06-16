@@ -376,7 +376,9 @@ export class SessionHost {
 		const runner = this.extensionRunner;
 		const diagnostics: ResourceDiagnostic[] = [
 			...this._loadErrors.map(({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path })),
-			...this._integrationLoadErrors.map(({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path })),
+			...this._integrationLoadErrors.map(
+				({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path }),
+			),
 			...this._skillDiagnostics,
 			...runner.getCommandDiagnostics(),
 			...runner.getShortcutDiagnostics(),

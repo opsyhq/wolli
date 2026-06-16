@@ -133,7 +133,9 @@ export class IntegrationAccountStorage {
 
 	/** Per-agent store at `~/.steward/agents/<name>/integrations.json`. */
 	static create(agentName: string): IntegrationAccountStorage {
-		return new IntegrationAccountStorage(new FileIntegrationAccountStorageBackend(getAgentIntegrationsPath(agentName)));
+		return new IntegrationAccountStorage(
+			new FileIntegrationAccountStorageBackend(getAgentIntegrationsPath(agentName)),
+		);
 	}
 
 	static fromStorage(storage: IntegrationAccountStorageBackend): IntegrationAccountStorage {
@@ -286,9 +288,7 @@ export class IntegrationAccountStorage {
 					.Errors(resolved)
 					.map((error) => `${error.instancePath || "root"}: ${error.message}`)
 					.join("; ");
-				throw new Error(
-					`Invalid account '${accountId}' for '${service}'${detail ? `: ${detail}` : ""}`,
-				);
+				throw new Error(`Invalid account '${accountId}' for '${service}'${detail ? `: ${detail}` : ""}`);
 			}
 		}
 
