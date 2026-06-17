@@ -75,6 +75,39 @@ describe("AgentHarness", () => {
 		expect(harness.getFollowUpMode()).toBe("one-at-a-time");
 	});
 
+	it("isIdle tracks phase: idle before a turn, busy during it, idle again after", async () => {
+		const registration = registerFauxProvider();
+		registrations.push(registration);
+		let releaseResponse: (() => void) | undefined;
+		const responseReleased = new Promise<void>((resolve) => {
+			releaseResponse = resolve;
+		});
+		registration.setResponses([
+			async () => {
+				await responseReleased;
+				return fauxAssistantMessage("ok");
+			},
+		]);
+		const harness = new AgentHarness({
+			env: new NodeExecutionEnv({ cwd: process.cwd() }),
+			session: new Session(new InMemorySessionStorage()),
+			model: registration.getModel(),
+		});
+
+		// Idle before the turn.
+		expect(harness.isIdle).toBe(true);
+
+		const promptPromise = harness.prompt("hello");
+		// Let the run reach the (suspended) provider response — phase is now "turn".
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(harness.isIdle).toBe(false);
+
+		releaseResponse?.();
+		await promptPromise;
+		// Idle again once the turn settles.
+		expect(harness.isIdle).toBe(true);
+	});
+
 	it("drains one queued steering message at a time and emits queue updates", async () => {
 		const registration = registerFauxProvider();
 		registrations.push(registration);

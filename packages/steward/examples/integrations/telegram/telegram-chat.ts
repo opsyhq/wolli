@@ -1,9 +1,8 @@
 /**
- * Telegram chat extension — the mapping half.
+ * Telegram chat extension — the mapping half (paired with `index.ts`).
  *
- * Pairs with `examples/integrations/telegram.ts`. The integration is the transport
- * (long-poll, token, `message` events); this extension maps that transport onto a
- * Steward session:
+ * The integration (`index.ts`) is the transport (long-poll, token, `message` events);
+ * this extension maps that transport onto a Steward session:
  *
  *   - inbound:  `telegram.on("message")` → `steward.sendUserMessage(text)` (one turn)
  *   - outbound: `steward.on("agent_end")` → final assistant text → `sendMessage`
@@ -16,9 +15,9 @@
  * `allowedChatIds` in integrations.json. (INTEGRATION.md open question: "is one
  * external chat thread always one Steward user session?" — out of scope here.)
  *
- * Enable: copy this file to `~/.steward/agents/<name>/extensions/telegram-chat.ts`
- * and `telegram.ts` to `~/.steward/agents/<name>/integrations/`, then configure the
- * account in `integrations.json` (see telegram.ts header).
+ * This file is declared under the package's `steward.extensions` and is copied into
+ * `<agent>/extensions/` automatically when the integration is onboarded
+ * (`steward integrations configure <agent> telegram`); it activates on the next launch.
  */
 
 import type { AgentMessage } from "@opsyhq/agent";

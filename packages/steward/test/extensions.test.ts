@@ -367,7 +367,63 @@ describe("extension subsystem wiring", () => {
 		expect(pkg.files).toContain("docs");
 		expect(pkg.files).toContain("examples");
 	});
+
+	it("queues a mid-stream sendUserMessage as a follow-up and answers in order", async () => {
+		const { host, registration } = makeHost();
+		const firstEntered = deferred();
+		const releaseFirst = deferred();
+		const secondTurnUserText: string[] = [];
+		registration.setResponses([
+			async () => {
+				firstEntered.resolve();
+				await releaseFirst.promise;
+				return fauxAssistantMessage("first-answer");
+			},
+			(context) => {
+				for (const message of context.messages) {
+					if (message.role === "user") secondTurnUserText.push(messageText(message.content));
+				}
+				return fauxAssistantMessage("second-answer");
+			},
+		]);
+
+		const unhandled: unknown[] = [];
+		const onUnhandled = (err: unknown) => unhandled.push(err);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			await host.start({ fresh: true });
+
+			// An idle send starts a turn.
+			const firstTurn = host.sendUserMessage("first");
+			await firstEntered.promise;
+			expect(host.harness.isIdle).toBe(false);
+
+			// The mid-stream send routes to followUp — it must resolve, not throw "busy".
+			await expect(host.sendUserMessage("second", { deliverAs: "followUp" })).resolves.toBeUndefined();
+
+			releaseFirst.resolve();
+			await firstTurn;
+			await host.harness.waitForIdle();
+
+			// Both turns ran, in order: the follow-up "second" was delivered to a later turn.
+			expect(registration.state.callCount).toBe(2);
+			expect(secondTurnUserText).toContain("second");
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+		expect(unhandled).toEqual([]);
+		await host.cleanup();
+	});
 });
+
+/** Minimal awaitable barrier for ordering test steps around an in-flight turn. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+	let resolve: () => void = () => {};
+	const promise = new Promise<void>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
+}
 
 /** Flatten a message content union (string | content blocks) to its text. */
 function messageText(content: unknown): string {

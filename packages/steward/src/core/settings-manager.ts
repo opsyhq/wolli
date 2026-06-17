@@ -74,6 +74,7 @@ export type PackageSource =
 	| {
 			source: string;
 			extensions?: string[];
+			integrations?: string[];
 			skills?: string[];
 			prompts?: string[];
 			themes?: string[];
@@ -103,6 +104,7 @@ export interface Settings {
 	trackingId?: string; // analytics tracking identifier, generated when analytics is enabled
 	packages?: PackageSource[]; // Array of npm/git package sources (string or object with filtering)
 	extensions?: string[]; // Array of local extension file paths or directories
+	integrations?: string[]; // Array of local integration file paths or directories
 	skills?: string[]; // Array of local skill file paths or directories
 	prompts?: string[]; // Array of local prompt template paths or directories
 	themes?: string[]; // Array of local theme file paths or directories

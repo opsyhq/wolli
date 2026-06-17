@@ -147,9 +147,6 @@ importers:
       '@earendil-works/pi-ai':
         specifier: ^0.79.3
         version: 0.79.3(ws@8.21.0)(zod@4.4.3)
-      '@grammyjs/runner':
-        specifier: 2.0.3
-        version: 2.0.3(grammy@1.44.0)
       '@opsyhq/agent':
         specifier: workspace:*
         version: link:../agent
@@ -168,18 +165,24 @@ importers:
       diff:
         specifier: 8.0.4
         version: 8.0.4
-      grammy:
-        specifier: 1.44.0
-        version: 1.44.0
+      glob:
+        specifier: 13.0.6
+        version: 13.0.6
       highlight.js:
         specifier: 10.7.3
         version: 10.7.3
+      hosted-git-info:
+        specifier: 9.0.3
+        version: 9.0.3
       ignore:
         specifier: 7.0.5
         version: 7.0.5
       jiti:
         specifier: 2.7.0
         version: 2.7.0
+      minimatch:
+        specifier: 10.2.5
+        version: 10.2.5
       proper-lockfile:
         specifier: 4.1.2
         version: 4.1.2
@@ -193,18 +196,27 @@ importers:
         specifier: 2.9.0
         version: 2.9.0
     devDependencies:
+      '@grammyjs/runner':
+        specifier: 2.0.3
+        version: 2.0.3(grammy@1.44.0)
       '@types/cross-spawn':
         specifier: 6.0.6
         version: 6.0.6
       '@types/diff':
         specifier: 7.0.2
         version: 7.0.2
+      '@types/hosted-git-info':
+        specifier: 3.0.5
+        version: 3.0.5
       '@types/node':
         specifier: 24.12.4
         version: 24.12.4
       '@types/proper-lockfile':
         specifier: 4.1.4
         version: 4.1.4
+      grammy:
+        specifier: 1.44.0
+        version: 1.44.0
       shx:
         specifier: 0.4.0
         version: 0.4.0

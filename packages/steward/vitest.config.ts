@@ -4,6 +4,10 @@ import { defineConfig } from "vitest/config";
 const agentSrc = fileURLToPath(new URL("../agent/src/index.ts", import.meta.url));
 const agentNodeSrc = fileURLToPath(new URL("../agent/src/node.ts", import.meta.url));
 const tuiSrc = fileURLToPath(new URL("../tui/src/index.ts", import.meta.url));
+// Resolve the host package's own identity specifier to source too, so an example
+// package imported by a test (e.g. the Telegram integration importing
+// `getMarkdownTheme` from "@opsyhq/steward") resolves without a built dist/.
+const stewardSrc = fileURLToPath(new URL("./src/index.ts", import.meta.url));
 
 export default defineConfig({
 	test: {
@@ -18,6 +22,7 @@ export default defineConfig({
 			{ find: /^@opsyhq\/agent\/node$/, replacement: agentNodeSrc },
 			{ find: /^@opsyhq\/agent$/, replacement: agentSrc },
 			{ find: /^@opsyhq\/tui$/, replacement: tuiSrc },
+			{ find: /^@opsyhq\/steward$/, replacement: stewardSrc },
 		],
 	},
 });

@@ -190,7 +190,7 @@ export default function (steward: ExtensionAPI) {
 }
 ```
 
-> The extension factory's first argument is named `steward` here by convention; it is the extension API object and you can name it anything. The package.json manifest key for declaring extensions (`"pi"`) is a separate, fixed name.
+> The extension factory's first argument is named `steward` here by convention; it is the extension API object and you can name it anything. The package.json manifest key for declaring extensions (`"steward"`) is a separate, fixed name.
 
 ## Key Patterns
 

@@ -26,6 +26,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import type { Api, AssistantMessage, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import {
 	type AgentHarness,
@@ -45,7 +46,6 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { type AgentConfig, isDeployed, loadAgentConfig } from "./agent-config.ts";
 import type { AuthStorage } from "./auth-storage.ts";
 import type { ResourceDiagnostic, ResourceSummary } from "./diagnostics.ts";
-import { discoverAndLoadExtensions } from "./extensions/loader.ts";
 import { type ExtensionErrorListener, ExtensionRunner, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type {
 	ContextUsage,
@@ -60,18 +60,19 @@ import type {
 	ToolResultEvent,
 } from "./extensions/types.ts";
 import type { IntegrationAccountStorage } from "./integration-account-storage.ts";
-import { discoverAndLoadIntegrations } from "./integrations/loader.ts";
 import { IntegrationRunner } from "./integrations/runner.ts";
 import { loadMemory } from "./memory.ts";
-import { createCustomMessage } from "./messages.ts";
+import { type CustomMessage, createCustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
-import { loadPromptTemplates, type PromptTemplate, parseCommandArgs } from "./prompt-templates.ts";
+import { type PromptTemplate, parseCommandArgs } from "./prompt-templates.ts";
+import { DefaultResourceLoader } from "./resource-loader.ts";
 import { createAgentSession } from "./sdk.ts";
 import { openAgentSession } from "./session.ts";
 import { SessionManager } from "./session-manager.ts";
-import { loadSkills, type Skill } from "./skills.ts";
+import { SettingsManager } from "./settings-manager.ts";
+import type { Skill } from "./skills.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
-import { createSyntheticSourceInfo } from "./source-info.ts";
+import { createSyntheticSourceInfo, type PathMetadata } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { createDeployTool } from "./tools/deploy.ts";
 // File tools live under tools/. memory is steward's own curated-notes tool; the
@@ -108,6 +109,8 @@ export interface SessionHostPromptOptions {
 	source?: InputSource;
 	/** How to deliver the message while a turn is already streaming. */
 	streamingBehavior?: "steer" | "followUp";
+	/** When false, skip extension-command + skill/template dispatch (extension-driven sends). Default true. */
+	expandPromptTemplates?: boolean;
 }
 
 /**
@@ -187,6 +190,26 @@ function contentToImages(content: string | (TextContent | ImageContent)[]): Imag
 	return images.length > 0 ? images : undefined;
 }
 
+/** A stable `extension:<name>` label for the extension that contributed a resource. */
+function getExtensionSourceLabel(extensionPath: string): string {
+	if (extensionPath.startsWith("<")) {
+		return `extension:${extensionPath.replace(/[<>]/g, "")}`;
+	}
+	const base = basename(extensionPath);
+	const name = base.replace(/\.(ts|js)$/, "");
+	return `extension:${name}`;
+}
+
+/**
+ * Source metadata for an extension-contributed skill/prompt path (fed to the resource
+ * loader via `extendResources`). Attributed to the contributing extension and marked
+ * `temporary` (re-derived each load), with the extension's own dir as `baseDir`.
+ */
+function contributedResourceMetadata(extensionPath: string): PathMetadata {
+	const baseDir = extensionPath.startsWith("<") ? undefined : dirname(extensionPath);
+	return { source: getExtensionSourceLabel(extensionPath), scope: "temporary", origin: "top-level", baseDir };
+}
+
 export class SessionHost {
 	private readonly options: SessionHostOptions;
 	private _harness?: AgentHarness;
@@ -221,8 +244,6 @@ export class SessionHost {
 	private _systemPrompt = "";
 	/** The options the frozen prompt was built from, backing `ctx.getSystemPromptOptions()`. */
 	private _systemPromptOptions?: BuildSystemPromptOptions;
-	/** Live streaming flag, kept in sync by the subscribe() translator. */
-	private _isStreaming = false;
 	/** The current run's abort signal, or undefined when idle. */
 	private _currentSignal?: AbortSignal;
 	/** Queued-message count (steer+followUp+nextTurn), kept in sync via queue_update. */
@@ -529,9 +550,10 @@ export class SessionHost {
 	async prompt(text: string, options?: SessionHostPromptOptions): Promise<void> {
 		const runner = this.extensionRunner;
 		const harness = this.harness;
+		const expandPromptTemplates = options?.expandPromptTemplates !== false;
 
 		// 1. Extension command — manages its own LLM interaction via steward.sendMessage().
-		if (text.startsWith("/") && (await this.tryExecuteExtensionCommand(text))) {
+		if (expandPromptTemplates && text.startsWith("/") && (await this.tryExecuteExtensionCommand(text))) {
 			return;
 		}
 
@@ -543,7 +565,7 @@ export class SessionHost {
 				currentText,
 				currentImages,
 				options?.source ?? "interactive",
-				this._isStreaming ? options?.streamingBehavior : undefined,
+				!harness.isIdle ? options?.streamingBehavior : undefined,
 			);
 			if (result.action === "handled") return;
 			if (result.action === "transform") {
@@ -554,14 +576,14 @@ export class SessionHost {
 
 		// 3. Skill / prompt-template dispatch. `/skill:<name> [args]` → harness.skill;
 		//    `/<name> [args]` matching a loaded template → harness.promptFromTemplate.
-		if (currentText.startsWith("/skill:")) {
+		if (expandPromptTemplates && currentText.startsWith("/skill:")) {
 			const spaceIndex = currentText.indexOf(" ");
 			const name = spaceIndex === -1 ? currentText.slice(7) : currentText.slice(7, spaceIndex);
 			const args = spaceIndex === -1 ? "" : currentText.slice(spaceIndex + 1).trim();
 			await harness.skill(name, args || undefined);
 			return;
 		}
-		if (currentText.startsWith("/")) {
+		if (expandPromptTemplates && currentText.startsWith("/")) {
 			const spaceIndex = currentText.indexOf(" ");
 			const name = spaceIndex === -1 ? currentText.slice(1) : currentText.slice(1, spaceIndex);
 			const template = this._promptTemplates.find((t) => t.name === name);
@@ -575,7 +597,7 @@ export class SessionHost {
 		// 4. Plain prompt — or queue via steer()/followUp() when a turn is streaming.
 		//    An ambiguous mid-stream submit (no streamingBehavior) is rejected rather
 		//    than silently steered.
-		if (this._isStreaming) {
+		if (!harness.isIdle) {
 			if (!options?.streamingBehavior) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -589,6 +611,58 @@ export class SessionHost {
 			return;
 		}
 		await harness.prompt(currentText, { images: currentImages });
+	}
+
+	/**
+	 * Send a user message to the agent (extension-driven). Always triggers a turn; while a turn
+	 * is streaming, `deliverAs` selects the queue. Routes through `prompt` with command +
+	 * skill/template dispatch skipped (`expandPromptTemplates: false`).
+	 */
+	async sendUserMessage(
+		content: string | (TextContent | ImageContent)[],
+		options?: { deliverAs?: "steer" | "followUp" },
+	): Promise<void> {
+		const text = contentToText(content);
+		const images = contentToImages(content);
+		await this.prompt(text, {
+			expandPromptTemplates: false,
+			streamingBehavior: options?.deliverAs,
+			images,
+			source: "extension",
+		});
+	}
+
+	/**
+	 * Deliver an extension custom-message:
+	 *  - `deliverAs: "nextTurn"` → queue for the next turn;
+	 *  - else streaming (`!harness.isIdle`) → steer/followUp by `deliverAs`;
+	 *  - else `triggerTurn` → drive a fresh turn (delivered as a user-role turn exactly once;
+	 *    the customType/details/renderer are not applied on this path);
+	 *  - else → persist a custom_message entry, which both delivers it into the next turn's
+	 *    context and renders it via a registered message renderer.
+	 */
+	async sendCustomMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+	): Promise<void> {
+		const harness = this.harness;
+		const text = contentToText(message.content);
+		const images = contentToImages(message.content);
+		if (options?.deliverAs === "nextTurn") {
+			await harness.nextTurn(text, { images });
+		} else if (!harness.isIdle) {
+			if (options?.deliverAs === "steer") await harness.steer(text, { images });
+			else await harness.followUp(text, { images });
+		} else if (options?.triggerTurn) {
+			await this.prompt(text, { expandPromptTemplates: false, images, source: "extension" });
+		} else {
+			await this._sessionManager!.appendCustomMessageEntry(
+				message.customType,
+				message.content,
+				message.display,
+				message.details,
+			);
+		}
 	}
 
 	/**
@@ -754,40 +828,47 @@ export class SessionHost {
 		errors: { path: string; error: string }[];
 	}> {
 		const { config, agentDir, name, sessionManager, modelRegistry, discoverReason, seedFlagValues } = params;
-
-		// Discover + load extensions, then build the runner. Steward scopes extensions
-		// per-agent: they are discovered from the agent's own `<agentDir>/extensions/` dir.
-		// There is no project-local extension concept — each agent owns its extensions, and
-		// the shared dir is the account store, not an extension home. cwd is the agent dir
-		// (used only as the runtime cwd and to resolve explicitly configured paths).
-		// Discover + load integrations and build their runner BEFORE extensions, so the
-		// extension loader can wire `getIntegration` at extension-load time. This ordering
-		// is load-bearing. The account store is process-scoped (survives reload).
-		const {
-			integrations,
-			errors: integrationErrors,
-			runtime: integrationRuntime,
-		} = await discoverAndLoadIntegrations([], agentDir, agentDir);
 		const integrationAccounts = this.options.integrationAccounts;
-		const integrationRunner = new IntegrationRunner(integrations, integrationRuntime, agentDir, integrationAccounts);
+
+		// One resource loader owns npm/git/local install + resolution and resolves extensions
+		// AND integrations in place from the same per-agent home (cwd = agentDir; there is no
+		// project-local resource concept — each agent owns its resources under its home). It
+		// builds the *unbound* IntegrationRunner via the hook below (which the loader threads
+		// into the extension loader so extensions wire `getIntegration` at load time); this
+		// host keeps the runner's stop-before-start lifecycle (see build()/reload()). The
+		// integration arm resolves BEFORE the extension arm inside reload(). The account store
+		// is process-scoped (survives reload).
+		const settingsManager = SettingsManager.create(agentDir, agentDir);
+		const loader = new DefaultResourceLoader({
+			cwd: agentDir,
+			agentDir,
+			settingsManager,
+			// The interactive mode owns theme + context-file loading; the host only needs
+			// extensions/integrations/skills/prompts from the loader.
+			noThemes: true,
+			noContextFiles: true,
+		});
+		await loader.reload({
+			buildIntegrationRunner: ({ integrations, runtime }) =>
+				new IntegrationRunner(integrations, runtime, agentDir, integrationAccounts),
+		});
+
+		const integrationRunner = loader.getIntegrationRunner();
+		if (!integrationRunner) {
+			throw new Error("Resource loader did not build an integration runner");
+		}
 		this._integrationRunner = integrationRunner;
 		// Surface integration load failures + account-store parse failures (e.g. a malformed
 		// integrations.json that would otherwise silently yield zero accounts) through the
 		// resource-summary diagnostics path, alongside the extension load errors below.
 		this._integrationLoadErrors = [
-			...integrationErrors,
+			...loader.getIntegrations().errors,
 			...integrationAccounts
 				.drainErrors()
 				.map((error) => ({ path: getAgentIntegrationsPath(name), error: error.message })),
 		];
 
-		const { extensions, errors, runtime } = await discoverAndLoadExtensions(
-			[],
-			agentDir,
-			agentDir,
-			undefined,
-			integrationRunner,
-		);
+		const { extensions, errors, runtime } = loader.getExtensions();
 		const runner = new ExtensionRunner(extensions, runtime, agentDir, sessionManager, modelRegistry);
 		this._extensionRunner = runner;
 		this._extensionCount = extensions.length;
@@ -803,26 +884,27 @@ export class SessionHost {
 			runner.emitError({ extensionPath: path, event: "load", error });
 		}
 
-		// Let extensions contribute additional skill/prompt/theme paths before the
-		// prompt is frozen. Fires after the runner exists.
+		// Let extensions contribute additional skill/prompt paths before the prompt is
+		// frozen, then re-resolve skills/prompts through the loader so the contributed paths
+		// merge with the auto-discovered + package-resolved ones. Fires after the runner exists.
 		const discovered = await runner.emitResourcesDiscover(agentDir, discoverReason);
+		loader.extendResources({
+			skillPaths: discovered.skillPaths.map((s) => ({
+				path: s.path,
+				metadata: contributedResourceMetadata(s.extensionPath),
+			})),
+			promptPaths: discovered.promptPaths.map((p) => ({
+				path: p.path,
+				metadata: contributedResourceMetadata(p.extensionPath),
+			})),
+		});
 
 		// Read curated files ONCE and freeze them into the prompt. Mid-session edits
 		// (memory tool / file tools) persist to disk but only enter the prompt next session.
 		const { soul, memory, user } = loadMemory(name);
-		const { skills, diagnostics: skillDiagnostics } = loadSkills({
-			cwd: agentDir,
-			agentDir,
-			skillPaths: discovered.skillPaths.map((s) => s.path),
-			includeDefaults: true,
-		});
+		const { skills, diagnostics: skillDiagnostics } = loader.getSkills();
 		this._skillDiagnostics = skillDiagnostics;
-		const promptTemplates = loadPromptTemplates({
-			cwd: agentDir,
-			agentDir,
-			promptPaths: discovered.promptPaths.map((p) => p.path),
-			includeDefaults: true,
-		});
+		const promptTemplates = loader.getPrompts().prompts;
 		this._skills = skills;
 		this._promptTemplates = promptTemplates;
 
@@ -927,46 +1009,28 @@ export class SessionHost {
 		const cwd = getAgentDir(this.options.name);
 
 		const actions: ExtensionActions = {
+			// Delegate to the async delivery path and route rejections to the extension error
+			// channel — a mistimed send surfaces as an extension error, not an unhandled
+			// rejection that crashes the process. `runner` is the captured local (not
+			// `this.extensionRunner`) so a delivery that rejects after a reload reports to the
+			// runner it was bound to.
 			sendMessage: (message, options) => {
-				if (!options?.triggerTurn) {
-					// Persist a custom_message entry. The engine's buildSessionContext
-					// surfaces custom_message entries into the next turn's context (as a
-					// user message) AND the entry is renderable via a registered message
-					// renderer — so this single append both delivers and displays.
-					void sessionManager.appendCustomMessageEntry(
-						message.customType,
-						message.content,
-						message.display,
-						message.details,
-					);
-					return;
-				}
-				// triggerTurn: a persisted custom_message auto-surfaces into context, so a
-				// persist+prompt path would double-inject. Instead we drive the turn with the
-				// message's own content exactly once (delivered as a user-role turn — the
-				// customType/details/renderer are not applied on this triggering path).
-				const text = contentToText(message.content);
-				const images = contentToImages(message.content);
-				if (this._isStreaming) {
-					const deliverAs = options.deliverAs ?? "followUp";
-					if (deliverAs === "steer") void harness.steer(text, { images });
-					else if (deliverAs === "nextTurn") void harness.nextTurn(text, { images });
-					else void harness.followUp(text, { images });
-				} else {
-					void harness.prompt(text, { images });
-				}
+				this.sendCustomMessage(message, options).catch((err) =>
+					runner.emitError({
+						extensionPath: "<runtime>",
+						event: "send_message",
+						error: err instanceof Error ? err.message : String(err),
+					}),
+				);
 			},
 			sendUserMessage: (content, options) => {
-				// Always triggers a turn. Deliver via the requested queue while streaming,
-				// otherwise start a fresh turn.
-				const text = contentToText(content);
-				const images = contentToImages(content);
-				if (this._isStreaming) {
-					if ((options?.deliverAs ?? "followUp") === "steer") void harness.steer(text, { images });
-					else void harness.followUp(text, { images });
-				} else {
-					void harness.prompt(text, { images });
-				}
+				this.sendUserMessage(content, options).catch((err) =>
+					runner.emitError({
+						extensionPath: "<runtime>",
+						event: "send_user_message",
+						error: err instanceof Error ? err.message : String(err),
+					}),
+				);
 			},
 			appendEntry: (customType, data) => {
 				void sessionManager.appendCustomEntry(customType, data);
@@ -1051,7 +1115,7 @@ export class SessionHost {
 
 		const contextActions: ExtensionContextActions = {
 			getModel: () => harness.getModel(),
-			isIdle: () => !this._isStreaming,
+			isIdle: () => harness.isIdle,
 			// Flagged divergence: steward has no project-trust concept (no settings store
 			// of trusted projects); the agent home is always trusted.
 			isProjectTrusted: () => true,
@@ -1098,7 +1162,6 @@ export class SessionHost {
 				const runner = this.extensionRunner;
 				switch (event.type) {
 					case "agent_start": {
-						this._isStreaming = true;
 						// The run's abort signal rides every dispatch — capture it for ctx.signal.
 						this._currentSignal = signal;
 						this._turnIndex = 0;
@@ -1106,7 +1169,6 @@ export class SessionHost {
 						return;
 					}
 					case "agent_end": {
-						this._isStreaming = false;
 						this._currentSignal = undefined;
 						if (runner.hasHandlers("agent_end")) {
 							await runner.emit({ type: "agent_end", messages: event.messages });

@@ -19,7 +19,34 @@
  */
 
 import type { TSchema } from "typebox";
+// Type-only imports — erased at compile time, so the extensions↔integrations
+// type cycle (extensions/types.ts already imports this file) has no runtime edge.
+import type { ExtensionUIContext } from "../extensions/types.ts";
+import type { IntegrationAccountRecord } from "../integration-account-storage.ts";
+import type { resolveConfigValueUncached } from "../resolve-config-value.ts";
 import type { SourceInfo } from "../source-info.ts";
+
+/**
+ * The narrowed UI surface an integration's `onboard(ctx)` may use — the dialog
+ * primitives only, no chat chrome (editor/widgets/footer/theme). Mirrors
+ * `ProjectTrustContext.ui` (a `Pick` of `ExtensionUIContext`), with `custom` added so an
+ * author can render a rich guide screen. Calling anything outside this set is a compile
+ * error rather than a silent no-op.
+ */
+export type IntegrationOnboardUI = Pick<ExtensionUIContext, "select" | "confirm" | "input" | "notify" | "custom">;
+
+/**
+ * Context handed to an integration's `onboard(ctx)` during guided setup: the narrowed
+ * dialog surface (`ui`), a live credential resolver (`resolve`) so the author can test a
+ * typed `$ENV` reference before returning it, and an abort `signal`.
+ */
+export interface IntegrationOnboardContext {
+	/** Dialog primitives: select / confirm / input / notify / custom. */
+	ui: IntegrationOnboardUI;
+	/** Resolve a `$ENV` / `${ENV}` / `!cmd` reference to its live value (to test a credential). */
+	resolve: typeof resolveConfigValueUncached;
+	signal: AbortSignal;
+}
 
 /** A callable request/response function exposed by an integration. */
 export interface IntegrationAction {
@@ -39,6 +66,13 @@ export interface IntegrationConfig {
 	actions?: Record<string, IntegrationAction>;
 	/** Long-running producer: opens a connection/loop and calls `ctx.emit`. */
 	run?(ctx: IntegrationRunContext): void | (() => void) | Promise<void | (() => void)>;
+	/**
+	 * Guided first-run setup. Invoked on interactive launch for an unconfigured
+	 * service (or via `integrations configure`). Returns ONE account record to
+	 * persist, or `undefined` to cancel. Record values may be raw secrets or
+	 * `$ENV`/`!cmd` references — `integrations.json` is written `0o600`.
+	 */
+	onboard?(ctx: IntegrationOnboardContext): Promise<IntegrationAccountRecord | undefined>;
 }
 
 export interface IntegrationRunContext {

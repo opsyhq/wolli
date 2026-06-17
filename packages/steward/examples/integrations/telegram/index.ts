@@ -1,29 +1,31 @@
 /**
- * Telegram chat integration — the transport half.
+ * Telegram chat integration — the transport half (self-contained package).
  *
  * This integration faces the network, holds the bot token, and emits a `message`
  * event per inbound Telegram message. It does not touch sessions or the agent; the
- * paired extension (`telegram-chat.ts`) maps those events into a chat loop. See
+ * paired extension (`telegram-chat.ts`, declared under `steward.extensions`) maps those
+ * events into a chat loop and is copied into the agent on onboarding. See
  * `INTEGRATION.md` for the transport-vs-mapping split.
  *
  * Transport is grammY long polling (`@grammyjs/runner`'s `run`), so no public URL
- * or TLS is needed.
+ * or TLS is needed. The package brings its OWN grammy + @grammyjs/runner deps.
  *
- * ## Configuration (`~/.steward/agents/<name>/integrations.json`)
+ * ## Install + configure
  *
- *   {
- *     "telegram": {
- *       "default": {
- *         "botToken": "$TELEGRAM_BOT_TOKEN",
- *         "allowedChatIds": [123456789],
- *         "parseMode": "MarkdownV2"
- *       }
- *     }
- *   }
+ *   steward integrations add <agent> ./examples/integrations/telegram
+ *   # then paste the BotFather token into the guided prompt — that's it.
  *
- * `botToken` is resolved on read (`$ENV` / `!cmd` strings). `allowedChatIds` is an
+ * Onboarding asks for the BotFather token directly, verifies it with a live `getMe()`,
+ * and stores the raw token in `~/.steward/agents/<name>/integrations.json`:
+ *
+ *   { "telegram": { "default": { "botToken": "123456:ABC..." } } }
+ *
+ * `botToken` is still resolved on read, so a `$ENV` / `!cmd` reference placed there by
+ * hand keeps working — onboarding just stores the literal token. `allowedChatIds` is an
  * allowlist — empty/absent means "allow any chat" (logged as a warning). `parseMode`
  * is how outbound text is formatted (default `"MarkdownV2"`; `"plain"` disables it).
+ * `allowedChatIds`/`parseMode` are not asked during onboarding — edit integrations.json
+ * to set them.
  *
  * ## Known v1 limitations
  *  - No durable cursor: `run()` calls `deleteWebhook({ drop_pending_updates: true })`
@@ -34,12 +36,28 @@
  */
 
 import { run } from "@grammyjs/runner";
-import type { IntegrationsAPI } from "@opsyhq/steward";
+// `getMarkdownTheme` (value) + the integration types are host-provided via the loader's
+// VIRTUAL_MODULES / aliases, so @opsyhq/steward is a peerDependency, not a dependency.
+import { getMarkdownTheme, type IntegrationOnboardContext, type IntegrationsAPI } from "@opsyhq/steward";
+// Markdown/matchesKey/Container/Text are likewise host-provided (@opsyhq/tui).
+import { Container, Markdown, matchesKey, Text } from "@opsyhq/tui";
 import { Bot, GrammyError } from "grammy";
 import { Type } from "typebox";
 
 /** Telegram caps a single message at 4096 UTF-16 code units. */
 const TELEGRAM_MAX_LENGTH = 4096;
+
+/** BotFather walkthrough shown on the onboarding guide screen. */
+const ONBOARD_GUIDE = [
+	"## Connect Telegram",
+	"",
+	"1. Open [@BotFather](https://t.me/BotFather) in Telegram and send `/newbot`.",
+	"2. Pick a name and username; BotFather replies with a **bot token** like",
+	"   `123456:ABC-DEF...`.",
+	"3. Copy that token and paste it on the next screen.",
+	"",
+	"Steward verifies the token and stores it for this agent.",
+].join("\n");
 
 type ParseMode = "MarkdownV2" | "HTML" | "plain";
 
@@ -114,11 +132,54 @@ async function sendChunk(
 	}
 }
 
+/**
+ * Guided setup: show the BotFather walkthrough, collect the bot token directly, verify
+ * it with a live `getMe()`, and return the raw token to store. Returns `undefined`
+ * (cancelled) if the user dismisses a step, submits nothing, or verification fails.
+ */
+async function onboard(ctx: IntegrationOnboardContext): Promise<{ botToken: string } | undefined> {
+	// Guide screen (template: examples/extensions/summarize.ts) — Enter/Esc to continue.
+	await ctx.ui.custom<undefined>((_tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new Text(theme.fg("accent", theme.bold("Connect Telegram")), 1, 0));
+		container.addChild(new Markdown(ONBOARD_GUIDE, 1, 1, getMarkdownTheme()));
+		container.addChild(new Text(theme.fg("dim", "Press Enter or Esc to continue"), 1, 0));
+		return {
+			render: (width: number) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (matchesKey(data, "enter") || matchesKey(data, "escape")) {
+					done(undefined);
+				}
+			},
+		};
+	});
+
+	// undefined = cancelled. The pasted value is the raw token itself, not a reference.
+	const entered = await ctx.ui.input("Paste the bot token from BotFather");
+	if (entered === undefined) return undefined; // cancelled
+	const token = entered.trim();
+	if (!token) {
+		ctx.ui.notify("No token entered.", "error");
+		return undefined;
+	}
+
+	try {
+		const me = await new Bot(token).api.getMe();
+		ctx.ui.notify(`Verified bot @${me.username}.`, "info");
+	} catch (err) {
+		ctx.ui.notify(`Could not verify the token: ${err instanceof Error ? err.message : String(err)}`, "error");
+		return undefined;
+	}
+
+	return { botToken: token };
+}
+
 export default function (steward: IntegrationsAPI) {
 	steward.registerIntegration({
 		name: "telegram",
 		account: Type.Object({
-			/** BotFather token; store as `"$TELEGRAM_BOT_TOKEN"` in integrations.json. */
+			/** BotFather token. Onboarding stores it raw; a `$ENV`/`!cmd` reference also works. */
 			botToken: Type.String(),
 			/** Allowlist of chat ids. Empty/absent = allow all (logged as a warning). */
 			allowedChatIds: Type.Optional(Type.Array(Type.Number())),
@@ -141,6 +202,7 @@ export default function (steward: IntegrationsAPI) {
 				date: Type.Number(),
 			}),
 		},
+		onboard,
 		actions: {
 			sendMessage: {
 				description: "Send a text message to a chat (chunked at 4096, with plain-text fallback).",

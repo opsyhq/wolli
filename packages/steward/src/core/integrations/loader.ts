@@ -1,6 +1,6 @@
 /**
- * Integration loader. Loads TypeScript integration modules with jiti, discovers
- * them from a per-agent `integrations/` folder, and exposes the definer-side
+ * Integration loader. Loads TypeScript integration modules with jiti from the
+ * paths the package manager's `resolve()` surfaces, and exposes the definer-side
  * `IntegrationsAPI`. Definitions are written to the integration's `definitions`
  * map directly at load time.
  */
@@ -8,8 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createJiti } from "jiti/static";
-// Aliased: the zero-arg default falls back to the shared agent dir; callers pass `getAgentDir(name)`.
-import { getSharedAgentDir as getAgentDir, isBunBinary } from "../../config.ts";
+import { isBunBinary } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { getAliases, VIRTUAL_MODULES } from "../extensions/loader.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
@@ -88,7 +87,8 @@ async function loadIntegrationModule(integrationPath: string): Promise<Integrati
 		...(isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
 	});
 
-	const module = await jiti.import(integrationPath, { default: true });
+	const realPath = fs.existsSync(integrationPath) ? fs.realpathSync(integrationPath) : integrationPath;
+	const module = await jiti.import(realPath, { default: true });
 	const factory = module as IntegrationFactory;
 	return typeof factory !== "function" ? undefined : factory;
 }
@@ -179,146 +179,4 @@ export async function loadIntegrations(
 		errors,
 		runtime: resolvedRuntime,
 	};
-}
-
-interface PiManifest {
-	integrations?: string[];
-}
-
-function readPiManifest(packageJsonPath: string): PiManifest | null {
-	try {
-		const content = fs.readFileSync(packageJsonPath, "utf-8");
-		const pkg = JSON.parse(content);
-		if (pkg.pi && typeof pkg.pi === "object") {
-			return pkg.pi as PiManifest;
-		}
-		return null;
-	} catch {
-		return null;
-	}
-}
-
-function isIntegrationFile(name: string): boolean {
-	return name.endsWith(".ts") || name.endsWith(".js");
-}
-
-/**
- * Resolve integration entry points from a directory:
- *  1. package.json with "pi.integrations" → declared paths
- *  2. index.ts / index.js → the index file
- */
-function resolveIntegrationEntries(dir: string): string[] | null {
-	const packageJsonPath = path.join(dir, "package.json");
-	if (fs.existsSync(packageJsonPath)) {
-		const manifest = readPiManifest(packageJsonPath);
-		if (manifest?.integrations?.length) {
-			const entries: string[] = [];
-			for (const intPath of manifest.integrations) {
-				const resolvedIntPath = path.resolve(dir, intPath);
-				if (fs.existsSync(resolvedIntPath)) {
-					entries.push(resolvedIntPath);
-				}
-			}
-			if (entries.length > 0) {
-				return entries;
-			}
-		}
-	}
-
-	const indexTs = path.join(dir, "index.ts");
-	const indexJs = path.join(dir, "index.js");
-	if (fs.existsSync(indexTs)) {
-		return [indexTs];
-	}
-	if (fs.existsSync(indexJs)) {
-		return [indexJs];
-	}
-
-	return null;
-}
-
-/**
- * Discover integrations in a directory (one level of nesting):
- *  1. Direct files: `integrations/*.ts` or `*.js`
- *  2. Subdir with index: `integrations/* /index.ts` or `index.js`
- *  3. Subdir with package.json declaring "pi.integrations"
- */
-function discoverIntegrationsInDir(dir: string): string[] {
-	if (!fs.existsSync(dir)) {
-		return [];
-	}
-
-	const discovered: string[] = [];
-
-	try {
-		const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-		for (const entry of entries) {
-			const entryPath = path.join(dir, entry.name);
-
-			if ((entry.isFile() || entry.isSymbolicLink()) && isIntegrationFile(entry.name)) {
-				discovered.push(entryPath);
-				continue;
-			}
-
-			if (entry.isDirectory() || entry.isSymbolicLink()) {
-				const subEntries = resolveIntegrationEntries(entryPath);
-				if (subEntries) {
-					discovered.push(...subEntries);
-				}
-			}
-		}
-	} catch {
-		return [];
-	}
-
-	return discovered;
-}
-
-/**
- * Discover and load integrations from standard locations.
- * Returns `{ integrations, errors, runtime }`.
- */
-export async function discoverAndLoadIntegrations(
-	configuredPaths: string[],
-	cwd: string,
-	agentDir: string = getAgentDir(),
-	runtime?: IntegrationRuntime,
-): Promise<LoadIntegrationsResult> {
-	const resolvedCwd = resolvePath(cwd);
-	const resolvedAgentDir = resolvePath(agentDir);
-	const allPaths: string[] = [];
-	const seen = new Set<string>();
-
-	const addPaths = (paths: string[]) => {
-		for (const p of paths) {
-			const resolved = path.resolve(p);
-			if (!seen.has(resolved)) {
-				seen.add(resolved);
-				allPaths.push(p);
-			}
-		}
-	};
-
-	// 1. Agent integrations: agentDir/integrations/
-	const globalIntDir = path.join(resolvedAgentDir, "integrations");
-	addPaths(discoverIntegrationsInDir(globalIntDir));
-
-	// 2. Explicitly configured paths
-	for (const p of configuredPaths) {
-		const resolved = resolvePath(p, resolvedCwd, { normalizeUnicodeSpaces: true });
-		if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
-			const entries = resolveIntegrationEntries(resolved);
-			if (entries) {
-				addPaths(entries);
-				continue;
-			}
-			addPaths(discoverIntegrationsInDir(resolved));
-			continue;
-		}
-
-		addPaths([resolved]);
-	}
-
-	return loadIntegrations(allPaths, resolvedCwd, runtime);
 }

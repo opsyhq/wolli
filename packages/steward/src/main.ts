@@ -25,8 +25,10 @@ import { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel } from "./core/model-resolver.ts";
 import { SessionHost } from "./core/session-host.ts";
 import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
+import { runIntegrations } from "./integrations-cli.ts";
 import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
+import { runPackages } from "./package-manager-cli.ts";
 
 /**
  * The first thing a newly created agent "says". Seeded as an assistant message into
@@ -38,7 +40,9 @@ const BIRTH_OPENER = "What is my purpose?";
 export async function main(argv: string[]): Promise<number> {
 	const args = parseArgs(argv);
 
-	if (args.help) {
+	// `integrations`/`packages` own their per-subcommand help, so don't let the global
+	// --help intercept swallow `<cmd> --help`.
+	if (args.help && args.positionals[0] !== "integrations" && args.positionals[0] !== "packages") {
 		printHelp();
 		return 0;
 	}
@@ -60,6 +64,8 @@ export async function main(argv: string[]): Promise<number> {
 	if (command === "new") return runNew(rest, args);
 	if (command === "list") return runList();
 	if (command === "delete") return runDelete(rest);
+	if (command === "integrations") return runIntegrations(rest, args.help);
+	if (command === "packages") return runPackages(rest, args.help);
 	return runAgent(command, rest, args);
 }
 

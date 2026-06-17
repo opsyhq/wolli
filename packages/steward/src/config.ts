@@ -144,6 +144,11 @@ export function getAgentIntegrationsPath(name: string): string {
 	return join(getAgentDir(name), "integrations.json");
 }
 
+/** Path to an agent's integrations dir (where installed integration packages are symlinked/discovered). */
+export function getAgentIntegrationsDir(name: string): string {
+	return join(getAgentDir(name), "integrations");
+}
+
 /** Path to an agent's curated SOUL.md (who it is / what it's for). */
 export function getSoulPath(name: string): string {
 	return join(getAgentDir(name), "SOUL.md");

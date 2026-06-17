@@ -21,10 +21,11 @@ Example extensions demonstrating:
 
 ### Telegram
 
-Turn a Steward agent into a Telegram chat bot. It ships as two copyable files — a
-transport ([integrations/telegram.ts](integrations/telegram.ts)) and a session
-mapping ([extensions/telegram-chat.ts](extensions/telegram-chat.ts)) — using grammY
-long polling (no public URL or TLS).
+Turn a Steward agent into a Telegram chat bot. It ships as a self-contained package
+([integrations/telegram/](integrations/telegram/)) that brings its own grammY
+dependency: a transport ([index.ts](integrations/telegram/index.ts)) and a paired
+session mapping ([telegram-chat.ts](integrations/telegram/telegram-chat.ts)), using
+grammY long polling (no public URL or TLS).
 
 **Enable:**
 
@@ -32,18 +33,26 @@ long polling (no public URL or TLS).
    ```sh
    export TELEGRAM_BOT_TOKEN=123456:ABC...
    ```
-2. Copy both files into your agent home:
+2. Install the package into your agent (brings its own grammy via a symlink under
+   `<agent>/integrations/`):
    ```sh
-   cp examples/integrations/telegram.ts   ~/.steward/agents/<name>/integrations/telegram.ts
-   cp examples/extensions/telegram-chat.ts ~/.steward/agents/<name>/extensions/telegram-chat.ts
+   steward integrations add <name> ./examples/integrations/telegram
    ```
-3. Add the account to `~/.steward/agents/<name>/integrations.json` (use your own chat
-   id — message [@userinfobot](https://t.me/userinfobot) to find it):
-   ```json
-   { "telegram": { "default": { "botToken": "$TELEGRAM_BOT_TOKEN", "allowedChatIds": [123456789] } } }
+3. Run the guided setup — it walks you through BotFather, verifies the token, writes
+   `integrations.json` (storing the `$ENV` reference, not the raw token), and copies the
+   paired extension into your agent:
+   ```sh
+   steward integrations configure <name> telegram
    ```
 4. Run `steward <name>` and message the bot. You should see a typing indicator, then
    the agent's reply. `/status`, `/new`, and `/help` are handled locally.
+
+To restrict who can message the bot, add `allowedChatIds` to the stored account in
+`~/.steward/agents/<name>/integrations.json` (message [@userinfobot](https://t.me/userinfobot)
+to find your chat id):
+```json
+{ "telegram": { "default": { "botToken": "$TELEGRAM_BOT_TOKEN", "allowedChatIds": [123456789] } } }
+```
 
 **Account fields** (`integrations.json`):
 - `botToken` — BotFather token; store as `"$TELEGRAM_BOT_TOKEN"` (resolved on read).

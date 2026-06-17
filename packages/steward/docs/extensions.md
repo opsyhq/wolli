@@ -24,7 +24,7 @@ Extensions are TypeScript modules that extend Steward's behavior. They can subsc
 
 See [examples/extensions/](../examples/extensions/) for working implementations.
 
-> **Note:** The extension factory's first argument is named `steward` throughout this document. That name is just a convention for the extension API object — call it whatever you like. (The package.json manifest key used to declare extensions is `"pi"`; that key name is fixed and unrelated to the argument name.)
+> **Note:** The extension factory's first argument is named `steward` throughout this document. That name is just a convention for the extension API object — call it whatever you like. (The package.json manifest key used to declare extensions is `"steward"`; that key name is fixed and unrelated to the argument name.)
 
 ## Table of Contents
 
@@ -220,7 +220,7 @@ export default async function (steward: ExtensionAPI) {
     "zod": "^3.0.0",
     "chalk": "^5.0.0"
   },
-  "pi": {
+  "steward": {
     "extensions": ["./src/index.ts"]
   }
 }

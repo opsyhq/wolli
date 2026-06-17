@@ -1,0 +1,17 @@
+{
+	"name": "steward-integration-telegram",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"steward": {
+		"integrations": ["./index.ts"],
+		"extensions": ["./telegram-chat.ts"]
+	},
+	"dependencies": {
+		"grammy": "1.44.0",
+		"@grammyjs/runner": "2.0.3"
+	},
+	"peerDependencies": {
+		"@opsyhq/steward": "*"
+	}
+}

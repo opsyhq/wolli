@@ -11,6 +11,7 @@ import chalk from "chalk";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { getCustomThemesDir, getThemesDir } from "../../../config.ts";
+import type { SourceInfo } from "../../../core/source-info.ts";
 import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
 import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
 
@@ -321,6 +322,7 @@ function resolveThemeColors<T extends Record<string, ColorValue>>(
 export class Theme {
 	readonly name?: string;
 	readonly sourcePath?: string;
+	sourceInfo?: SourceInfo;
 	private fgColors: Map<ThemeColor, string>;
 	private bgColors: Map<ThemeBg, string>;
 	private mode: ColorMode;
@@ -329,10 +331,11 @@ export class Theme {
 		fgColors: Record<ThemeColor, string | number>,
 		bgColors: Record<ThemeBg, string | number>,
 		mode: ColorMode,
-		options: { name?: string; sourcePath?: string } = {},
+		options: { name?: string; sourcePath?: string; sourceInfo?: SourceInfo } = {},
 	) {
 		this.name = options.name;
 		this.sourcePath = options.sourcePath;
+		this.sourceInfo = options.sourceInfo;
 		this.mode = mode;
 		this.fgColors = new Map();
 		for (const [key, value] of Object.entries(fgColors) as [ThemeColor, string | number][]) {

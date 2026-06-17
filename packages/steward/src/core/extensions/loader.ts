@@ -9,11 +9,9 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as _bundledPiAi from "@earendil-works/pi-ai";
 import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
-import * as _bundledGrammyRunner from "@grammyjs/runner";
 import * as _bundledPiAgentCore from "@opsyhq/agent";
 import type { KeyId } from "@opsyhq/tui";
 import * as _bundledPiTui from "@opsyhq/tui";
-import * as _bundledGrammy from "grammy";
 import { createJiti } from "jiti/static";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
@@ -58,11 +56,13 @@ export const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@opsyhq/tui": _bundledPiTui,
 	"@earendil-works/pi-ai": _bundledPiAi,
 	"@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
-	// grammY + its long-poll runner, used by the Telegram integration example.
-	grammy: _bundledGrammy,
-	"@grammyjs/runner": _bundledGrammyRunner,
 	// The host-package identity string is steward's own package name.
 	"@opsyhq/steward": _bundledPiCodingAgent,
+	// NOTE: integration-specific deps (e.g. grammy) are NOT bundled here. A
+	// self-contained integration package brings its own node_modules, and jiti
+	// resolves the integration's own copy. (If a future Bun binary build cannot
+	// resolve an integration's own node_modules, re-add the dep here + keep it a
+	// devDependency so the binary ships a bundled fallback — see plan Risk.)
 };
 
 const require = createRequire(import.meta.url);
@@ -82,9 +82,6 @@ export function getAliases(): Record<string, string> {
 	const typeboxEntry = require.resolve("typebox");
 	const typeboxCompileEntry = require.resolve("typebox/compile");
 	const typeboxValueEntry = require.resolve("typebox/value");
-
-	const grammyEntry = require.resolve("grammy");
-	const grammyRunnerEntry = require.resolve("@grammyjs/runner");
 
 	const packagesRoot = path.resolve(__dirname, "../../../../");
 	const resolveWorkspaceOrImport = (workspaceRelativePath: string, specifier: string): string | null => {
@@ -120,8 +117,8 @@ export function getAliases(): Record<string, string> {
 		"@sinclair/typebox": typeboxEntry,
 		"@sinclair/typebox/compile": typeboxCompileEntry,
 		"@sinclair/typebox/value": typeboxValueEntry,
-		grammy: grammyEntry,
-		"@grammyjs/runner": grammyRunnerEntry,
+		// Integration deps (e.g. grammy) are intentionally NOT aliased here: jiti
+		// resolves an installed integration's OWN node_modules copy.
 	};
 	// Only alias entries that resolved. In the real runtime all of these resolve; under
 	// Vitest SSR (no import.meta.resolve) the bundled library entries may be omitted and
@@ -490,19 +487,19 @@ export async function loadExtensions(
 	};
 }
 
-interface PiManifest {
+interface StewardManifest {
 	extensions?: string[];
 	themes?: string[];
 	skills?: string[];
 	prompts?: string[];
 }
 
-function readPiManifest(packageJsonPath: string): PiManifest | null {
+function readStewardManifest(packageJsonPath: string): StewardManifest | null {
 	try {
 		const content = fs.readFileSync(packageJsonPath, "utf-8");
 		const pkg = JSON.parse(content);
-		if (pkg.pi && typeof pkg.pi === "object") {
-			return pkg.pi as PiManifest;
+		if (pkg.steward && typeof pkg.steward === "object") {
+			return pkg.steward as StewardManifest;
 		}
 		return null;
 	} catch {
@@ -518,16 +515,16 @@ function isExtensionFile(name: string): boolean {
  * Resolve extension entry points from a directory.
  *
  * Checks for:
- * 1. package.json with "pi.extensions" field -> returns declared paths
+ * 1. package.json with "steward.extensions" field -> returns declared paths
  * 2. index.ts or index.js -> returns the index file
  *
  * Returns resolved paths or null if no entry points found.
  */
 function resolveExtensionEntries(dir: string): string[] | null {
-	// Check for package.json with "pi" field first
+	// Check for package.json with "steward" field first
 	const packageJsonPath = path.join(dir, "package.json");
 	if (fs.existsSync(packageJsonPath)) {
-		const manifest = readPiManifest(packageJsonPath);
+		const manifest = readStewardManifest(packageJsonPath);
 		if (manifest?.extensions?.length) {
 			const entries: string[] = [];
 			for (const extPath of manifest.extensions) {
@@ -561,7 +558,7 @@ function resolveExtensionEntries(dir: string): string[] | null {
  * Discovery rules:
  * 1. Direct files: `extensions/*.ts` or `*.js` → load
  * 2. Subdirectory with index: `extensions/* /index.ts` or `index.js` → load
- * 3. Subdirectory with package.json: `extensions/* /package.json` with "pi" field → load what it declares
+ * 3. Subdirectory with package.json: `extensions/* /package.json` with "steward" field → load what it declares
  *
  * No recursion beyond one level. Complex packages must use package.json manifest.
  */
@@ -632,7 +629,7 @@ export async function discoverAndLoadExtensions(
 	for (const p of configuredPaths) {
 		const resolved = resolvePath(p, resolvedCwd, { normalizeUnicodeSpaces: true });
 		if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
-			// Check for package.json with pi manifest or index.ts
+			// Check for package.json with steward manifest or index.ts
 			const entries = resolveExtensionEntries(resolved);
 			if (entries) {
 				addPaths(entries);
