@@ -62,7 +62,7 @@ import type {
 import type { IntegrationAccountStorage } from "./integration-account-storage.ts";
 import { IntegrationRunner } from "./integrations/runner.ts";
 import { loadMemory } from "./memory.ts";
-import { createCustomMessage } from "./messages.ts";
+import { type CustomMessage, createCustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { type PromptTemplate, parseCommandArgs } from "./prompt-templates.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -109,6 +109,8 @@ export interface SessionHostPromptOptions {
 	source?: InputSource;
 	/** How to deliver the message while a turn is already streaming. */
 	streamingBehavior?: "steer" | "followUp";
+	/** When false, skip extension-command + skill/template dispatch (extension-driven sends). Default true. */
+	expandPromptTemplates?: boolean;
 }
 
 /**
@@ -242,8 +244,6 @@ export class SessionHost {
 	private _systemPrompt = "";
 	/** The options the frozen prompt was built from, backing `ctx.getSystemPromptOptions()`. */
 	private _systemPromptOptions?: BuildSystemPromptOptions;
-	/** Live streaming flag, kept in sync by the subscribe() translator. */
-	private _isStreaming = false;
 	/** The current run's abort signal, or undefined when idle. */
 	private _currentSignal?: AbortSignal;
 	/** Queued-message count (steer+followUp+nextTurn), kept in sync via queue_update. */
@@ -550,9 +550,10 @@ export class SessionHost {
 	async prompt(text: string, options?: SessionHostPromptOptions): Promise<void> {
 		const runner = this.extensionRunner;
 		const harness = this.harness;
+		const expandPromptTemplates = options?.expandPromptTemplates !== false;
 
 		// 1. Extension command — manages its own LLM interaction via steward.sendMessage().
-		if (text.startsWith("/") && (await this.tryExecuteExtensionCommand(text))) {
+		if (expandPromptTemplates && text.startsWith("/") && (await this.tryExecuteExtensionCommand(text))) {
 			return;
 		}
 
@@ -564,7 +565,7 @@ export class SessionHost {
 				currentText,
 				currentImages,
 				options?.source ?? "interactive",
-				this._isStreaming ? options?.streamingBehavior : undefined,
+				!harness.isIdle ? options?.streamingBehavior : undefined,
 			);
 			if (result.action === "handled") return;
 			if (result.action === "transform") {
@@ -575,14 +576,14 @@ export class SessionHost {
 
 		// 3. Skill / prompt-template dispatch. `/skill:<name> [args]` → harness.skill;
 		//    `/<name> [args]` matching a loaded template → harness.promptFromTemplate.
-		if (currentText.startsWith("/skill:")) {
+		if (expandPromptTemplates && currentText.startsWith("/skill:")) {
 			const spaceIndex = currentText.indexOf(" ");
 			const name = spaceIndex === -1 ? currentText.slice(7) : currentText.slice(7, spaceIndex);
 			const args = spaceIndex === -1 ? "" : currentText.slice(spaceIndex + 1).trim();
 			await harness.skill(name, args || undefined);
 			return;
 		}
-		if (currentText.startsWith("/")) {
+		if (expandPromptTemplates && currentText.startsWith("/")) {
 			const spaceIndex = currentText.indexOf(" ");
 			const name = spaceIndex === -1 ? currentText.slice(1) : currentText.slice(1, spaceIndex);
 			const template = this._promptTemplates.find((t) => t.name === name);
@@ -596,7 +597,7 @@ export class SessionHost {
 		// 4. Plain prompt — or queue via steer()/followUp() when a turn is streaming.
 		//    An ambiguous mid-stream submit (no streamingBehavior) is rejected rather
 		//    than silently steered.
-		if (this._isStreaming) {
+		if (!harness.isIdle) {
 			if (!options?.streamingBehavior) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -610,6 +611,58 @@ export class SessionHost {
 			return;
 		}
 		await harness.prompt(currentText, { images: currentImages });
+	}
+
+	/**
+	 * Send a user message to the agent (extension-driven). Always triggers a turn; while a turn
+	 * is streaming, `deliverAs` selects the queue. Routes through `prompt` with command +
+	 * skill/template dispatch skipped (`expandPromptTemplates: false`).
+	 */
+	async sendUserMessage(
+		content: string | (TextContent | ImageContent)[],
+		options?: { deliverAs?: "steer" | "followUp" },
+	): Promise<void> {
+		const text = contentToText(content);
+		const images = contentToImages(content);
+		await this.prompt(text, {
+			expandPromptTemplates: false,
+			streamingBehavior: options?.deliverAs,
+			images,
+			source: "extension",
+		});
+	}
+
+	/**
+	 * Deliver an extension custom-message:
+	 *  - `deliverAs: "nextTurn"` → queue for the next turn;
+	 *  - else streaming (`!harness.isIdle`) → steer/followUp by `deliverAs`;
+	 *  - else `triggerTurn` → drive a fresh turn (delivered as a user-role turn exactly once;
+	 *    the customType/details/renderer are not applied on this path);
+	 *  - else → persist a custom_message entry, which both delivers it into the next turn's
+	 *    context and renders it via a registered message renderer.
+	 */
+	async sendCustomMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+	): Promise<void> {
+		const harness = this.harness;
+		const text = contentToText(message.content);
+		const images = contentToImages(message.content);
+		if (options?.deliverAs === "nextTurn") {
+			await harness.nextTurn(text, { images });
+		} else if (!harness.isIdle) {
+			if (options?.deliverAs === "steer") await harness.steer(text, { images });
+			else await harness.followUp(text, { images });
+		} else if (options?.triggerTurn) {
+			await this.prompt(text, { expandPromptTemplates: false, images, source: "extension" });
+		} else {
+			await this._sessionManager!.appendCustomMessageEntry(
+				message.customType,
+				message.content,
+				message.display,
+				message.details,
+			);
+		}
 	}
 
 	/**
@@ -956,46 +1009,28 @@ export class SessionHost {
 		const cwd = getAgentDir(this.options.name);
 
 		const actions: ExtensionActions = {
+			// Delegate to the async delivery path and route rejections to the extension error
+			// channel — a mistimed send surfaces as an extension error, not an unhandled
+			// rejection that crashes the process. `runner` is the captured local (not
+			// `this.extensionRunner`) so a delivery that rejects after a reload reports to the
+			// runner it was bound to.
 			sendMessage: (message, options) => {
-				if (!options?.triggerTurn) {
-					// Persist a custom_message entry. The engine's buildSessionContext
-					// surfaces custom_message entries into the next turn's context (as a
-					// user message) AND the entry is renderable via a registered message
-					// renderer — so this single append both delivers and displays.
-					void sessionManager.appendCustomMessageEntry(
-						message.customType,
-						message.content,
-						message.display,
-						message.details,
-					);
-					return;
-				}
-				// triggerTurn: a persisted custom_message auto-surfaces into context, so a
-				// persist+prompt path would double-inject. Instead we drive the turn with the
-				// message's own content exactly once (delivered as a user-role turn — the
-				// customType/details/renderer are not applied on this triggering path).
-				const text = contentToText(message.content);
-				const images = contentToImages(message.content);
-				if (this._isStreaming) {
-					const deliverAs = options.deliverAs ?? "followUp";
-					if (deliverAs === "steer") void harness.steer(text, { images });
-					else if (deliverAs === "nextTurn") void harness.nextTurn(text, { images });
-					else void harness.followUp(text, { images });
-				} else {
-					void harness.prompt(text, { images });
-				}
+				this.sendCustomMessage(message, options).catch((err) =>
+					runner.emitError({
+						extensionPath: "<runtime>",
+						event: "send_message",
+						error: err instanceof Error ? err.message : String(err),
+					}),
+				);
 			},
 			sendUserMessage: (content, options) => {
-				// Always triggers a turn. Deliver via the requested queue while streaming,
-				// otherwise start a fresh turn.
-				const text = contentToText(content);
-				const images = contentToImages(content);
-				if (this._isStreaming) {
-					if ((options?.deliverAs ?? "followUp") === "steer") void harness.steer(text, { images });
-					else void harness.followUp(text, { images });
-				} else {
-					void harness.prompt(text, { images });
-				}
+				this.sendUserMessage(content, options).catch((err) =>
+					runner.emitError({
+						extensionPath: "<runtime>",
+						event: "send_user_message",
+						error: err instanceof Error ? err.message : String(err),
+					}),
+				);
 			},
 			appendEntry: (customType, data) => {
 				void sessionManager.appendCustomEntry(customType, data);
@@ -1080,7 +1115,7 @@ export class SessionHost {
 
 		const contextActions: ExtensionContextActions = {
 			getModel: () => harness.getModel(),
-			isIdle: () => !this._isStreaming,
+			isIdle: () => harness.isIdle,
 			// Flagged divergence: steward has no project-trust concept (no settings store
 			// of trusted projects); the agent home is always trusted.
 			isProjectTrusted: () => true,
@@ -1127,7 +1162,6 @@ export class SessionHost {
 				const runner = this.extensionRunner;
 				switch (event.type) {
 					case "agent_start": {
-						this._isStreaming = true;
 						// The run's abort signal rides every dispatch — capture it for ctx.signal.
 						this._currentSignal = signal;
 						this._turnIndex = 0;
@@ -1135,7 +1169,6 @@ export class SessionHost {
 						return;
 					}
 					case "agent_end": {
-						this._isStreaming = false;
 						this._currentSignal = undefined;
 						if (runner.hasHandlers("agent_end")) {
 							await runner.emit({ type: "agent_end", messages: event.messages });

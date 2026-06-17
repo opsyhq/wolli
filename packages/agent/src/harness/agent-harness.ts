@@ -1064,6 +1064,11 @@ export class AgentHarness<
 		return { clearedSteer, clearedFollowUp };
 	}
 
+	/** Whether the harness can accept a fresh prompt. `compaction`/`branch_summary` count as busy. */
+	get isIdle(): boolean {
+		return this.phase === "idle";
+	}
+
 	async waitForIdle(): Promise<void> {
 		await this.runPromise;
 	}
