@@ -13,15 +13,15 @@
  * ## Install + configure
  *
  *   steward integrations add <agent> ./examples/integrations/telegram
- *   export TELEGRAM_BOT_TOKEN=123456:ABC...
- *   steward integrations configure <agent> telegram   # guided BotFather setup
+ *   # then paste the BotFather token into the guided prompt — that's it.
  *
- * Onboarding stores the `$ENV` reference (not the raw token) in
- * `~/.steward/agents/<name>/integrations.json`:
+ * Onboarding asks for the BotFather token directly, verifies it with a live `getMe()`,
+ * and stores the raw token in `~/.steward/agents/<name>/integrations.json`:
  *
- *   { "telegram": { "default": { "botToken": "$TELEGRAM_BOT_TOKEN" } } }
+ *   { "telegram": { "default": { "botToken": "123456:ABC..." } } }
  *
- * `botToken` is resolved on read (`$ENV` / `!cmd` strings). `allowedChatIds` is an
+ * `botToken` is still resolved on read, so a `$ENV` / `!cmd` reference placed there by
+ * hand keeps working — onboarding just stores the literal token. `allowedChatIds` is an
  * allowlist — empty/absent means "allow any chat" (logged as a warning). `parseMode`
  * is how outbound text is formatted (default `"MarkdownV2"`; `"plain"` disables it).
  * `allowedChatIds`/`parseMode` are not asked during onboarding — edit integrations.json
@@ -47,9 +47,6 @@ import { Type } from "typebox";
 /** Telegram caps a single message at 4096 UTF-16 code units. */
 const TELEGRAM_MAX_LENGTH = 4096;
 
-/** Default env var holding the BotFather token, offered during onboarding. */
-const DEFAULT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN";
-
 /** BotFather walkthrough shown on the onboarding guide screen. */
 const ONBOARD_GUIDE = [
 	"## Connect Telegram",
@@ -57,13 +54,9 @@ const ONBOARD_GUIDE = [
 	"1. Open [@BotFather](https://t.me/BotFather) in Telegram and send `/newbot`.",
 	"2. Pick a name and username; BotFather replies with a **bot token** like",
 	"   `123456:ABC-DEF...`.",
-	"3. Export it in your shell, then continue:",
+	"3. Copy that token and paste it on the next screen.",
 	"",
-	"   ```sh",
-	"   export TELEGRAM_BOT_TOKEN=123456:ABC-DEF...",
-	"   ```",
-	"",
-	"Steward stores only the env-var reference (never the raw token).",
+	"Steward verifies the token and stores it for this agent.",
 ].join("\n");
 
 type ParseMode = "MarkdownV2" | "HTML" | "plain";
@@ -140,9 +133,9 @@ async function sendChunk(
 }
 
 /**
- * Guided setup: show the BotFather walkthrough, collect the env var holding the token,
- * verify it with a live `getMe()`, and return the `$ENV` reference to store. Returns
- * `undefined` (cancelled) if the user dismisses a step or verification fails.
+ * Guided setup: show the BotFather walkthrough, collect the bot token directly, verify
+ * it with a live `getMe()`, and return the raw token to store. Returns `undefined`
+ * (cancelled) if the user dismisses a step, submits nothing, or verification fails.
  */
 async function onboard(ctx: IntegrationOnboardContext): Promise<{ botToken: string } | undefined> {
 	// Guide screen (template: examples/extensions/summarize.ts) — Enter/Esc to continue.
@@ -162,15 +155,12 @@ async function onboard(ctx: IntegrationOnboardContext): Promise<{ botToken: stri
 		};
 	});
 
-	// Arg 2 of input() is a placeholder hint, not a prefill. undefined = cancelled;
-	// an empty submit falls back to the conventional default env var.
-	const entered = await ctx.ui.input(`Env var holding your bot token (e.g. ${DEFAULT_TOKEN_ENV})`);
+	// undefined = cancelled. The pasted value is the raw token itself, not a reference.
+	const entered = await ctx.ui.input("Paste the bot token from BotFather");
 	if (entered === undefined) return undefined; // cancelled
-	const ref = entered.trim() || DEFAULT_TOKEN_ENV;
-
-	const token = ctx.resolve(`$${ref}`);
+	const token = entered.trim();
 	if (!token) {
-		ctx.ui.notify(`Environment variable ${ref} is not set — export it and try again.`, "error");
+		ctx.ui.notify("No token entered.", "error");
 		return undefined;
 	}
 
@@ -182,14 +172,14 @@ async function onboard(ctx: IntegrationOnboardContext): Promise<{ botToken: stri
 		return undefined;
 	}
 
-	return { botToken: `$${ref}` };
+	return { botToken: token };
 }
 
 export default function (steward: IntegrationsAPI) {
 	steward.registerIntegration({
 		name: "telegram",
 		account: Type.Object({
-			/** BotFather token; store as `"$TELEGRAM_BOT_TOKEN"` in integrations.json. */
+			/** BotFather token. Onboarding stores it raw; a `$ENV`/`!cmd` reference also works. */
 			botToken: Type.String(),
 			/** Allowlist of chat ids. Empty/absent = allow all (logged as a warning). */
 			allowedChatIds: Type.Optional(Type.Array(Type.Number())),

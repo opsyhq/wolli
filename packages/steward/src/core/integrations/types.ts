@@ -69,7 +69,8 @@ export interface IntegrationConfig {
 	/**
 	 * Guided first-run setup. Invoked on interactive launch for an unconfigured
 	 * service (or via `integrations configure`). Returns ONE account record to
-	 * persist (store `$ENV` references, never raw secrets), or `undefined` to cancel.
+	 * persist, or `undefined` to cancel. Record values may be raw secrets or
+	 * `$ENV`/`!cmd` references — `integrations.json` is written `0o600`.
 	 */
 	onboard?(ctx: IntegrationOnboardContext): Promise<IntegrationAccountRecord | undefined>;
 }
