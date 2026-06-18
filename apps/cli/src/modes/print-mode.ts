@@ -1,38 +1,38 @@
 /**
- * Print mode (single-shot), as a daemon client.
+ * Print mode (single-shot): Send the prompt, output the final assistant message, exit.
  *
- * In-process this awaited `session.prompt()` (which resolved at turn-end) and read the final
- * `session.state.messages[last]`. The daemon's `prompt` acks on preflight instead, so the client
- * waits for the turn to go idle, then reads the messages back over the wire and prints the last
- * assistant message — the same one in-process print mode printed.
+ * Vendored from coding-agent's text-mode print block. The daemon's `prompt` acks on preflight (not
+ * turn-end) and there's no in-process `session.state`, so the only changes are: wait for idle then
+ * read `get_messages` (in place of `session.state.messages`), write to stdout directly (no TUI
+ * output-guard), and drop the client's SSE connection on the way out (the daemon owns the runtime).
  */
 
-import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { DaemonSession } from "../daemon-session.ts";
 
-export async function runPrint(session: DaemonSession, message: string): Promise<number> {
-	await session.prompt(message); // acks on preflight; the turn runs in the daemon
-	await session.waitForIdle(); // block until the turn ends
-	const { messages } = await session.buildSessionContext(); // get_messages
+export async function runPrintMode(session: DaemonSession, message: string): Promise<number> {
+	let exitCode = 0;
+	try {
+		await session.prompt(message);
+		await session.waitForIdle();
+		const { messages } = await session.buildSessionContext();
+		const lastMessage = messages[messages.length - 1];
 
-	const last = messages[messages.length - 1];
-	if ((last as { role?: string })?.role !== "assistant") {
-		return 0;
-	}
-	const assistant = last as AssistantMessage;
-	const text = assistant.content
-		.filter((block): block is TextContent => block.type === "text")
-		.map((block) => block.text)
-		.join("");
-
-	if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
-		if (text.trim().length > 0) {
-			process.stdout.write(`${text}\n`);
+		if (lastMessage?.role === "assistant") {
+			const assistantMsg = lastMessage as AssistantMessage;
+			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
+				console.error(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
+				exitCode = 1;
+			} else {
+				for (const content of assistantMsg.content) {
+					if (content.type === "text") {
+						process.stdout.write(`${content.text}\n`);
+					}
+				}
+			}
 		}
-		const reason = assistant.errorMessage ?? (assistant.stopReason === "aborted" ? "Aborted." : "Unknown error.");
-		process.stderr.write(`${reason}\n`);
-		return 1;
+		return exitCode;
+	} finally {
+		session.close();
 	}
-	process.stdout.write(`${text}\n`);
-	return 0;
 }

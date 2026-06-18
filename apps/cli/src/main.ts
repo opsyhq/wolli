@@ -1,22 +1,18 @@
 /**
  * `@opsyhq/cli` dispatch.
  *
- * The interactive TUI is a daemon client now: `<name>` (and `new`) resolve the agent's daemon
- * (spawning one if needed) and attach a `DaemonSession`, then run `InteractiveMode` against it —
- * the CLI never builds a `SessionHost`. The non-interactive verbs (`list`/`delete`/`integrations`/
- * `packages`, the hidden `daemon` runner, and the one-shot `--print` path) still route through the
- * engine `main` until their own slices move them client-side.
+ * Agent surfaces are daemon clients: interactive `<name>`, `new` (birth chat), and the one-shot
+ * `--print`/inline-message path attach a `DaemonSession` to the agent's daemon (spawning one if
+ * needed) — the CLI never builds a `SessionHost`. `list`/`delete`/`integrations`/`packages` and the
+ * hidden `daemon` runner route through the engine `main`.
  */
 
-import { agentExists, APP_NAME, type Args, createAgent, main as engineMain, parseArgs } from "@opsyhq/steward";
+import { agentExists, APP_NAME, createAgent, main as engineMain, parseArgs } from "@opsyhq/steward";
 import { DaemonSession } from "./daemon-session.ts";
 import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
-import { runPrint } from "./modes/print-mode.ts";
+import { runPrintMode } from "./modes/print-mode.ts";
 
-/**
- * The first thing a newly created agent "says" — seeded as an assistant message into the birth
- * session so the agent opens by asking its human what it is for.
- */
+// A newly born agent opens the chat itself, asking its human what it is for.
 const BIRTH_OPENER = "What is my purpose?";
 
 export async function main(argv: string[]): Promise<number> {
@@ -24,8 +20,7 @@ export async function main(argv: string[]): Promise<number> {
 	const command = args.positionals[0];
 	const message = args.positionals.slice(1).join(" ").trim();
 
-	// Verbs the engine still owns (no interactive TUI), plus global help/version. The engine `main`
-	// re-parses argv and handles these — including its own diagnostics/usage output.
+	// Verbs the engine still owns; it re-parses argv and emits their diagnostics/usage.
 	const engineOwned =
 		command === "list" ||
 		command === "delete" ||
@@ -34,69 +29,36 @@ export async function main(argv: string[]): Promise<number> {
 		command === "daemon";
 	if (args.help || args.version || !command || engineOwned) return engineMain(argv);
 
-	// apps/cli owns `new`, the one-shot `--print`/inline path, and interactive `<name>` from here;
-	// surface arg diagnostics like the engine does.
 	for (const diagnostic of args.diagnostics) process.stderr.write(`${diagnostic.message}\n`);
-	if (command === "new") return runNew(args);
-	if (args.print || message) return runPrintTurn(command, message);
-	return runInteractive(command);
-}
 
-/**
- * One-shot `--print` / inline-message turn as a daemon client: attach to (or spawn) the agent's
- * daemon, stream the turn, print the final message, then drop the SSE connection so the process
- * exits. (Slice 3 / Item 6 owns the daemon's own lifecycle after the client detaches.)
- */
-async function runPrintTurn(name: string, message: string): Promise<number> {
-	if (!agentExists(name)) {
-		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
-		return 1;
-	}
-	if (!message) {
-		process.stderr.write(`Print mode needs a message: ${APP_NAME} ${name} --print "<message>"\n`);
-		return 1;
-	}
-	const session = await DaemonSession.open(name);
-	try {
-		return await runPrint(session, message);
-	} finally {
-		session.close();
-	}
-}
-
-/** Attach to (or spawn) the agent's daemon and run the interactive TUI against it. */
-async function runInteractive(name: string): Promise<number> {
-	if (!agentExists(name)) {
-		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
-		return 1;
-	}
-	const session = await DaemonSession.open(name);
-	await new InteractiveMode(session).run();
-	return 0;
-}
-
-/**
- * `new <name>` — create the agent, then run the birth chat as a daemon client. The opener is seeded
- * server-side via the `seed_assistant_message` verb. (Slice 3 / Item 6 adds the stable-port
- * allocation + service lifecycle; for now `open()` spawns an ephemeral birth daemon.)
- */
-async function runNew(args: Args): Promise<number> {
-	const name = args.positionals[1];
-	// Birth is chat-only: a name is all `new` takes (the agent distills its own purpose in-chat).
-	if (!name || args.positionals.length > 2) {
-		process.stderr.write(`Usage: ${APP_NAME} new <name>\n`);
-		return 1;
-	}
-	if (agentExists(name)) {
-		process.stderr.write(`Agent "${name}" already exists.\n`);
-		return 1;
+	if (command === "new") {
+		const name = args.positionals[1];
+		if (!name || args.positionals.length > 2) {
+			process.stderr.write(`Usage: ${APP_NAME} new <name>\n`);
+			return 1;
+		}
+		if (agentExists(name)) {
+			process.stderr.write(`Agent "${name}" already exists.\n`);
+			return 1;
+		}
+		const config = createAgent({ name, model: args.model });
+		process.stdout.write(`Created agent "${config.name}".\n`);
+		const session = await DaemonSession.open(name);
+		await new InteractiveMode(session, { initialAssistantMessage: BIRTH_OPENER }).run();
+		return 0;
 	}
 
-	// createAgent throws on an invalid name; cli.ts's top-level catch prints it and exits 1.
-	const config = createAgent({ name, model: args.model });
-	process.stdout.write(`Created agent "${config.name}".\n`);
-
-	const session = await DaemonSession.open(name);
-	await new InteractiveMode(session, { initialAssistantMessage: BIRTH_OPENER }).run();
+	if (!agentExists(command)) {
+		process.stderr.write(`Unknown agent "${command}". Create it with: ${APP_NAME} new ${command}\n`);
+		return 1;
+	}
+	if (args.print || message) {
+		if (!message) {
+			process.stderr.write(`Print mode needs a message: ${APP_NAME} ${command} --print "<message>"\n`);
+			return 1;
+		}
+		return runPrintMode(await DaemonSession.open(command), message);
+	}
+	await new InteractiveMode(await DaemonSession.open(command)).run();
 	return 0;
 }
