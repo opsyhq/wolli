@@ -1,12 +1,9 @@
 /**
  * Daemon descriptor (`daemon.json`).
  *
- * A write-once handshake file the daemon drops into its agent home so attach
- * clients can find the running server: which `port` it bound, the bearer `token`
- * that authenticates `/events` + `/control`, and the owning `pid`. Modeled on
- * `agent-config.ts` (flat `readFileSync`/`writeFileSync` + `JSON`) rather than the
- * lock-backed credential stores — it is written once at daemon start and removed at
- * shutdown, so the lock machinery would be overkill.
+ * A write-once handshake file the daemon drops into its agent home so attach clients can
+ * find the running server: the `port` it bound, the bearer `token` for `/events` + `/control`,
+ * and the owning `pid`. Written at start, removed at shutdown.
  */
 
 import { randomBytes } from "node:crypto";

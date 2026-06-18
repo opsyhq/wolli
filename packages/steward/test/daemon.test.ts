@@ -1,8 +1,8 @@
 /**
- * Daemon mode (HTTP/SSE server) integration — mirrors pi's rpc tests, but against a
- * REAL `SessionHost` + a faux pi-ai provider (no network), so the whole transport runs:
- * bearer auth, the `POST /control` command switch, the curated `GET /events` SSE stream,
- * `Last-Event-ID` replay, and the rebind-on-`new_session` re-subscribe.
+ * Daemon mode (HTTP/SSE server) integration — against a REAL `SessionHost` + a faux pi-ai
+ * provider (no network), so the whole transport runs: bearer auth, the `POST /control`
+ * command switch, the curated `GET /events` SSE stream, `Last-Event-ID` replay, and the
+ * rebind-on-`new_session` re-subscribe.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";

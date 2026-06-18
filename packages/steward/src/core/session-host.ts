@@ -115,8 +115,7 @@ export interface SessionHostPromptOptions {
 	 * Fired once the prompt is accepted (handled, queued, or about to run) with `true`, or
 	 * with `false` when it is rejected before any work (a mid-stream submit with no
 	 * `streamingBehavior`). Lets a headless caller ack acceptance without waiting for the
-	 * whole turn — `prompt()` itself only resolves at turn end. Faithful port of pi's rpc
-	 * prompt preflight.
+	 * whole turn — `prompt()` itself only resolves at turn end.
 	 */
 	preflightResult?: (success: boolean) => void;
 }
@@ -272,7 +271,6 @@ export class SessionHost {
 	 * Re-subscribe hook fired after every harness swap (`build()`/`newSession()`) and at the
 	 * end of `reload()`. A headless wrapper (the daemon) registers it to re-point its event
 	 * subscription at the live harness. Default undefined — interactive/print never set it.
-	 * Faithful analog of pi's `setRebindSession`/`rebindSession`.
 	 */
 	private _rebindHandler?: (harness: AgentHarness) => void;
 

@@ -1,15 +1,12 @@
 /**
  * Daemon mode: a long-running HTTP/SSE server wrapping a `SessionHost`.
  *
- * The headless analog of pi's `modes/rpc/` — same command `switch`, the same
- * `success()`/`error()` helpers (here `ok()`/`err()`), the same event sink, and the
- * same re-subscribe-on-swap. The one deliberate divergence from pi's single stdio
- * channel: HTTP forces it apart into two endpoints —
- *   - `GET /events`  (SSE)     ← pi's stdout: the curated event stream + async prompt acks;
- *   - `POST /control`          ← pi's stdin: commands, whose sync response is the HTTP body.
+ *   - `GET /events`  (SSE)  — the curated event stream + async prompt acks;
+ *   - `POST /control`       — commands, whose sync response is the HTTP body;
+ *   - `GET /health`         — liveness, no auth.
  *
- * `SessionHost` still owns every lifecycle concern (start/newSession/reload/cleanup);
- * this module is a thin wrapper that calls into it.
+ * `SessionHost` owns every lifecycle concern (start/newSession/reload/cleanup); this is a
+ * thin wrapper that calls into it.
  */
 
 import { type ServerType, serve } from "@hono/node-server";
@@ -33,10 +30,7 @@ const RING_SIZE = 256;
 /** Keepalive comment interval — without periodic traffic idle SSE connections drop. */
 const KEEPALIVE_MS = 15_000;
 
-/**
- * Response builders, copied verbatim from pi's `rpc-mode.ts` `success()`/`error()`.
- * `ok()` omits `data` entirely when undefined (async-ack commands carry no payload).
- */
+/** `ok()` omits `data` entirely when undefined (async-ack commands carry no payload). */
 function ok(id: string | undefined, command: DaemonCommandType, data?: unknown): DaemonResponse {
 	if (data === undefined) {
 		return { id, type: "response", command, success: true };
@@ -73,8 +67,7 @@ function snapshot(host: SessionHost): DaemonSessionState {
 /**
  * Drive `host.prompt()` and ack the instant the prompt is accepted (handled, queued, or
  * about to run) rather than when the whole turn ends — `host.prompt()` only resolves at
- * turn end. The turn itself streams over SSE; `agent_end` marks completion. Faithful port
- * of pi's rpc prompt preflight semantics.
+ * turn end. The turn itself streams over SSE; `agent_end` marks completion.
  */
 async function handlePrompt(
 	host: SessionHost,
@@ -86,18 +79,20 @@ async function handlePrompt(
 			images: cmd.images,
 			source: "rpc",
 			streamingBehavior: cmd.streamingBehavior,
-			preflightResult: (success) => (success ? accepted.resolve() : accepted.reject(new Error("Prompt rejected"))),
+			preflightResult: (success) => {
+				if (success) accepted.resolve();
+			},
 		})
-		// An early throw (e.g. an ambiguous mid-stream submit) rejects acceptance; a later
-		// turn-time failure is a no-op against the already-settled deferred.
+		// A rejected prompt (e.g. an ambiguous mid-stream submit) throws its real error here; a
+		// later turn-time failure is a no-op against the already-resolved deferred.
 		.catch((e) => accepted.reject(e instanceof Error ? e : new Error(String(e))));
 	await accepted.promise;
 	return ok(cmd.id, "prompt");
 }
 
 /**
- * The command dispatch switch — same shape as pi's `handleCommand`, trimmed to steward's
- * verbs. Throws on command-level failure (caught by the `/control` route, surfaced as `err`).
+ * The command dispatch switch. Throws on command-level failure (caught by the `/control`
+ * route, surfaced as `err`).
  */
 async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<DaemonResponse> {
 	const id = cmd.id;
@@ -185,7 +180,7 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 		}
 	};
 
-	// ---- Subscribe + rebind (port of pi's rebindSession) ------------------
+	// ---- Subscribe + rebind -----------------------------------------------
 	// Keep exactly one subscription on the live harness: unsub-old → sub-new → store.
 	let unsubscribe: (() => void) | undefined;
 	const resubscribe = (harness: AgentHarness): void => {
@@ -240,14 +235,7 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 	);
 
 	app.post("/control", async (c) => {
-		let cmd: DaemonCommand;
-		try {
-			cmd = await c.req.json<DaemonCommand>();
-		} catch (e) {
-			return c.json(
-				err(undefined, "parse", `Failed to parse command: ${e instanceof Error ? e.message : String(e)}`),
-			);
-		}
+		const cmd = await c.req.json<DaemonCommand>();
 		try {
 			return c.json(await handleCommand(host, cmd));
 		} catch (e) {
