@@ -1,0 +1,346 @@
+/**
+ * Daemon mode (HTTP/SSE server) integration — against a REAL `SessionHost` + a faux
+ * provider (no network), so the whole transport runs: bearer auth, the `POST /control`
+ * command switch, the curated `GET /events` SSE stream, `Last-Event-ID` replay, and the
+ * rebind-on-`new_session` re-subscribe.
+ */
+
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type Api, fauxAssistantMessage, type Model, registerFauxProvider } from "@earendil-works/pi-ai";
+import type { ServerType } from "@hono/node-server";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createAgent, deployAgent } from "../src/core/agent-config.ts";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
+import { SessionHost } from "../src/core/session-host.ts";
+import { runDaemonMode } from "../src/modes/daemon/daemon-mode.ts";
+import { FORWARDED_EVENT_TYPES } from "../src/modes/daemon/daemon-types.ts";
+
+const AGENT = "scribe";
+const TOKEN = "test-bearer-token-1234567890";
+
+let home: string;
+let sharedDir: string;
+const registrations: Array<{ unregister(): void }> = [];
+const sseClients: SseClient[] = [];
+let activeHost: SessionHost | undefined;
+let activeServer: ServerType | undefined;
+
+function makeHost(): { host: SessionHost; registration: ReturnType<typeof registerFauxProvider> } {
+	const registration = registerFauxProvider();
+	registrations.push(registration);
+	const host = new SessionHost({
+		name: AGENT,
+		// Faux models are typed Model<string>; the host wants Model<Api>.
+		model: registration.getModel() as unknown as Model<Api>,
+		thinkingLevel: "off",
+		authStorage: AuthStorage.create(join(sharedDir, "auth.json")),
+		integrationAccounts: IntegrationAccountStorage.inMemory(),
+	});
+	return { host, registration };
+}
+
+/** Build + start a host, wrap it in a daemon on an ephemeral port. Returns the faux provider. */
+async function startDaemon(opts: { deploy?: boolean } = {}): Promise<ReturnType<typeof registerFauxProvider>> {
+	if (opts.deploy) deployAgent(AGENT);
+	const { host, registration } = makeHost();
+	activeHost = host;
+	await host.start({ fresh: true });
+	activeServer = await runDaemonMode(host, { port: 0, token: TOKEN });
+	return registration;
+}
+
+function baseUrl(): string {
+	const addr = activeServer?.address();
+	if (typeof addr === "object" && addr) return `http://127.0.0.1:${addr.port}`;
+	throw new Error("daemon server is not listening");
+}
+
+/** POST a command to /control with the bearer token and return the parsed JSON response. */
+async function control(command: object): Promise<{ success: boolean; command: string; data?: any; error?: string }> {
+	const res = await fetch(`${baseUrl()}/control`, {
+		method: "POST",
+		headers: { "content-type": "application/json", Authorization: `Bearer ${TOKEN}` },
+		body: JSON.stringify(command),
+	});
+	return res.json() as Promise<{ success: boolean; command: string; data?: any; error?: string }>;
+}
+
+function newSse(): SseClient {
+	const client = new SseClient();
+	sseClients.push(client);
+	return client;
+}
+
+interface SseEvent {
+	id?: string;
+	event?: string;
+	data: string;
+}
+
+/** The forwarded harness-event type carried by a `message` SSE frame (undefined otherwise). */
+function dataType(e: SseEvent): string | undefined {
+	if (e.event !== "message") return undefined;
+	try {
+		return (JSON.parse(e.data) as { type: string }).type;
+	} catch {
+		return undefined;
+	}
+}
+
+/** A minimal SSE reader over `fetch` — accumulates frames and lets a test await a match. */
+class SseClient {
+	readonly events: SseEvent[] = [];
+	readonly controller = new AbortController();
+	status = 0;
+	private buffer = "";
+	private waiters: Array<{ pred: (e: SseEvent) => boolean; resolve: (e: SseEvent) => void }> = [];
+
+	async connect(url: string, opts: { token?: string; lastEventId?: string } = {}): Promise<number> {
+		const headers: Record<string, string> = {};
+		if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+		if (opts.lastEventId !== undefined) headers["Last-Event-ID"] = opts.lastEventId;
+		const res = await fetch(url, { headers, signal: this.controller.signal });
+		this.status = res.status;
+		if (res.ok && res.body) void this.pump(res.body);
+		else await res.text();
+		return res.status;
+	}
+
+	private async pump(body: ReadableStream<Uint8Array>): Promise<void> {
+		const reader = body.getReader();
+		const decoder = new TextDecoder();
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				this.buffer += decoder.decode(value, { stream: true });
+				this.flush();
+			}
+		} catch {
+			/* aborted on close */
+		}
+	}
+
+	private flush(): void {
+		let idx = this.buffer.indexOf("\n\n");
+		while (idx !== -1) {
+			const raw = this.buffer.slice(0, idx);
+			this.buffer = this.buffer.slice(idx + 2);
+			idx = this.buffer.indexOf("\n\n");
+			if (raw.length === 0 || raw.startsWith(":")) continue; // keepalive comment / blank
+			const event = parseFrame(raw);
+			this.events.push(event);
+			this.waiters = this.waiters.filter((w) => {
+				if (w.pred(event)) {
+					w.resolve(event);
+					return false;
+				}
+				return true;
+			});
+		}
+	}
+
+	waitFor(pred: (e: SseEvent) => boolean, timeoutMs = 5000): Promise<SseEvent> {
+		const existing = this.events.find(pred);
+		if (existing) return Promise.resolve(existing);
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error("timed out waiting for SSE event")), timeoutMs);
+			this.waiters.push({
+				pred,
+				resolve: (e) => {
+					clearTimeout(timer);
+					resolve(e);
+				},
+			});
+		});
+	}
+
+	close(): void {
+		this.controller.abort();
+	}
+}
+
+function parseFrame(raw: string): SseEvent {
+	const event: SseEvent = { data: "" };
+	const dataLines: string[] = [];
+	for (const line of raw.split("\n")) {
+		if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+		else if (line.startsWith("event:")) event.event = line.slice(6).trim();
+		else if (line.startsWith("id:")) event.id = line.slice(3).trim();
+	}
+	event.data = dataLines.join("\n");
+	return event;
+}
+
+beforeEach(() => {
+	home = mkdtempSync(join(tmpdir(), "steward-daemon-home-"));
+	sharedDir = mkdtempSync(join(tmpdir(), "steward-daemon-shared-"));
+	process.env.STEWARD_HOME = home;
+	process.env.STEWARD_SHARED_DIR = sharedDir;
+	createAgent({ name: AGENT });
+});
+
+afterEach(async () => {
+	for (const client of sseClients.splice(0)) client.close();
+	if (activeServer) {
+		// Force-close lingering SSE sockets so server.close() doesn't hang (not on every ServerType).
+		(activeServer as { closeAllConnections?: () => void }).closeAllConnections?.();
+		await new Promise<void>((resolve) => activeServer?.close(() => resolve()));
+		activeServer = undefined;
+	}
+	if (activeHost) {
+		await activeHost.cleanup();
+		activeHost = undefined;
+	}
+	for (const registration of registrations.splice(0)) registration.unregister();
+	delete process.env.STEWARD_HOME;
+	delete process.env.STEWARD_SHARED_DIR;
+	rmSync(home, { recursive: true, force: true });
+	rmSync(sharedDir, { recursive: true, force: true });
+});
+
+describe("daemon curation allowlist", () => {
+	it("forwards the lifecycle + update events but never internal own-events", () => {
+		for (const type of [
+			"agent_start",
+			"agent_end",
+			"message_update",
+			"message_end",
+			"queue_update",
+			"model_update",
+		]) {
+			expect(FORWARDED_EVENT_TYPES.has(type as never)).toBe(true);
+		}
+		for (const type of ["save_point", "settled", "abort", "session_compact", "tools_update", "resources_update"]) {
+			expect(FORWARDED_EVENT_TYPES.has(type as never)).toBe(false);
+		}
+	});
+});
+
+describe("daemon HTTP/SSE server", () => {
+	it("serves /health without auth", async () => {
+		await startDaemon();
+		const res = await fetch(`${baseUrl()}/health`);
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ status: "ok", agent: AGENT, pid: process.pid });
+	});
+
+	it("rejects /events and /control without the bearer token", async () => {
+		await startDaemon();
+		const events = await fetch(`${baseUrl()}/events`);
+		expect(events.status).toBe(401);
+		await events.text();
+		const ctl = await fetch(`${baseUrl()}/control`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ type: "get_state" }),
+		});
+		expect(ctl.status).toBe(401);
+		await ctl.text();
+	});
+
+	it("returns the session snapshot from get_state", async () => {
+		await startDaemon();
+		const res = await control({ type: "get_state" });
+		expect(res).toMatchObject({ command: "get_state", success: true });
+		expect(res.data).toMatchObject({
+			isStreaming: false,
+			messageCount: 0,
+			thinkingLevel: "off",
+			pendingMessageCount: 0,
+		});
+		expect(res.data.model).toBeDefined();
+		expect(typeof res.data.sessionId).toBe("string");
+		expect(res.data.sessionId.length).toBeGreaterThan(0);
+		expect(typeof res.data.sessionFile).toBe("string");
+	});
+
+	it("errors on an unknown command", async () => {
+		await startDaemon();
+		const res = await control({ type: "does_not_exist" });
+		expect(res).toMatchObject({ success: false });
+		expect(res.error).toContain("Unknown command");
+	});
+
+	it("emits a hello snapshot when a client attaches", async () => {
+		await startDaemon();
+		const client = newSse();
+		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
+		const hello = await client.waitFor((e) => e.event === "hello");
+		expect(JSON.parse(hello.data)).toMatchObject({ isStreaming: false, messageCount: 0 });
+	});
+
+	it("acks a prompt, streams its turn over SSE, and never forwards internal own-events", async () => {
+		const registration = await startDaemon();
+		registration.setResponses([() => fauxAssistantMessage("hello from the faux model")]);
+
+		const client = newSse();
+		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
+		await client.waitFor((e) => e.event === "hello");
+
+		// The ack returns the instant the prompt is accepted — well before the turn ends.
+		const ack = await control({ type: "prompt", message: "say hi" });
+		expect(ack).toMatchObject({ command: "prompt", success: true });
+
+		await client.waitFor((e) => dataType(e) === "agent_end");
+		const streamed = client.events.map(dataType).filter(Boolean);
+		expect(streamed).toContain("message_update");
+		expect(streamed).toContain("agent_end");
+		// Curation: the harness's own-events must not leak onto the wire.
+		expect(streamed).not.toContain("save_point");
+		expect(streamed).not.toContain("settled");
+	});
+
+	it("replays buffered events on reconnect with Last-Event-ID", async () => {
+		const registration = await startDaemon();
+		registration.setResponses([() => fauxAssistantMessage("buffered turn")]);
+
+		const client = newSse();
+		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
+		await client.waitFor((e) => e.event === "hello");
+		await control({ type: "prompt", message: "go" });
+		await client.waitFor((e) => dataType(e) === "agent_end");
+
+		const ids = client.events.filter((e) => e.id !== undefined).map((e) => Number(e.id));
+		const firstId = Math.min(...ids);
+		const lastId = Math.max(...ids);
+		expect(lastId).toBeGreaterThan(firstId);
+
+		// Reconnect from firstId: events with id > firstId replay, firstId itself does not.
+		const replay = newSse();
+		await replay.connect(`${baseUrl()}/events`, { token: TOKEN, lastEventId: String(firstId) });
+		await replay.waitFor((e) => e.id !== undefined && Number(e.id) === lastId);
+		const replayedIds = replay.events.filter((e) => e.id !== undefined).map((e) => Number(e.id));
+		expect(replayedIds).toContain(lastId);
+		expect(replayedIds).not.toContain(firstId);
+	});
+
+	it("keeps streaming to the same client after new_session (rebind re-subscribes exactly once)", async () => {
+		const registration = await startDaemon({ deploy: true });
+		registration.setResponses([() => fauxAssistantMessage("first turn"), () => fauxAssistantMessage("second turn")]);
+
+		const client = newSse();
+		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
+		await client.waitFor((e) => e.event === "hello");
+
+		await control({ type: "prompt", message: "one" });
+		await client.waitFor((e) => dataType(e) === "agent_end");
+
+		// Swap the harness underneath the live SSE client.
+		const swap = await control({ type: "new_session" });
+		expect(swap).toMatchObject({ command: "new_session", success: true });
+
+		// The second turn runs on the NEW harness and must still reach the same client.
+		await control({ type: "prompt", message: "two" });
+		await client.waitFor(
+			(e) => dataType(e) === "agent_end" && client.events.filter((x) => dataType(x) === "agent_end").length >= 2,
+		);
+
+		// Exactly two agent_end across both turns — a leaked old subscription would double them.
+		const agentEnds = client.events.filter((e) => dataType(e) === "agent_end").length;
+		expect(agentEnds).toBe(2);
+	});
+});

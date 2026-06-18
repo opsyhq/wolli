@@ -111,6 +111,13 @@ export interface SessionHostPromptOptions {
 	streamingBehavior?: "steer" | "followUp";
 	/** When false, skip extension-command + skill/template dispatch (extension-driven sends). Default true. */
 	expandPromptTemplates?: boolean;
+	/**
+	 * Fired once the prompt is accepted (handled, queued, or about to run) with `true`, or
+	 * with `false` when it is rejected before any work (a mid-stream submit with no
+	 * `streamingBehavior`). Lets a headless caller ack acceptance without waiting for the
+	 * whole turn — `prompt()` itself only resolves at turn end.
+	 */
+	preflightResult?: (success: boolean) => void;
 }
 
 /**
@@ -260,6 +267,12 @@ export class SessionHost {
 	private _interactiveBindings?: InteractiveContextBindings;
 	/** Teardown for the current runner's error listener, dropped before re-binding. */
 	private _extensionErrorUnsubscriber?: () => void;
+	/**
+	 * Re-subscribe hook fired after every harness swap (`build()`/`newSession()`) and at the
+	 * end of `reload()`. A headless wrapper (the daemon) registers it to re-point its event
+	 * subscription at the live harness. Default undefined — interactive/print never set it.
+	 */
+	private _rebindHandler?: (harness: AgentHarness) => void;
 
 	constructor(options: SessionHostOptions) {
 		this.options = options;
@@ -286,6 +299,15 @@ export class SessionHost {
 	/** Install the graceful-shutdown handler exposed to extensions via `ctx.shutdown()`. */
 	setShutdownHandler(handler: () => void): void {
 		this._shutdownHandler = handler;
+	}
+
+	/**
+	 * Register the re-subscribe hook fired after every harness swap and after `reload()`.
+	 * The handler receives the live harness so a headless wrapper can drop its old event
+	 * subscription and re-subscribe (unsub-old → sub-new). Called once by the daemon mode.
+	 */
+	setRebindHandler(handler: (harness: AgentHarness) => void): void {
+		this._rebindHandler = handler;
 	}
 
 	/**
@@ -503,6 +525,9 @@ export class SessionHost {
 		}
 
 		previousRunner.invalidate();
+		// The harness is reused across reload, so re-subscribing is a harmless no-op
+		// (unsub-then-sub) — fired for symmetry with build()/newSession().
+		this._rebindHandler?.(harness);
 	}
 
 	/**
@@ -551,9 +576,11 @@ export class SessionHost {
 		const runner = this.extensionRunner;
 		const harness = this.harness;
 		const expandPromptTemplates = options?.expandPromptTemplates !== false;
+		const preflight = options?.preflightResult;
 
 		// 1. Extension command — manages its own LLM interaction via steward.sendMessage().
 		if (expandPromptTemplates && text.startsWith("/") && (await this.tryExecuteExtensionCommand(text))) {
+			preflight?.(true);
 			return;
 		}
 
@@ -567,7 +594,10 @@ export class SessionHost {
 				options?.source ?? "interactive",
 				!harness.isIdle ? options?.streamingBehavior : undefined,
 			);
-			if (result.action === "handled") return;
+			if (result.action === "handled") {
+				preflight?.(true);
+				return;
+			}
 			if (result.action === "transform") {
 				currentText = result.text;
 				currentImages = result.images ?? currentImages;
@@ -580,6 +610,7 @@ export class SessionHost {
 			const spaceIndex = currentText.indexOf(" ");
 			const name = spaceIndex === -1 ? currentText.slice(7) : currentText.slice(7, spaceIndex);
 			const args = spaceIndex === -1 ? "" : currentText.slice(spaceIndex + 1).trim();
+			preflight?.(true);
 			await harness.skill(name, args || undefined);
 			return;
 		}
@@ -589,6 +620,7 @@ export class SessionHost {
 			const template = this._promptTemplates.find((t) => t.name === name);
 			if (template) {
 				const argv = parseCommandArgs(spaceIndex === -1 ? "" : currentText.slice(spaceIndex + 1));
+				preflight?.(true);
 				await harness.promptFromTemplate(name, argv);
 				return;
 			}
@@ -599,10 +631,12 @@ export class SessionHost {
 		//    than silently steered.
 		if (!harness.isIdle) {
 			if (!options?.streamingBehavior) {
+				preflight?.(false);
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
+			preflight?.(true);
 			if (options.streamingBehavior === "followUp") {
 				await harness.followUp(currentText, { images: currentImages });
 			} else {
@@ -610,6 +644,9 @@ export class SessionHost {
 			}
 			return;
 		}
+		// The whole turn rides `harness.prompt`, which only resolves at turn end — ack
+		// acceptance now so a headless caller isn't blocked until the turn completes.
+		preflight?.(true);
 		await harness.prompt(currentText, { images: currentImages });
 	}
 
@@ -682,6 +719,45 @@ export class SessionHost {
 	/** Pending follow-up-queued messages (read-only snapshot). */
 	getFollowUpMessages(): AgentMessage[] {
 		return this.harness.getFollowUpMessages();
+	}
+
+	/** Number of queued messages (steer + follow-up + next-turn), kept in sync via queue_update. */
+	getPendingMessageCount(): number {
+		return this._pendingMessageCount;
+	}
+
+	/** The live session's id (the JSONL session file's id). */
+	getSessionId(): string {
+		if (!this._sessionManager) throw new Error("SessionHost not started.");
+		return this._sessionManager.getSessionId();
+	}
+
+	/** The live session's display name, or undefined when unnamed. */
+	getSessionName(): string | undefined {
+		if (!this._sessionManager) throw new Error("SessionHost not started.");
+		return this._sessionManager.getSessionName();
+	}
+
+	/** Path to the live session's JSONL file, or undefined when not yet persisted. */
+	getSessionFile(): string | undefined {
+		if (!this._sessionManager) throw new Error("SessionHost not started.");
+		return this._sessionManager.getSessionFile();
+	}
+
+	/**
+	 * Resolve a model by `{provider, modelId}` off the encapsulated registry and switch the
+	 * live harness to it. Throws on an unknown or unauthenticated model. Keeps the registry
+	 * private — the daemon only ever holds the wire `{provider, modelId}` pair.
+	 */
+	async setModelById(provider: string, modelId: string): Promise<Model<Api>> {
+		if (!this._modelRegistry) throw new Error("SessionHost not started.");
+		const model = this._modelRegistry.find(provider, modelId);
+		if (!model) throw new Error(`Model not found: ${provider}/${modelId}`);
+		if (!this._modelRegistry.hasConfiguredAuth(model)) {
+			throw new Error(`No configured credentials for ${provider}/${modelId}.`);
+		}
+		await this.harness.setModel(model);
+		return model;
 	}
 
 	/**
@@ -772,6 +848,9 @@ export class SessionHost {
 		await integrationRunner.start();
 		this._applyInteractiveContext(runner);
 		this._unsubscribe = this.wireExtensionEvents(harness);
+		// The harness is brand-new here (its predecessor's subscriptions die with it), so a
+		// headless wrapper must re-subscribe to this one.
+		this._rebindHandler?.(harness);
 
 		// Announce the session to extensions (guarded — no handlers ⇒ no-op).
 		if (runner.hasHandlers("session_start")) {

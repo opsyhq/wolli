@@ -29,6 +29,12 @@ export const AgentConfigSchema = Type.Object({
 	createdAt: Type.String(),
 	model: Type.Optional(Type.String()),
 	/**
+	 * The stable port the agent's daemon prefers to bind — its durable identity, so
+	 * clients can find it across restarts. Absent (or 0) means let the OS assign an
+	 * ephemeral port each run. The actual bound port lives in the tmp daemon descriptor.
+	 */
+	port: Type.Optional(Type.Number()),
+	/**
 	 * The single human-held latch. `null` (or absent) means the agent is still in
 	 * its birth phase — it maintains its own files but may not act unattended. An
 	 * ISO timestamp grants it that right. Optional/nullable so agent.json written

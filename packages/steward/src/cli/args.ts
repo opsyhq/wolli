@@ -16,6 +16,8 @@ export interface Args {
 	new?: boolean;
 	/** Force single-shot print mode (default once interactive mode lands). */
 	print?: boolean;
+	/** Port for the `daemon` subcommand's HTTP/SSE server (0 = OS-assigned ephemeral). */
+	port?: number;
 	help?: boolean;
 	version?: boolean;
 	/** Subcommand / agent name followed by any inline message words. */
@@ -56,6 +58,8 @@ export function parseArgs(args: string[]): Args {
 					message: `Invalid thinking level "${level}". Valid values: ${VALID_THINKING_LEVELS.join(", ")}`,
 				});
 			}
+		} else if (arg === "--port" && i + 1 < args.length) {
+			result.port = Number(args[++i]);
 		} else if (arg === "--new") {
 			result.new = true;
 		} else if (arg === "--print" || arg === "-p") {

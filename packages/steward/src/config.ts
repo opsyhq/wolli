@@ -8,7 +8,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,6 +67,10 @@ export const ENV_HOME = `${APP_NAME.toUpperCase()}_HOME`;
 // Override for the shared credential dir, e.g. STEWARD_SHARED_DIR.
 // Resolves the shared `~/.steward/agent/` holding auth.json/settings.json.
 export const ENV_SHARED_AGENT_DIR = `${APP_NAME.toUpperCase()}_SHARED_DIR`;
+
+// Override for a daemon's bearer token, e.g. STEWARD_DAEMON_TOKEN. When set, the
+// daemon authenticates with this value instead of minting an ephemeral one.
+export const ENV_DAEMON_TOKEN = `${APP_NAME.toUpperCase()}_DAEMON_TOKEN`;
 
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
@@ -172,6 +176,20 @@ export function getSessionsDir(name: string): string {
 /** Path to an agent's owned workspace (the stable cwd passed to the repo) */
 export function getWorkspaceDir(name: string): string {
 	return join(getAgentDir(name), "workspace");
+}
+
+// =============================================================================
+// Ephemeral daemon runtime state (OS temp dir, cleared on reboot)
+// =============================================================================
+
+/** Root dir for daemon runtime descriptors, e.g. $TMPDIR/steward-daemons. */
+export function getDaemonRuntimeDir(): string {
+	return join(tmpdir(), `${APP_NAME}-daemons`);
+}
+
+/** Path to an agent's ephemeral daemon descriptor (the running daemon's pid/port/token). */
+export function getAgentDaemonPath(name: string): string {
+	return join(getDaemonRuntimeDir(), `${name}.json`);
 }
 
 // =============================================================================

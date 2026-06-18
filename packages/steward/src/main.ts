@@ -19,6 +19,12 @@ import {
 	loadAgentConfig,
 } from "./core/agent-config.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
+import {
+	deleteDaemonDescriptor,
+	loadDaemonDescriptor,
+	mintDaemonToken,
+	saveDaemonDescriptor,
+} from "./core/daemon-descriptor.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
 import { IntegrationAccountStorage } from "./core/integration-account-storage.ts";
 import { ModelRegistry } from "./core/model-registry.ts";
@@ -26,6 +32,7 @@ import { resolveCliModel } from "./core/model-resolver.ts";
 import { SessionHost } from "./core/session-host.ts";
 import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
 import { runIntegrations } from "./integrations-cli.ts";
+import { runDaemonMode } from "./modes/daemon/daemon-mode.ts";
 import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
 import { runPackages } from "./package-manager-cli.ts";
@@ -66,6 +73,7 @@ export async function main(argv: string[]): Promise<number> {
 	if (command === "delete") return runDelete(rest);
 	if (command === "integrations") return runIntegrations(rest, args.help);
 	if (command === "packages") return runPackages(rest, args.help);
+	if (command === "daemon") return runDaemon(rest, args);
 	return runAgent(command, rest, args);
 }
 
@@ -148,6 +156,51 @@ async function runAgent(name: string, positionals: string[], args: Args): Promis
 }
 
 /**
+ * Resolve model/auth once and construct the `SessionHost` — the shared front half of
+ * every agent-running command (`runSession`, `runDaemon`). Returns the unstarted `host`
+ * plus the `config` it was built from (callers need `config` for the `fresh` decision),
+ * or an `{ error }` for the model/auth failures that should print to stderr and exit 1.
+ */
+function createAgentSessionHost(
+	name: string,
+	args: Args,
+): { host: SessionHost; config: AgentConfig } | { error: string } {
+	const config = loadAgentConfig(name);
+
+	const authStorage = AuthStorage.create();
+	// Integration accounts are per-agent (`~/.steward/agents/<name>/integrations.json`).
+	const integrationAccounts = IntegrationAccountStorage.create(name);
+	const modelRegistry = ModelRegistry.create(authStorage);
+
+	// Model precedence: --model flag → agent.json → shared default → built-in.
+	const resolved = resolveCliModel({
+		cliProvider: args.provider,
+		cliModel: args.model ?? config.model ?? sharedDefaultModel() ?? DEFAULT_MODEL,
+		cliThinking: args.thinking,
+		modelRegistry,
+	});
+	if (resolved.warning) {
+		process.stderr.write(`${resolved.warning}\n`);
+	}
+	if (resolved.error || !resolved.model) {
+		return { error: resolved.error ?? "Could not resolve a model." };
+	}
+	const model = resolved.model;
+
+	// Auth precedence (handled by AuthStorage): runtime → auth.json (api key / OAuth)
+	// → env var. hasAuth() doesn't refresh tokens — it just checks something exists.
+	// If it returns false, every credential source (including the env var) is absent,
+	// so the only actionable hint is to log in.
+	if (!authStorage.hasAuth(model.provider)) {
+		return { error: `No credentials found for provider "${model.provider}". Log in with the steward CLI.` };
+	}
+
+	const thinkingLevel = args.thinking ?? resolved.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+	const host = new SessionHost({ name, model, thinkingLevel, authStorage, integrationAccounts });
+	return { host, config };
+}
+
+/**
  * Resolve model/auth once, then run the agent — single-shot for inline/`--print`,
  * otherwise the interactive chat. Session construction (env, prompt, tools) and
  * in-place swaps (e.g. after deploy) are owned by the `SessionHost`.
@@ -158,47 +211,18 @@ async function runSession(
 	args: Args,
 	options: { initialAssistantMessage?: string } = {},
 ): Promise<number> {
-	const initialConfig = loadAgentConfig(name);
-
-	const authStorage = AuthStorage.create();
-	// Integration accounts are per-agent (`~/.steward/agents/<name>/integrations.json`).
-	const integrationAccounts = IntegrationAccountStorage.create(name);
-	const modelRegistry = ModelRegistry.create(authStorage);
-
-	// Model precedence: --model flag → agent.json → shared default → built-in.
-	const resolved = resolveCliModel({
-		cliProvider: args.provider,
-		cliModel: args.model ?? initialConfig.model ?? sharedDefaultModel() ?? DEFAULT_MODEL,
-		cliThinking: args.thinking,
-		modelRegistry,
-	});
-	if (resolved.warning) {
-		process.stderr.write(`${resolved.warning}\n`);
-	}
-	if (resolved.error || !resolved.model) {
-		process.stderr.write(`${resolved.error ?? "Could not resolve a model."}\n`);
+	const built = createAgentSessionHost(name, args);
+	if ("error" in built) {
+		process.stderr.write(`${built.error}\n`);
 		return 1;
 	}
-	const model = resolved.model;
-
-	// Auth precedence (handled by AuthStorage): runtime → auth.json (api key / OAuth)
-	// → env var. hasAuth() doesn't refresh tokens — it just checks something exists.
-	// If it returns false, every credential source (including the env var) is absent,
-	// so the only actionable hint is to log in.
-	if (!authStorage.hasAuth(model.provider)) {
-		process.stderr.write(`No credentials found for provider "${model.provider}". Log in with the steward CLI.\n`);
-		return 1;
-	}
-
-	const thinkingLevel = args.thinking ?? resolved.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+	const { host, config } = built;
 	const message = positionals.join(" ").trim();
-
-	const host = new SessionHost({ name, model, thinkingLevel, authStorage, integrationAccounts });
 
 	// A forming agent stays in its single birth session, so the seeded "What is my
 	// purpose?" and the whole forming conversation are always resumed; `--new` only
 	// takes effect once deployed.
-	const fresh = isDeployed(initialConfig) ? Boolean(args.new) : false;
+	const fresh = isDeployed(config) ? Boolean(args.new) : false;
 
 	// `--print` (or a bare inline message) is single-shot; `--print` needs a message.
 	if (args.print || message) {
@@ -218,6 +242,72 @@ async function runSession(
 	await new InteractiveMode(host, { initialAssistantMessage: options.initialAssistantMessage }).run();
 	await host.cleanup();
 	return 0;
+}
+
+/**
+ * Hidden `daemon <name>` subcommand: start the agent's `SessionHost` and wrap it in a
+ * long-running HTTP/SSE server clients attach to. Binds the agent's stable port (its durable
+ * identity in agent.json), then writes the ephemeral pid/port/token descriptor to the temp dir
+ * so attach clients can find it, and blocks on the listening server until a signal tears it down.
+ */
+async function runDaemon(positionals: string[], args: Args): Promise<number> {
+	const name = positionals[0];
+	if (!name) {
+		process.stderr.write(`Usage: ${APP_NAME} daemon <name> [--port <n>]\n`);
+		return 1;
+	}
+	if (!agentExists(name)) {
+		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
+		return 1;
+	}
+
+	const built = createAgentSessionHost(name, args);
+	if ("error" in built) {
+		process.stderr.write(`${built.error}\n`);
+		return 1;
+	}
+	const { host, config } = built;
+
+	// Same rule as runSession: `--new` only applies once deployed.
+	const fresh = isDeployed(config) ? Boolean(args.new) : false;
+	await host.start({ fresh });
+
+	// The port the daemon prefers to bind: the agent's durable identity in agent.json, with
+	// `--port` as a transient override for this run. 0/absent means let the OS assign one.
+	const port = args.port ?? config.port ?? 0;
+
+	// pid/port/token are ephemeral runtime state — the temp-dir descriptor, not agent.json.
+	// runDaemonMode patches `port` to the actual bound port once listening (matters when 0).
+	const token = mintDaemonToken();
+	saveDaemonDescriptor(name, {
+		pid: process.pid,
+		port,
+		token,
+		startedAt: new Date().toISOString(),
+		version: VERSION,
+	});
+
+	const server = await runDaemonMode(host, { port, token });
+	// runDaemonMode patches the descriptor with the OS-assigned port once listening.
+	const boundPort = loadDaemonDescriptor(name)?.port ?? port;
+	console.log(`${APP_NAME} daemon for "${name}" listening on http://127.0.0.1:${boundPort}`);
+
+	// steward has no existing signal handler to reuse. server.close() drops the broadcaster
+	// subscription (via the server's "close" listener); we then release the env + descriptor.
+	let shuttingDown = false;
+	const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+		if (shuttingDown) return;
+		shuttingDown = true;
+		server.close();
+		await host.cleanup();
+		deleteDaemonDescriptor(name);
+		process.exit(signal === "SIGINT" ? 130 : 143);
+	};
+	process.on("SIGTERM", () => void shutdown("SIGTERM"));
+	process.on("SIGINT", () => void shutdown("SIGINT"));
+
+	// The listening server keeps the event loop alive; block until a signal exits.
+	return new Promise<number>(() => {});
 }
 
 /**
