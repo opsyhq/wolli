@@ -1,5 +1,5 @@
 import { Editor, type EditorOptions, type EditorTheme, type TUI } from "@opsyhq/tui";
-import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
+import type { AppKeybinding, KeybindingsManager } from "@opsyhq/steward";
 
 /**
  * Base editor that resolves app-level keybindings, for extensions that supply a custom

@@ -12,7 +12,6 @@ import { APP_NAME, getAgentDir, VERSION } from "./config.ts";
 import {
 	type AgentConfig,
 	agentExists,
-	createAgent,
 	deleteAgent,
 	isDeployed,
 	listAgents,
@@ -33,16 +32,8 @@ import { SessionHost } from "./core/session-host.ts";
 import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
 import { runIntegrations } from "./integrations-cli.ts";
 import { runDaemonMode } from "./modes/daemon/daemon-mode.ts";
-import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
 import { runPackages } from "./package-manager-cli.ts";
-
-/**
- * The first thing a newly created agent "says". Seeded as an assistant message into
- * the birth session (see `InteractiveMode.seedInitialAssistantMessage`) so the agent
- * opens by asking its human what it's for, kicking off the forming conversation.
- */
-const BIRTH_OPENER = "What is my purpose?";
 
 export async function main(argv: string[]): Promise<number> {
 	const args = parseArgs(argv);
@@ -68,40 +59,12 @@ export async function main(argv: string[]): Promise<number> {
 		return 1;
 	}
 
-	if (command === "new") return runNew(rest, args);
 	if (command === "list") return runList();
 	if (command === "delete") return runDelete(rest);
 	if (command === "integrations") return runIntegrations(rest, args.help);
 	if (command === "packages") return runPackages(rest, args.help);
 	if (command === "daemon") return runDaemon(rest, args);
 	return runAgent(command, rest, args);
-}
-
-async function runNew(positionals: string[], args: Args): Promise<number> {
-	const name = positionals[0];
-	// Birth is chat-only now: a name is all `new` takes. An inline purpose (extra
-	// positionals) is rejected — the agent distills its own purpose in-chat.
-	if (!name || positionals.length > 1) {
-		process.stderr.write(`Usage: ${APP_NAME} new <name>\n`);
-		return 1;
-	}
-	if (agentExists(name)) {
-		process.stderr.write(`Agent "${name}" already exists.\n`);
-		return 1;
-	}
-
-	let config: AgentConfig;
-	try {
-		config = createAgent({ name, model: args.model });
-	} catch (error) {
-		process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-		return 1;
-	}
-	console.log(`Created agent "${config.name}".`);
-
-	// Birth happens inside the chat: drop straight into the interactive TUI, seeding
-	// the agent's opener so it opens by asking its human and forms itself before deploying.
-	return runSession(name, [], args, { initialAssistantMessage: BIRTH_OPENER });
 }
 
 async function runDelete(positionals: string[]): Promise<number> {
@@ -201,16 +164,12 @@ function createAgentSessionHost(
 }
 
 /**
- * Resolve model/auth once, then run the agent — single-shot for inline/`--print`,
- * otherwise the interactive chat. Session construction (env, prompt, tools) and
- * in-place swaps (e.g. after deploy) are owned by the `SessionHost`.
+ * Run a single-shot `--print` / inline-message turn in-process. The interactive TUI is no
+ * longer served here — it runs in the `@opsyhq/cli` client against the agent's daemon — so a
+ * bare `<name>` with no message is rejected (the client owns that path). `--print` becomes a
+ * daemon client in Slice 2; until then it stays in-process.
  */
-async function runSession(
-	name: string,
-	positionals: string[],
-	args: Args,
-	options: { initialAssistantMessage?: string } = {},
-): Promise<number> {
+async function runSession(name: string, positionals: string[], args: Args): Promise<number> {
 	const built = createAgentSessionHost(name, args);
 	if ("error" in built) {
 		process.stderr.write(`${built.error}\n`);
@@ -219,29 +178,21 @@ async function runSession(
 	const { host, config } = built;
 	const message = positionals.join(" ").trim();
 
-	// A forming agent stays in its single birth session, so the seeded "What is my
-	// purpose?" and the whole forming conversation are always resumed; `--new` only
-	// takes effect once deployed.
-	const fresh = isDeployed(config) ? Boolean(args.new) : false;
-
-	// `--print` (or a bare inline message) is single-shot; `--print` needs a message.
-	if (args.print || message) {
-		if (args.print && !message) {
-			process.stderr.write(`Print mode needs a message: ${APP_NAME} ${name} --print "<message>"\n`);
-			return 1;
-		}
-		await host.start({ fresh });
-		const code = await runPrintMode(host.harness, { message });
-		await host.cleanup();
-		return code;
+	if (!args.print && !message) {
+		process.stderr.write("Interactive sessions are served by the steward CLI client, not the engine.\n");
+		return 1;
+	}
+	if (args.print && !message) {
+		process.stderr.write(`Print mode needs a message: ${APP_NAME} ${name} --print "<message>"\n`);
+		return 1;
 	}
 
-	// Interactive: one long-lived TUI. The host swaps the session in place on
-	// deploy (see InteractiveMode.doDeploy), so there is no loop here.
+	// A forming agent stays in its single birth session; `--new` only takes effect once deployed.
+	const fresh = isDeployed(config) ? Boolean(args.new) : false;
 	await host.start({ fresh });
-	await new InteractiveMode(host, { initialAssistantMessage: options.initialAssistantMessage }).run();
+	const code = await runPrintMode(host.harness, { message });
 	await host.cleanup();
-	return 0;
+	return code;
 }
 
 /**

@@ -32,7 +32,12 @@ export {
 	type AuthStorageData,
 	type OAuthCredential,
 } from "./core/auth-storage.ts";
+// Engine surface consumed by the @opsyhq/cli daemon client (Phase 2, Slice 1): the interactive
+// TUI + the built-in tool renderers were lifted into apps/cli and reach back for these helpers.
+export { executeBashWithOperations } from "./core/bash-executor.ts";
+export { type DaemonDescriptor, loadDaemonDescriptor } from "./core/daemon-descriptor.ts";
 export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
+export type { ResourceDiagnostic, ResourceSummary } from "./core/diagnostics.ts";
 // Extension system
 export type {
 	AgentEndEvent,
@@ -50,6 +55,7 @@ export type {
 	ContextEvent,
 	ContextUsage,
 	CustomToolCallEvent,
+	EditorFactory,
 	EditToolCallEvent,
 	ExecOptions,
 	ExecResult,
@@ -75,7 +81,6 @@ export type {
 	InputEvent,
 	InputEventResult,
 	InputSource,
-	KeybindingsManager,
 	LoadExtensionsResult,
 	LsToolCallEvent,
 	MessageRenderer,
@@ -134,6 +139,8 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
+export type { ToolRenderContext } from "./core/extensions/types.ts";
+export { FooterDataProvider, type ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 export {
 	type IntegrationAccountRecord,
@@ -163,6 +170,12 @@ export {
 	loadIntegrations,
 } from "./core/integrations/index.ts";
 export {
+	type Keybinding,
+	type KeybindingsConfig,
+	KeybindingsManager,
+	type KeyId,
+} from "./core/keybindings.ts";
+export {
 	loadMemory,
 	MEMORY_BUDGET,
 	type Memory,
@@ -171,7 +184,7 @@ export {
 	USER_BUDGET,
 	writeMemoryFile,
 } from "./core/memory.ts";
-export { convertToLlm } from "./core/messages.ts";
+export { convertToLlm, createBashExecutionMessage } from "./core/messages.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
 export {
 	defaultModelPerProvider,
@@ -223,13 +236,22 @@ export {
 	type Skill,
 	type SkillFrontmatter,
 } from "./core/skills.ts";
+export { BUILTIN_SLASH_COMMANDS } from "./core/slash-commands.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export { type BuildSystemPromptOptions, buildSystemPrompt } from "./core/system-prompt.ts";
 export { type BashToolDetails, type BashToolInput, createBashTool } from "./core/tools/bash.ts";
 export { createDeployTool, type DeployToolDetails, type DeployToolInput } from "./core/tools/deploy.ts";
 export { createEditTool, type EditToolDetails, type EditToolInput } from "./core/tools/edit.ts";
+// edit-diff render helpers consumed by the apps/cli built-in edit renderer (Phase 2, Slice 1).
+export {
+	computeEditsDiff,
+	type Edit,
+	type EditDiffError,
+	type EditDiffResult,
+} from "./core/tools/edit-diff.ts";
 export { createFindTool, type FindToolDetails, type FindToolInput } from "./core/tools/find.ts";
 export { createGrepTool, type GrepToolDetails, type GrepToolInput } from "./core/tools/grep.ts";
+export type { ToolName } from "./core/tools/index.ts";
 // Tool primitives for custom tools and extensions
 export {
 	type BashOperations,
@@ -249,22 +271,45 @@ export {
 } from "./core/tools/index.ts";
 export { createLsTool, type LsToolDetails, type LsToolInput } from "./core/tools/ls.ts";
 export { createMemoryTool, type MemoryToolDetails, type MemoryToolInput } from "./core/tools/memory.ts";
+export { resolveReadPathAsync, resolveToCwd } from "./core/tools/path-utils.ts";
 export { createReadTool, type ReadToolDetails, type ReadToolInput } from "./core/tools/read.ts";
 export { createWriteTool, type WriteToolInput } from "./core/tools/write.ts";
 export { main } from "./main.ts";
-// UI components for extensions
-export { BorderedLoader } from "./modes/interactive/components/bordered-loader.ts";
-export { CustomEditor } from "./modes/interactive/components/custom-editor.ts";
+export type { DaemonCommand, DaemonResponse, DaemonSessionState } from "./modes/daemon/daemon-types.ts";
+// UI components for extensions + the @opsyhq/cli daemon client (the interactive TUI lives in
+// apps/cli; these are the shared pieces it imports — kept here because the engine's startup/
+// onboarding flow and extension runner still depend on them).
+export { CountdownTimer } from "./modes/interactive/components/countdown-timer.ts";
 export { DynamicBorder } from "./modes/interactive/components/dynamic-border.ts";
-export { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
+export { ExtensionInputComponent } from "./modes/interactive/components/extension-input.ts";
+export { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 export {
+	formatKeyText,
+	type KeyTextFormatOptions,
+	keyDisplayText,
+	keyHint,
+	keyText,
+	rawKeyHint,
+} from "./modes/interactive/components/keybinding-hints.ts";
+export {
+	getAvailableThemesWithPaths,
 	getEditorTheme,
+	getLanguageFromPath,
 	getMarkdownTheme,
 	getSelectListTheme,
 	getSettingsListTheme,
+	getThemeByName,
+	highlightCode,
 	initTheme,
+	setTheme,
+	setThemeInstance,
 	Theme,
 	theme,
 } from "./modes/interactive/theme/theme.ts";
+export { isFailureMessage } from "./modes/message.ts";
 export { runPrintMode } from "./modes/print-mode.ts";
+export { stripAnsi } from "./utils/ansi.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
+export { convertToPng } from "./utils/image-convert.ts";
+export { formatPathRelativeToCwdOrAbsolute, resolvePath } from "./utils/paths.ts";
+export { ensureTool } from "./utils/tools-manager.ts";

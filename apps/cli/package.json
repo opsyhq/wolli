@@ -19,9 +19,11 @@
 		"@opsyhq/agent": "workspace:*",
 		"@opsyhq/steward": "workspace:*",
 		"@opsyhq/tui": "workspace:*",
-		"@earendil-works/pi-ai": "^0.79.3"
+		"@earendil-works/pi-ai": "^0.79.3",
+		"diff": "8.0.4"
 	},
 	"devDependencies": {
+		"@types/diff": "7.0.2",
 		"@types/node": "24.12.4",
 		"shx": "0.4.0",
 		"typescript": "5.9.3",

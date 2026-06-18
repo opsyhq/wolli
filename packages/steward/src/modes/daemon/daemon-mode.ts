@@ -252,7 +252,14 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 	);
 
 	app.post("/control", async (c) => {
-		const cmd = await c.req.json<DaemonCommand>();
+		// Parse inside the try so a malformed body becomes a structured {success:false} error
+		// instead of an unstructured HTTP 500.
+		let cmd: DaemonCommand;
+		try {
+			cmd = await c.req.json<DaemonCommand>();
+		} catch {
+			return c.json(err(undefined, "unknown", "Malformed JSON body."));
+		}
 		try {
 			return c.json(await handleCommand(host, cmd));
 		} catch (e) {

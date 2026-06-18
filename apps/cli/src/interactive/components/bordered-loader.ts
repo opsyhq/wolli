@@ -1,7 +1,7 @@
 import { CancellableLoader, Container, Loader, Spacer, Text, type TUI } from "@opsyhq/tui";
-import type { Theme } from "../theme/theme.ts";
-import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint } from "./keybinding-hints.ts";
+import type { Theme } from "@opsyhq/steward";
+import { DynamicBorder } from "@opsyhq/steward";
+import { keyHint } from "@opsyhq/steward";
 
 /** Loader wrapped with borders for extension UI */
 export class BorderedLoader extends Container {

@@ -2,8 +2,8 @@ import type { TextContent } from "@earendil-works/pi-ai";
 import type { CustomMessage } from "@opsyhq/agent";
 import type { Component } from "@opsyhq/tui";
 import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@opsyhq/tui";
-import type { MessageRenderer } from "../../../core/extensions/types.ts";
-import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import type { MessageRenderer } from "@opsyhq/steward";
+import { getMarkdownTheme, theme } from "@opsyhq/steward";
 
 /**
  * Component that renders a custom message entry from extensions.

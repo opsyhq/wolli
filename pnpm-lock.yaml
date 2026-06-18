@@ -42,7 +42,13 @@ importers:
       '@opsyhq/tui':
         specifier: workspace:*
         version: link:../../packages/tui
+      diff:
+        specifier: 8.0.4
+        version: 8.0.4
     devDependencies:
+      '@types/diff':
+        specifier: 7.0.2
+        version: 7.0.2
       '@types/node':
         specifier: 24.12.4
         version: 24.12.4

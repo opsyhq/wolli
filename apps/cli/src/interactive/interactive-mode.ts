@@ -1,25 +1,19 @@
 /**
- * Interactive TUI chat mode.
+ * Interactive TUI chat mode — a daemon client.
  *
- * Bridges the `AgentHarness` event stream onto a small retained-mode component tree (a
- * chat log `Container`, a status `Container` holding a `Loader`, and an `Editor`).
- * Streaming assistant text is routed through an `AssistantMessageComponent`, whose
- * `updateContent(message)` is called in place on each delta so the prefix cache and the
- * renderer both stay warm — and so thinking blocks render in order rather than being
- * dropped.
+ * Drives a `DaemonSession` (the one `fetch`/SSE seam) instead of an in-process `SessionHost`:
+ * actions are control-command round-trips and the event stream arrives over SSE, byte-identical to
+ * the in-process harness events this consumed before. Those events are bridged onto a small
+ * retained-mode component tree (a chat log `Container`, a status `Container` holding a `Loader`, and
+ * an `Editor`). Streaming assistant text is routed through an `AssistantMessageComponent`, whose
+ * `updateContent(message)` is called in place on each delta so the prefix cache and the renderer
+ * both stay warm — and so thinking blocks render in order rather than being dropped.
  *
- * Subscribe handlers must stay fast and non-throwing — a throw inside one surfaces as
- * an `AgentHarnessError("hook")` and would abort the turn.
+ * Subscribe handlers must stay fast and non-throwing.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import {
-	type AgentHarness,
-	AgentHarnessError,
-	type AgentHarnessEvent,
-	type AgentMessage,
-	type SessionContext,
-} from "@opsyhq/agent";
+import { AgentHarnessError, type AgentHarnessEvent, type AgentMessage, type SessionContext } from "@opsyhq/agent";
 import {
 	type AutocompleteProvider,
 	CombinedAutocompleteProvider,
@@ -41,54 +35,56 @@ import {
 	TruncatedText,
 	TUI,
 } from "@opsyhq/tui";
-import { deployAgent, isDeployed } from "../../core/agent-config.ts";
-import { executeBashWithOperations } from "../../core/bash-executor.ts";
-import type { ResourceDiagnostic } from "../../core/diagnostics.ts";
-import type { AutocompleteProviderFactory, ExtensionRunner } from "../../core/extensions/index.ts";
-import type {
-	EditorFactory,
-	ExtensionCommandContextActions,
-	ExtensionShortcut,
-	ExtensionUIContext,
-	ExtensionUIDialogOptions,
-	ExtensionWidgetOptions,
-	TerminalInputHandler,
-	WorkingIndicatorOptions,
-} from "../../core/extensions/types.ts";
-import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
-import { KeybindingsManager, type KeyId } from "../../core/keybindings.ts";
-import { createBashExecutionMessage } from "../../core/messages.ts";
-import type { SessionHost } from "../../core/session-host.ts";
-import { parseSkillBlock } from "../../core/skills.ts";
-import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
-import type { SourceInfo } from "../../core/source-info.ts";
-import { createLocalBashOperations } from "../../core/tools/bash.ts";
-import type { TruncationResult } from "../../core/tools/truncate.ts";
-import { ensureTool } from "../../utils/tools-manager.ts";
-import { isFailureMessage } from "../message.ts";
+import {
+	type AutocompleteProviderFactory,
+	BUILTIN_SLASH_COMMANDS,
+	createBashExecutionMessage,
+	createLocalBashOperations,
+	deployAgent,
+	type EditorFactory,
+	ensureTool,
+	executeBashWithOperations,
+	type ExtensionCommandContextActions,
+	ExtensionInputComponent,
+	ExtensionSelectorComponent,
+	type ExtensionShortcut,
+	type ExtensionUIContext,
+	type ExtensionUIDialogOptions,
+	type ExtensionWidgetOptions,
+	FooterDataProvider,
+	getAvailableThemesWithPaths,
+	getEditorTheme,
+	getMarkdownTheme,
+	getThemeByName,
+	initTheme,
+	isDeployed,
+	isFailureMessage,
+	KeybindingsManager,
+	keyDisplayText,
+	type KeyId,
+	parseSkillBlock,
+	rawKeyHint,
+	type ReadonlyFooterDataProvider,
+	type ResourceDiagnostic,
+	setTheme,
+	setThemeInstance,
+	type SourceInfo,
+	type TerminalInputHandler,
+	Theme,
+	theme,
+	type TruncationResult,
+	type WorkingIndicatorOptions,
+} from "@opsyhq/steward";
+import { DaemonSession, type DaemonUiRequest } from "../daemon-session.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
 import { CustomMessageComponent } from "./components/custom-message.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
-import { ExtensionInputComponent } from "./components/extension-input.ts";
-import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
-import { keyDisplayText, rawKeyHint } from "./components/keybinding-hints.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
-import {
-	getAvailableThemesWithPaths,
-	getEditorTheme,
-	getMarkdownTheme,
-	getThemeByName,
-	initTheme,
-	setTheme,
-	setThemeInstance,
-	Theme,
-	theme,
-} from "./theme/theme.ts";
 
 /** Window (ms) within which a second Ctrl+C quits instead of clearing the editor. */
 const CTRL_C_EXIT_WINDOW_MS = 500;
@@ -139,7 +135,7 @@ function isExpandable(obj: unknown): obj is Expandable {
 }
 
 export class InteractiveMode {
-	private readonly sessionHost: SessionHost;
+	private readonly session: DaemonSession;
 	private readonly options: InteractiveModeOptions;
 	private readonly ui: TUI;
 	private readonly chatContainer: Container;
@@ -225,8 +221,8 @@ export class InteractiveMode {
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
 	private fdPath: string | undefined;
 
-	constructor(host: SessionHost, options: InteractiveModeOptions = {}) {
-		this.sessionHost = host;
+	constructor(session: DaemonSession, options: InteractiveModeOptions = {}) {
+		this.session = session;
 		this.options = options;
 		// The theme proxy and keybinding hints used by the tool renderers throw
 		// unless initialized first; do it before any styling runs.
@@ -242,7 +238,7 @@ export class InteractiveMode {
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
 		this.footerContainer = new Container();
-		this.footerDataProvider = new FooterDataProvider(this.sessionHost.getCwd());
+		this.footerDataProvider = new FooterDataProvider(this.session.getCwd());
 		this.markdownTheme = getMarkdownTheme();
 		this.defaultEditor = new Editor(this.ui, getEditorTheme(), { paddingX: 1 });
 		this.editor = this.defaultEditor;
@@ -256,12 +252,7 @@ export class InteractiveMode {
 		this.loader.stop();
 	}
 
-	/** The live harness, sourced from the session host (swapped on deploy). */
-	private get harness(): AgentHarness {
-		return this.sessionHost.harness;
-	}
-
-	run(): Promise<void> {
+	async run(): Promise<void> {
 		this.editor.onSubmit = (text) => {
 			void this.handleSubmit(text);
 		};
@@ -279,16 +270,10 @@ export class InteractiveMode {
 		this.setupAutocompleteProvider();
 		void this.initAutocompleteFd();
 		this.subscribeToHost();
-		// Hand the host this mode's extension surface so it (and every runner the host
-		// rebuilds on session swap / reload) can drive interactive UI and session control.
-		this.sessionHost.bindInteractiveContext({
-			uiContext: this.createExtensionUIContext(),
-			mode: "tui",
-			commandContextActions: this.createCommandContextActions(),
-			onError: (error) => this.showExtensionError(error.extensionPath, error.error, error.stack),
-			shutdownHandler: () => this.stop(),
-		});
-		this.setupExtensionShortcuts(this.sessionHost.extensionRunner);
+		// The extension runner lives server-side now, so its UI requests arrive over the wire:
+		// route the daemon's extension_ui_request stream to the client dialogs (Slice 4 / Item 5).
+		this.session.onUiRequest = (req) => this.dispatchUiRequest(req);
+		this.setupExtensionShortcuts();
 		this.removeInputListener = this.ui.addInputListener((data) => this.handleGlobalInput(data));
 
 		this.ui.addChild(this.headerContainer);
@@ -310,27 +295,27 @@ export class InteractiveMode {
 		// Paint the resumed transcript (the persisted opener + any prior turns). On
 		// birth the session is empty, so this renders nothing and the seed below paints
 		// the opener once.
-		this.renderInitialMessages();
+		await this.renderInitialMessages();
 
 		// Seed an assistant opener instead of running a user turn: a newly born agent
 		// opens the chat itself. Fire-and-forget — run() returns the exit promise.
 		// Gated on `!hasMessageEntries` so the seed is strictly idempotent: if a `message`
 		// entry already exists (resume, or a `new` run against a populated session) the
 		// opener was already rendered by `renderInitialMessages` and is not re-seeded.
-		const hasMessageEntries = this.sessionHost.getEntries().some((e) => e.type === "message");
+		const hasMessageEntries = (await this.session.getEntries()).some((e) => e.type === "message");
 		if (this.options.initialAssistantMessage && !hasMessageEntries) {
 			void this.seedInitialAssistantMessage(this.options.initialAssistantMessage);
 		}
 
-		return new Promise<void>((resolve) => {
+		await new Promise<void>((resolve) => {
 			this.resolveExit = resolve;
 		});
 	}
 
 	/**
-	 * Build the base autocomplete provider from the live command set.
-	 * `SessionHost.getCommands()` merges prompt templates, extension commands, and skills
-	 * into a single `SlashCommandInfo[]`, so a single loop here covers all of them.
+	 * Build the base autocomplete provider from the live command set. The daemon merges prompt
+	 * templates, extension commands, and skills into one `SlashCommandInfo[]` (cached client-side),
+	 * so a single loop here covers all of them.
 	 */
 	private createBaseAutocompleteProvider(): AutocompleteProvider {
 		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
@@ -339,7 +324,7 @@ export class InteractiveMode {
 		}));
 
 		const builtinCommandNames = new Set(slashCommands.map((command) => command.name));
-		const dynamicCommands: SlashCommand[] = this.sessionHost
+		const dynamicCommands: SlashCommand[] = this.session
 			.getCommands()
 			.filter((command) => !builtinCommandNames.has(command.name))
 			.map((command) => ({
@@ -349,7 +334,7 @@ export class InteractiveMode {
 
 		return new CombinedAutocompleteProvider(
 			[...slashCommands, ...dynamicCommands],
-			this.sessionHost.getCwd(),
+			this.session.getCwd(),
 			this.fdPath,
 		);
 	}
@@ -423,14 +408,14 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Persist + render the agent's opening assistant message (the birth opener). The
-	 * message is appended to the session via the host so it survives resume, then
-	 * rendered through the same `AssistantMessageComponent` the stream uses. Only the
-	 * birth path passes `initialAssistantMessage`, so resumes never re-seed it.
+	 * Persist + render the agent's opening assistant message (the birth opener). The daemon
+	 * appends it to the session (so it survives resume), then it renders through the same
+	 * `AssistantMessageComponent` the stream uses. Only the birth path passes
+	 * `initialAssistantMessage`, so resumes never re-seed it.
 	 */
 	private async seedInitialAssistantMessage(text: string): Promise<void> {
 		try {
-			const message = await this.sessionHost.seedAssistantMessage(text);
+			const message = await this.session.seedAssistantMessage(text);
 			const component = new AssistantMessageComponent(
 				undefined,
 				false,
@@ -446,9 +431,9 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	/** (Re)subscribe to the current harness's event stream. */
+	/** (Re)subscribe to the daemon's SSE event stream. */
 	private subscribeToHost(): void {
-		this.unsubscribe = this.harness.subscribe((event) => {
+		this.unsubscribe = this.session.subscribe((event) => {
 			this.handleEvent(event);
 		});
 	}
@@ -464,7 +449,7 @@ export class InteractiveMode {
 	}
 
 	private appendHeader(): void {
-		const config = this.sessionHost.config;
+		const config = this.session.config;
 		const lines = [theme.bold(config.name)];
 		const trimmedPurpose = config.purpose.trim();
 		if (trimmedPurpose) {
@@ -485,7 +470,7 @@ export class InteractiveMode {
 
 	/** Print the loaded-resource count line plus any load/collision diagnostics. */
 	private showResourceSummary(): void {
-		const summary = this.sessionHost.getResourceSummary();
+		const summary = this.session.getResourceSummary();
 		const parts: string[] = [];
 		if (summary.extensions > 0) parts.push(`${summary.extensions} extension${summary.extensions === 1 ? "" : "s"}`);
 		if (summary.skills > 0) parts.push(`${summary.skills} skill${summary.skills === 1 ? "" : "s"}`);
@@ -578,7 +563,7 @@ export class InteractiveMode {
 		if (this.busy) {
 			this.editor.addToHistory?.(trimmed);
 			this.editor.setText("");
-			await this.sessionHost.prompt(trimmed, { streamingBehavior: "steer" });
+			await this.session.prompt(trimmed, { streamingBehavior: "steer" });
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
 			return;
@@ -591,7 +576,7 @@ export class InteractiveMode {
 		this.statusContainer.clear();
 		this.ui.requestRender();
 		try {
-			await this.sessionHost.prompt(trimmed);
+			await this.session.prompt(trimmed);
 		} catch (error) {
 			if (error instanceof AgentHarnessError && error.code === "busy") return;
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
@@ -606,7 +591,7 @@ export class InteractiveMode {
 	 * path only — `/deploy` always nudges, the tool runs, the human confirms, deploy.
 	 */
 	private async handleDeployCommand(): Promise<void> {
-		if (isDeployed(this.sessionHost.config)) {
+		if (isDeployed(this.session.config)) {
 			this.appendErrorLine("Already deployed.");
 			this.ui.requestRender();
 			return;
@@ -618,7 +603,7 @@ export class InteractiveMode {
 		this.statusContainer.clear();
 		this.ui.requestRender();
 		try {
-			await this.harness.prompt(DEPLOY_INSTRUCTION);
+			await this.session.prompt(DEPLOY_INSTRUCTION);
 		} catch (error) {
 			if (error instanceof AgentHarnessError && error.code === "busy") return;
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
@@ -633,7 +618,7 @@ export class InteractiveMode {
 	private async finalizeDeploy(): Promise<void> {
 		this.deployToolCallId = undefined;
 		const confirmed = await this.showExtensionConfirm(
-			`Deploy "${this.sessionHost.config.name}"?`,
+			`Deploy "${this.session.config.name}"?`,
 			"Its purpose and SOUL.md are written. Deploying starts a fresh session.",
 		);
 		if (!confirmed) {
@@ -647,39 +632,34 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Swap the live harness for a fresh session in place (the shared core of `/new` and
-	 * deploy). steward's `sessionHost.newSession()` only swaps the harness, so the dance
-	 * around it lives here: unsubscribe from the old harness, have the host build a new one
-	 * (whose frozen prompt reflects the current config), re-subscribe, and reset the
-	 * transient per-session UI state. The TUI is never torn down.
+	 * Swap to a fresh session in place (the shared core of `/new` and deploy). The daemon's
+	 * `new_session` verb rebuilds the server-side session; the client drops its event handler for
+	 * the round-trip, re-subscribes, and resets the transient per-session UI state. The TUI is
+	 * never torn down.
 	 *
 	 * Transcript-neutral — callers decide whether to clear the chat log (deploy keeps it,
-	 * `/new` clears it). Returns `false` (after surfacing the error and keeping the old
-	 * harness live) if the swap failed.
+	 * `/new` clears it). Returns `false` (error surfaced) if the swap failed.
 	 *
-	 * `reason` records the caller's intent for the host primitive: it refuses a `"new"`
-	 * swap while the agent is still forming (the birth-session invariant — see
-	 * `SessionHost.newSession`). A thrown `newSession()` degrades gracefully here (old
-	 * harness kept live, error surfaced).
+	 * `reason` records the caller's intent: the daemon refuses a `"new"` swap while the agent is
+	 * still forming (the birth-session invariant). A thrown swap degrades gracefully here.
 	 */
 	private async swapToNewSession(reason: "deploy" | "new"): Promise<boolean> {
 		this.unsubscribe?.();
-		// Tear down the old session's extension chrome before the swap, so the new session's
-		// `session_start` (emitted inside newSession) paints onto a clean surface.
+		// Tear down the old session's extension chrome before the swap so the fresh session paints
+		// onto a clean surface.
 		this.resetExtensionUI();
 		try {
-			// On success the host swaps in the new harness; on failure it keeps the old.
-			await this.sessionHost.newSession({ reason });
+			await this.session.newSession({ reason });
 		} catch (error) {
 			this.subscribeToHost();
-			this.setupExtensionShortcuts(this.sessionHost.extensionRunner);
+			this.setupExtensionShortcuts();
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
 			this.ui.requestRender();
 			return false;
 		}
 		this.subscribeToHost();
-		// Snapshot the rebuilt runner's shortcuts (the host re-applied the UI context itself).
-		this.setupExtensionShortcuts(this.sessionHost.extensionRunner);
+		// Re-snapshot extension shortcuts (inert until the extension-UI round-trip lands, Slice 4).
+		this.setupExtensionShortcuts();
 
 		// Reset transient per-session UI state.
 		this.streamingComponent = undefined;
@@ -694,15 +674,14 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Flip the human-held latch, then swap to a fresh session in place (see
-	 * swapToNewSession). The new harness's frozen prompt no longer carries the birth
-	 * instruction. The deploy transcript is kept on screen — only `/new` clears the chat.
+	 * Flip the human-held latch, then swap to a fresh session in place (see swapToNewSession).
+	 * The deploy transcript is kept on screen — only `/new` clears the chat.
 	 */
 	private async doDeploy(): Promise<void> {
-		const name = this.sessionHost.config.name;
+		const name = this.session.config.name;
 		deployAgent(name);
-		// `"deploy"` intent: this is the one swap allowed out of a forming session. The
-		// latch was just flipped on disk above, so the host's backstop sees it as deployed.
+		// The `"deploy"` reason is the one swap allowed out of a forming session — the daemon
+		// bypasses its forming guard for it.
 		if (!(await this.swapToNewSession("deploy"))) return;
 		this.chatContainer.addChild(new Text(theme.fg("dim", "✓ Deployed — fresh session started."), 1, 0));
 		this.ui.setFocus(this.editor);
@@ -710,16 +689,15 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * `/new` — start a fresh session. `sessionHost.newSession()` only swaps the harness,
-	 * so this reuses `swapToNewSession()` (the same dance deploy uses) and surfaces any
-	 * failure via `swapToNewSession`'s `appendErrorLine` path.
+	 * `/new` — start a fresh session, reusing `swapToNewSession()` (the same dance deploy uses) and
+	 * surfacing any failure via its `appendErrorLine` path.
 	 *
-	 * Forming guard: while the agent is undeployed it stays in its single birth session,
-	 * so `/new` is refused here (the primary guard) and again at the host primitive (the
-	 * backstop — see `SessionHost.newSession`'s invariant).
+	 * Forming guard: while the agent is undeployed it stays in its single birth session, so `/new` is
+	 * refused here (the primary guard) and again by the daemon (the backstop — the birth-session
+	 * invariant).
 	 */
 	private async handleNewCommand(): Promise<void> {
-		if (!isDeployed(this.sessionHost.config)) {
+		if (!isDeployed(this.session.config)) {
 			this.appendErrorLine(
 				"This agent is still forming — it stays in its birth session until it deploys. Type /deploy when it's ready.",
 			);
@@ -729,7 +707,7 @@ export class InteractiveMode {
 		if (!(await this.swapToNewSession("new"))) return;
 		// Single source of truth for the reset+repaint (header + transcript). On an empty
 		// fresh session this reproduces today's header-only output.
-		this.renderCurrentSessionState();
+		await this.renderCurrentSessionState();
 		this.chatContainer.addChild(new Text(theme.fg("dim", "✓ New session started."), 1, 0));
 		this.chatContainer.addChild(new Spacer(1));
 		this.ui.setFocus(this.editor);
@@ -737,13 +715,12 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * `/compact [instructions]` — compact the session history. The harness keeps its
-	 * session private, so the live entries come from `sessionHost.getEntries()`, and
-	 * warnings surface via `appendErrorLine`. `harness.compact()` throws on failure, so
-	 * compaction errors are caught and surfaced here.
+	 * `/compact [instructions]` — compact the session history. The live entries come from the daemon
+	 * (`getEntries`), warnings surface via `appendErrorLine`, and the `compact` verb throws on
+	 * failure, so compaction errors are caught and surfaced here.
 	 */
 	private async handleCompactCommand(customInstructions?: string): Promise<void> {
-		const messageCount = this.sessionHost.getEntries().filter((e) => e.type === "message").length;
+		const messageCount = (await this.session.getEntries()).filter((e) => e.type === "message").length;
 		if (messageCount < 2) {
 			this.appendErrorLine("Nothing to compact (no messages yet).");
 			this.ui.requestRender();
@@ -751,7 +728,7 @@ export class InteractiveMode {
 		}
 		this.statusContainer.clear();
 		try {
-			await this.harness.compact(customInstructions);
+			await this.session.compact(customInstructions);
 		} catch (error) {
 			if (error instanceof AgentHarnessError && error.code === "busy") return;
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
@@ -1216,9 +1193,12 @@ export class InteractiveMode {
 		this.extensionTerminalInputUnsubscribers.clear();
 	}
 
-	/** Snapshot the extension keyboard shortcuts; handleGlobalInput matches against them. */
-	private setupExtensionShortcuts(runner: ExtensionRunner): void {
-		this.extensionShortcuts = runner.getShortcuts(this.keybindings.getEffectiveConfig());
+	/**
+	 * Snapshot the extension keyboard shortcuts; handleGlobalInput matches against them. The
+	 * runner is server-side, so the shortcut descriptors ride the snapshot — inert until Slice 4.
+	 */
+	private setupExtensionShortcuts(): void {
+		this.extensionShortcuts = this.session.getShortcuts();
 	}
 
 	/** Reset all extension-owned UI back to defaults (before a reload rebuilds it). */
@@ -1240,6 +1220,17 @@ export class InteractiveMode {
 		this.workingVisible = true;
 		this.setWorkingIndicator();
 		this.setHiddenThinkingLabel();
+	}
+
+	/**
+	 * Client half of the extension-UI round-trip (Item 5): a daemon `extension_ui_request` is
+	 * dispatched to the matching local dialog, then answered via `this.session.respondUi`. The
+	 * daemon-side bridge (`DaemonUIContext` + `POST /ui-response`) lands in Slice 4, so no request
+	 * arrives until then; this stub keeps the wiring in place.
+	 */
+	private dispatchUiRequest(_req: DaemonUiRequest): void {
+		// Slice 4 (Item 5) fleshes this out: switch on req.method → showExtensionSelector/Input/Editor
+		// (and the fire-and-forget setStatus/setWidget/... family) → this.session.respondUi(id, answer).
 	}
 
 	/** The UI surface handed to extensions via `ctx.ui`. */
@@ -1304,10 +1295,10 @@ export class InteractiveMode {
 	 */
 	private createCommandContextActions(): ExtensionCommandContextActions {
 		return {
-			waitForIdle: () => this.harness.waitForIdle(),
+			waitForIdle: () => this.session.waitForIdle(),
 			newSession: async () => {
 				if (!(await this.swapToNewSession("new"))) return { cancelled: true };
-				this.renderCurrentSessionState();
+				await this.renderCurrentSessionState();
 				this.ui.requestRender();
 				return { cancelled: false };
 			},
@@ -1328,11 +1319,11 @@ export class InteractiveMode {
 	 * into the agent's context unless `!!` was used (`excludeFromContext`).
 	 */
 	private async handleBashCommand(command: string, excludeFromContext = false): Promise<void> {
-		const eventResult = await this.sessionHost.extensionRunner.emitUserBash({
+		const eventResult = await this.session.emitUserBash({
 			type: "user_bash",
 			command,
 			excludeFromContext,
-			cwd: this.sessionHost.getCwd(),
+			cwd: this.session.getCwd(),
 		});
 
 		// An extension handled execution itself — display and record its result directly.
@@ -1349,7 +1340,7 @@ export class InteractiveMode {
 				result.truncated ? ({ truncated: true, content: result.output } as TruncationResult) : undefined,
 				result.fullOutputPath,
 			);
-			await this.harness.appendMessage(createBashExecutionMessage(command, result, { excludeFromContext }));
+			await this.session.appendMessage(createBashExecutionMessage(command, result, { excludeFromContext }));
 			this.bashComponent = undefined;
 			this.ui.requestRender();
 			return;
@@ -1363,7 +1354,7 @@ export class InteractiveMode {
 		try {
 			const result = await executeBashWithOperations(
 				command,
-				this.sessionHost.getCwd(),
+				this.session.getCwd(),
 				eventResult?.operations ?? createLocalBashOperations(),
 				{
 					onChunk: (chunk) => {
@@ -1383,7 +1374,7 @@ export class InteractiveMode {
 					result.fullOutputPath,
 				);
 			}
-			await this.harness.appendMessage(createBashExecutionMessage(command, result, { excludeFromContext }));
+			await this.session.appendMessage(createBashExecutionMessage(command, result, { excludeFromContext }));
 		} catch (error) {
 			if (this.bashComponent) {
 				this.bashComponent.setComplete(undefined, false);
@@ -1444,7 +1435,7 @@ export class InteractiveMode {
 						{},
 						this.getRegisteredToolDefinition(event.toolName),
 						this.ui,
-						this.sessionHost.getCwd(),
+						this.session.getCwd(),
 					);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
@@ -1499,10 +1490,9 @@ export class InteractiveMode {
 	// =========================================================================
 	// Resume-transcript render. Repaints a resumed session into the chat view:
 	// `getUserMessageText`/`addMessageToChat`/`renderSessionContext`/
-	// `renderInitialMessages`/`renderCurrentSessionState`. The data layer comes
-	// from the engine (`SessionHost.buildSessionContext`); this only owns the TUI
-	// paint, using `this.markdownTheme` for markdown and the plain text form for
-	// the aborted-tool stamp.
+	// `renderInitialMessages`/`renderCurrentSessionState`. The data layer comes from the
+	// daemon (`buildSessionContext`); this only owns the TUI paint, using `this.markdownTheme`
+	// for markdown and the plain text form for the aborted-tool stamp.
 	// =========================================================================
 
 	/** Extract the plain-text portion of a user message (""  for any other role). */
@@ -1533,7 +1523,7 @@ export class InteractiveMode {
 			}
 			case "custom": {
 				if (message.display) {
-					const renderer = this.sessionHost.extensionRunner.getMessageRenderer(message.customType);
+					const renderer = this.session.getMessageRenderer();
 					const component = new CustomMessageComponent(message, renderer, this.markdownTheme);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
@@ -1627,7 +1617,7 @@ export class InteractiveMode {
 							{},
 							this.getRegisteredToolDefinition(content.name),
 							this.ui,
-							this.sessionHost.getCwd(),
+							this.session.getCwd(),
 						);
 						component.setExpanded(this.toolOutputExpanded);
 						this.chatContainer.addChild(component);
@@ -1668,12 +1658,12 @@ export class InteractiveMode {
 	 * compaction-count notice if the session was compacted. On birth the context is
 	 * empty, so this renders nothing and the seeded opener is appended afterward.
 	 */
-	renderInitialMessages(): void {
-		const context = this.sessionHost.buildSessionContext();
+	async renderInitialMessages(): Promise<void> {
+		const context = await this.session.buildSessionContext();
 		this.renderSessionContext(context, { populateHistory: true });
 
 		// Show compaction info if session was compacted: append a dim line directly.
-		const compactionCount = this.sessionHost.getEntries().filter((e) => e.type === "compaction").length;
+		const compactionCount = (await this.session.getEntries()).filter((e) => e.type === "compaction").length;
 		if (compactionCount > 0) {
 			const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
 			this.chatContainer.addChild(new Text(theme.fg("dim", `Session compacted ${times}`), 1, 0));
@@ -1686,34 +1676,34 @@ export class InteractiveMode {
 	 * single source of truth for `/new`. Resets the transient per-session fields
 	 * (streaming component, pending tools) before repainting.
 	 */
-	private renderCurrentSessionState(): void {
+	private async renderCurrentSessionState(): Promise<void> {
 		this.chatContainer.clear();
 		this.streamingComponent = undefined;
 		this.pendingTools.clear();
 		this.appendHeader();
-		this.renderInitialMessages();
+		await this.renderInitialMessages();
 	}
 
 	/**
-	 * Get all queued messages (read-only). Steward has a single queue source (the harness),
-	 * so this flattens its steer/follow-up snapshots to text via `getUserMessageText`.
+	 * Get all queued messages (read-only) from the daemon's queue snapshot (kept fresh by the
+	 * `queue_update` event), flattening the steer/follow-up lists to text via `getUserMessageText`.
 	 */
 	private getAllQueuedMessages(): { steering: string[]; followUp: string[] } {
 		return {
-			steering: this.sessionHost
+			steering: this.session
 				.getSteeringMessages()
 				.map((m) => this.getUserMessageText(m))
 				.filter((t) => t.length > 0),
-			followUp: this.sessionHost
+			followUp: this.session
 				.getFollowUpMessages()
 				.map((m) => this.getUserMessageText(m))
 				.filter((t) => t.length > 0),
 		};
 	}
 
-	/** Clear all queued messages and return their contents (the harness drain is async). */
+	/** Clear all queued messages and return their contents (the `clear_queue` verb round-trips). */
 	private async clearAllQueues(): Promise<{ steering: string[]; followUp: string[] }> {
-		const { steering, followUp } = await this.sessionHost.clearQueue();
+		const { steering, followUp } = await this.session.clearQueue();
 		return {
 			steering: steering.map((m) => this.getUserMessageText(m)).filter((t) => t.length > 0),
 			followUp: followUp.map((m) => this.getUserMessageText(m)).filter((t) => t.length > 0),
@@ -1747,7 +1737,7 @@ export class InteractiveMode {
 		if (this.busy) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
-			await this.sessionHost.prompt(text, { streamingBehavior: "followUp" });
+			await this.session.prompt(text, { streamingBehavior: "followUp" });
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
 		}
@@ -1809,7 +1799,7 @@ export class InteractiveMode {
 						{},
 						this.getRegisteredToolDefinition(content.name),
 						this.ui,
-						this.sessionHost.getCwd(),
+						this.session.getCwd(),
 					);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
@@ -1903,9 +1893,9 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * `/reload` — rebuild extensions, skills, prompts, and keybindings in place. Guards
-	 * against running mid-stream, resets extension-owned UI, then re-applies the host's
-	 * rebuilt resources and re-wires autocomplete + shortcuts. The conversation is kept.
+	 * `/reload` — the daemon rebuilds extensions, skills, prompts, and keybindings in place. Guards
+	 * against running mid-stream, resets extension-owned UI, then re-wires autocomplete + shortcuts
+	 * from the refreshed snapshot. The conversation is kept.
 	 */
 	private async handleReloadCommand(): Promise<void> {
 		if (this.busy) {
@@ -1915,11 +1905,11 @@ export class InteractiveMode {
 
 		this.resetExtensionUI();
 		try {
-			await this.sessionHost.reload();
+			await this.session.reload();
 			this.keybindings.reload();
 			this.setupAutocompleteProvider();
-			this.setupExtensionShortcuts(this.sessionHost.extensionRunner);
-			const summary = this.sessionHost.getResourceSummary();
+			this.setupExtensionShortcuts();
+			const summary = this.session.getResourceSummary();
 			this.showStatus(
 				`Reloaded: ${summary.extensions} extensions, ${summary.skills} skills, ${summary.prompts} prompts, ${summary.commands} commands.`,
 			);
@@ -1942,11 +1932,8 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Recolor the editor border for bash mode.
-	 *
-	 * The thinking level is frozen in the SessionHost and there is no per-keystroke
-	 * thinking state, so the non-bash branch restores the editor's constructed default
-	 * border (`getEditorTheme().borderColor`).
+	 * Recolor the editor border for bash mode. There is no per-keystroke thinking state, so the
+	 * non-bash branch restores the editor's constructed default border (`getEditorTheme().borderColor`).
 	 */
 	private updateEditorBorderColor(): void {
 		this.editor.borderColor = this.isBashMode ? theme.getBashModeBorderColor() : getEditorTheme().borderColor;
@@ -2001,7 +1988,7 @@ export class InteractiveMode {
 		) {
 			for (const [shortcut, registered] of this.extensionShortcuts) {
 				if (matchesKey(data, shortcut)) {
-					Promise.resolve(registered.handler(this.sessionHost.extensionRunner.createContext())).catch((err) => {
+					Promise.resolve(registered.handler(this.session.createShortcutContext())).catch((err) => {
 						this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
 					});
 					return { consume: true };
@@ -2020,7 +2007,7 @@ export class InteractiveMode {
 		}
 		if (this.busy) {
 			try {
-				await this.harness.abort();
+				await this.session.abort();
 			} catch {
 				// Abort races are non-fatal; the agent_end event still settles busy state.
 			}

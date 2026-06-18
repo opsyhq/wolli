@@ -1,7 +1,7 @@
 import type { CompactionSummaryMessage } from "@opsyhq/agent";
 import { Box, Markdown, type MarkdownTheme, Spacer, Text } from "@opsyhq/tui";
-import { getMarkdownTheme, theme } from "../theme/theme.ts";
-import { keyText } from "./keybinding-hints.ts";
+import { getMarkdownTheme, theme } from "@opsyhq/steward";
+import { keyText } from "@opsyhq/steward";
 
 /**
  * Component that renders a compaction message with collapsed/expanded state.

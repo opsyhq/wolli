@@ -8,11 +8,11 @@ import {
 	DEFAULT_MAX_LINES,
 	type TruncationResult,
 	truncateTail,
-} from "../../../core/tools/truncate.ts";
-import { stripAnsi } from "../../../utils/ansi.ts";
-import { theme } from "../theme/theme.ts";
-import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint, keyText } from "./keybinding-hints.ts";
+} from "@opsyhq/steward";
+import { stripAnsi } from "@opsyhq/steward";
+import { theme } from "@opsyhq/steward";
+import { DynamicBorder } from "@opsyhq/steward";
+import { keyHint, keyText } from "@opsyhq/steward";
 import { truncateToVisualLines } from "./visual-truncate.ts";
 
 // Preview line limit when not expanded (matches tool execution behavior)

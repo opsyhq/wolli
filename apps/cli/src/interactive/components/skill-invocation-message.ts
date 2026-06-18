@@ -1,7 +1,7 @@
 import { Box, Markdown, type MarkdownTheme, Text } from "@opsyhq/tui";
-import type { ParsedSkillBlock } from "../../../core/skills.ts";
-import { getMarkdownTheme, theme } from "../theme/theme.ts";
-import { keyText } from "./keybinding-hints.ts";
+import type { ParsedSkillBlock } from "@opsyhq/steward";
+import { getMarkdownTheme, theme } from "@opsyhq/steward";
+import { keyText } from "@opsyhq/steward";
 
 /**
  * Component that renders a skill invocation message with collapsed/expanded state.

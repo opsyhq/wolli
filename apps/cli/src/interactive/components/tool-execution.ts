@@ -1,9 +1,9 @@
 import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@opsyhq/tui";
-import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
-import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
-import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
-import { convertToPng } from "../../../utils/image-convert.ts";
-import { theme } from "../theme/theme.ts";
+import type { ToolRenderContext } from "@opsyhq/steward";
+import { getToolRenderer, type ToolRenderer } from "../../tool-renderers/index.ts";
+import { getTextOutput as getRenderedTextOutput } from "../../tool-renderers/render-utils.ts";
+import { convertToPng } from "@opsyhq/steward";
+import { theme } from "@opsyhq/steward";
 
 export interface ToolExecutionOptions {
 	showImages?: boolean;
@@ -26,8 +26,8 @@ export class ToolExecutionComponent extends Container {
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private isPartial = true;
-	private toolDefinition?: ToolDefinition<any, any>;
-	private builtInToolDefinition?: ToolDefinition<any, any>;
+	private toolDefinition?: ToolRenderer;
+	private builtInToolDefinition?: ToolRenderer;
 	private ui: TUI;
 	private cwd: string;
 	private executionStarted = false;
@@ -45,7 +45,7 @@ export class ToolExecutionComponent extends Container {
 		toolCallId: string,
 		args: any,
 		options: ToolExecutionOptions = {},
-		toolDefinition: ToolDefinition<any, any> | undefined,
+		toolDefinition: ToolRenderer | undefined,
 		ui: TUI,
 		cwd: string,
 	) {
@@ -54,7 +54,7 @@ export class ToolExecutionComponent extends Container {
 		this.toolCallId = toolCallId;
 		this.args = args;
 		this.toolDefinition = toolDefinition;
-		this.builtInToolDefinition = createAllToolDefinitions(cwd)[toolName as ToolName];
+		this.builtInToolDefinition = getToolRenderer(toolName);
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.ui = ui;
@@ -78,7 +78,7 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
-	private getCallRenderer(): ToolDefinition<any, any>["renderCall"] | undefined {
+	private getCallRenderer(): ToolRenderer["renderCall"] | undefined {
 		if (!this.builtInToolDefinition) {
 			return this.toolDefinition?.renderCall;
 		}
@@ -88,7 +88,7 @@ export class ToolExecutionComponent extends Container {
 		return this.toolDefinition.renderCall ?? this.builtInToolDefinition.renderCall;
 	}
 
-	private getResultRenderer(): ToolDefinition<any, any>["renderResult"] | undefined {
+	private getResultRenderer(): ToolRenderer["renderResult"] | undefined {
 		if (!this.builtInToolDefinition) {
 			return this.toolDefinition?.renderResult;
 		}
