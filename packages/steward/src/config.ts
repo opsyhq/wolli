@@ -72,6 +72,11 @@ export const ENV_SHARED_AGENT_DIR = `${APP_NAME.toUpperCase()}_SHARED_DIR`;
 // daemon authenticates with this value instead of minting an ephemeral one.
 export const ENV_DAEMON_TOKEN = `${APP_NAME.toUpperCase()}_DAEMON_TOKEN`;
 
+// Force the OS service backend, e.g. STEWARD_SERVICE_MANAGER=none|launchd|systemd. Overrides
+// the platform autodetect — `none` keeps deploy from registering a real launchd/systemd unit
+// (used in dev/CI so the deploy flow can be exercised without an OS-managed side effect).
+export const ENV_SERVICE_MANAGER = `${APP_NAME.toUpperCase()}_SERVICE_MANAGER`;
+
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
 	if (path.startsWith("~/") || path.startsWith("~\\")) return join(homedir(), path.slice(2));

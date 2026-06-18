@@ -35,7 +35,7 @@ export {
 // Engine surface consumed by the @opsyhq/cli daemon client (Phase 2, Slice 1): the interactive
 // TUI + the built-in tool renderers were lifted into apps/cli and reach back for these helpers.
 export { executeBashWithOperations } from "./core/bash-executor.ts";
-export { type DaemonDescriptor, loadDaemonDescriptor } from "./core/daemon-descriptor.ts";
+export { type DaemonConfig, deleteDaemonConfig, loadDaemonConfig } from "./core/daemon-config.ts";
 export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
 export type { ResourceDiagnostic, ResourceSummary } from "./core/diagnostics.ts";
 // Extension system
@@ -202,6 +202,13 @@ export {
 	type CreateAgentSessionResult,
 	createAgentSession,
 } from "./core/sdk.ts";
+// OS service backend (deploy/delete + the daemon entry use it to keep a deployed agent always-on).
+export {
+	detectServiceManager,
+	getServiceManager,
+	type ServiceKind,
+	type ServiceManager,
+} from "./core/service/service-manager.ts";
 export {
 	type OpenAgentSessionOptions,
 	type OpenAgentSessionResult,
@@ -274,7 +281,7 @@ export { createMemoryTool, type MemoryToolDetails, type MemoryToolInput } from "
 export { resolveReadPathAsync, resolveToCwd } from "./core/tools/path-utils.ts";
 export { createReadTool, type ReadToolDetails, type ReadToolInput } from "./core/tools/read.ts";
 export { createWriteTool, type WriteToolInput } from "./core/tools/write.ts";
-export { main } from "./main.ts";
+export { main, type RunDaemonOptions, runDaemon } from "./main.ts";
 export type { DaemonCommand, DaemonResponse, DaemonSessionState } from "./modes/daemon/daemon-types.ts";
 // UI components for extensions + the @opsyhq/cli daemon client (the interactive TUI lives in
 // apps/cli; these are the shared pieces it imports — kept here because the engine's startup/

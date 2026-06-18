@@ -40,7 +40,6 @@ import {
 	BUILTIN_SLASH_COMMANDS,
 	createBashExecutionMessage,
 	createLocalBashOperations,
-	deployAgent,
 	type EditorFactory,
 	ensureTool,
 	executeBashWithOperations,
@@ -618,7 +617,7 @@ export class InteractiveMode {
 		this.deployToolCallId = undefined;
 		const confirmed = await this.showExtensionConfirm(
 			`Deploy "${this.session.config.name}"?`,
-			"Its purpose and SOUL.md are written. Deploying starts a fresh session.",
+			"Its purpose and SOUL.md are written. It will start now as a persistent background service (and relaunch on login/boot), in a fresh session.",
 		);
 		if (!confirmed) {
 			this.chatContainer.addChild(
@@ -643,12 +642,22 @@ export class InteractiveMode {
 	 * still forming (the birth-session invariant). A thrown swap degrades gracefully here.
 	 */
 	private async swapToNewSession(reason: "deploy" | "new"): Promise<boolean> {
+		return this.swapSession(() => this.session.newSession({ reason }));
+	}
+
+	/**
+	 * Run a server-side session swap (`new_session` or `deploy`) with the shared client-side
+	 * teardown/rebuild: drop the event handler for the round-trip, re-subscribe, and reset the
+	 * transient per-session UI state. The TUI is never torn down; the transcript is left to the
+	 * caller (deploy keeps it, `/new` clears it). Returns `false` (error surfaced) if the swap threw.
+	 */
+	private async swapSession(swap: () => Promise<void>): Promise<boolean> {
 		this.unsubscribe?.();
 		// Tear down the old session's extension chrome before the swap so the fresh session paints
 		// onto a clean surface.
 		this.resetExtensionUI();
 		try {
-			await this.session.newSession({ reason });
+			await swap();
 		} catch (error) {
 			this.subscribeToHost();
 			this.setupExtensionShortcuts();
@@ -673,17 +682,15 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Flip the human-held latch, then swap to a fresh session in place (see swapToNewSession).
-	 * The deploy transcript is kept on screen — only `/new` clears the chat.
+	 * Commit the deploy. The daemon persists the deploy state (flip the latch + register the OS
+	 * service unit); with the `none` backend it also swaps to a fresh session in place. Runs through
+	 * the shared `swapSession` teardown/rebuild so the client re-subscribes and repaints onto the
+	 * deployed session without tearing down the TUI.
 	 */
 	private async doDeploy(): Promise<void> {
-		const name = this.session.config.name;
-		deployAgent(name);
-		// The `"deploy"` reason is the one swap allowed out of a forming session — the daemon
-		// bypasses its forming guard for it.
-		if (!(await this.swapToNewSession("deploy"))) return;
-		this.chatContainer.addChild(new Text(theme.fg("dim", "✓ Deployed — fresh session started."), 1, 0));
-		this.ui.setFocus(this.editor);
+		if (!(await this.swapSession(() => this.session.deploy()))) return;
+		await this.renderCurrentSessionState();
+		this.chatContainer.addChild(new Text(theme.fg("dim", "✓ Deployed."), 1, 0));
 		this.ui.requestRender();
 	}
 

@@ -14,7 +14,9 @@ import type { AgentHarness, AgentHarnessEvent } from "@opsyhq/agent";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
-import { loadDaemonDescriptor, saveDaemonDescriptor } from "../../core/daemon-descriptor.ts";
+import { deployAgent } from "../../core/agent-config.ts";
+import { loadDaemonConfig, saveDaemonConfig } from "../../core/daemon-config.ts";
+import { getServiceManager } from "../../core/service/service-manager.ts";
 import type { SessionHost } from "../../core/session-host.ts";
 import {
 	type DaemonCommand,
@@ -130,6 +132,23 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 		case "reload":
 			await host.reload();
 			return ok(id, "reload");
+		case "deploy": {
+			// The human's single Yes. Flip the latch, register the OS service unit, and swap to a fresh
+			// deployed session — persisted to disk, so the supervised daemon (which resumes the most-recent
+			// session) picks up THIS fresh one. For a real backend, start the supervised daemon now: it
+			// binds its own ephemeral port while this birth daemon keeps serving its own (two ephemeral
+			// binds never collide). The client then reconnects to it and stops this daemon. With the `none`
+			// backend there is no supervisor, so this daemon stays on the fresh session.
+			const name = host.config.name;
+			const serviceManager = getServiceManager();
+			deployAgent(name);
+			serviceManager.install(name);
+			await host.newSession({ reason: "deploy" });
+			if (serviceManager.kind !== "none") {
+				serviceManager.start(name);
+			}
+			return ok(id, "deploy", snapshot(host));
+		}
 
 		// Model / thinking
 		case "set_thinking_level":
@@ -268,11 +287,11 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 	});
 
 	// ---- Serve ------------------------------------------------------------
-	// Patch the resolved port back into the descriptor — for `port: 0` the real port is only
+	// Patch the resolved port back into the config — for `port: 0` the real port is only
 	// known once the OS assigns it (read off serve()'s `info.port`).
 	const writePortBack = (port: number): void => {
-		const existing = loadDaemonDescriptor(host.config.name);
-		if (existing) saveDaemonDescriptor(host.config.name, { ...existing, port });
+		const existing = loadDaemonConfig(host.config.name);
+		if (existing) saveDaemonConfig(host.config.name, { ...existing, port });
 	};
 
 	const server = await new Promise<ServerType>((resolve) => {

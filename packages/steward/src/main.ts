@@ -1,29 +1,19 @@
 /**
- * Real CLI entry point.
+ * Engine CLI entry point.
  *
- * `main(args): Promise<number>` parses argv, intercepts subcommands, then
- * resolves a model, builds the agent via `createAgentSession`, and dispatches to
- * a mode. Subcommands wire the agent home: `new` / `list` / `<name>`.
+ * `main(argv)` handles the verbs the engine still owns — `integrations` / `packages` (+ help /
+ * version) — for the `@opsyhq/cli` client, which delegates them here. Agent surfaces (`new` /
+ * `list` / `delete` / interactive / `--print`) live in `@opsyhq/cli`; the daemon runner is the
+ * exported `runDaemon`.
  */
 
-import { createInterface } from "node:readline";
-import { type Args, parseArgs, printHelp } from "./cli/args.ts";
-import { APP_NAME, getAgentDir, VERSION } from "./config.ts";
-import {
-	type AgentConfig,
-	agentExists,
-	deleteAgent,
-	isDeployed,
-	listAgents,
-	loadAgentConfig,
-} from "./core/agent-config.ts";
+import { randomBytes } from "node:crypto";
+import type { ThinkingLevel } from "@opsyhq/agent";
+import { parseArgs, printHelp } from "./cli/args.ts";
+import { APP_NAME, ENV_DAEMON_TOKEN, VERSION } from "./config.ts";
+import { type AgentConfig, agentExists, isDeployed, loadAgentConfig } from "./core/agent-config.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
-import {
-	deleteDaemonDescriptor,
-	loadDaemonDescriptor,
-	mintDaemonToken,
-	saveDaemonDescriptor,
-} from "./core/daemon-descriptor.ts";
+import { loadDaemonConfig, saveDaemonConfig } from "./core/daemon-config.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
 import { IntegrationAccountStorage } from "./core/integration-account-storage.ts";
 import { ModelRegistry } from "./core/model-registry.ts";
@@ -58,70 +48,24 @@ export async function main(argv: string[]): Promise<number> {
 		return 1;
 	}
 
-	if (command === "list") return runList();
-	if (command === "delete") return runDelete(rest);
 	if (command === "integrations") return runIntegrations(rest, args.help);
 	if (command === "packages") return runPackages(rest, args.help);
-	if (command === "daemon") return runDaemon(rest, args);
 
-	// Agent sessions — interactive `<name>` and the one-shot `--print` — are served by the
-	// `@opsyhq/cli` client (it attaches/spawns the daemon); the engine never runs them in-process.
+	// Agent surfaces (`new`/`list`/`delete`/interactive/`--print`) and the `daemon` runner are
+	// owned by the `@opsyhq/cli` client; the engine never dispatches them.
 	process.stderr.write(`Unknown command "${command}".\n`);
 	return 1;
 }
 
-async function runDelete(positionals: string[]): Promise<number> {
-	const name = positionals[0];
-	if (!name || positionals.length > 1) {
-		process.stderr.write(`Usage: ${APP_NAME} delete <name>\n`);
-		return 1;
-	}
-	if (!agentExists(name)) {
-		process.stderr.write(`Unknown agent "${name}".\n`);
-		return 1;
-	}
-
-	console.log(`This will delete agent "${name}" and all of its memory, sessions, and workspace:`);
-	console.log(`  ${getAgentDir(name)}`);
-	console.log(`Type ${name} to confirm:`);
-	const answer = (await readLine("")).trim();
-	if (answer !== name) {
-		console.log("Delete cancelled.");
-		return 1;
-	}
-
-	const result = deleteAgent(name);
-	if (!result.ok) {
-		process.stderr.write(`Failed to delete agent "${name}": ${result.error ?? "unknown error"}\n`);
-		return 1;
-	}
-	console.log(`Deleted agent "${name}".`);
-	return 0;
-}
-
-function runList(): number {
-	const agents = listAgents();
-	if (agents.length === 0) {
-		console.log(`No agents yet. Create one with: ${APP_NAME} new <name>`);
-		return 0;
-	}
-	for (const agent of agents) {
-		const purpose = agent.purpose.trim().replace(/\s+/g, " ");
-		const summary = purpose.length > 72 ? `${purpose.slice(0, 69)}...` : purpose;
-		console.log(`${agent.name}  —  ${summary}`);
-	}
-	return 0;
-}
-
 /**
- * Resolve model/auth once and construct the `SessionHost` — the shared front half of
- * every agent-running command (`runDaemon`). Returns the unstarted `host`
- * plus the `config` it was built from (callers need `config` for the `fresh` decision),
- * or an `{ error }` for the model/auth failures that should print to stderr and exit 1.
+ * Resolve model/auth once and construct the `SessionHost` — the front half of the daemon runner.
+ * Returns the unstarted `host` plus the `config` it was built from (the caller needs `config` for
+ * the `fresh` decision), or an `{ error }` for the model/auth failures that should print to stderr
+ * and exit 1.
  */
 function createAgentSessionHost(
 	name: string,
-	args: Args,
+	opts: { provider?: string; model?: string; thinking?: ThinkingLevel },
 ): { host: SessionHost; config: AgentConfig } | { error: string } {
 	const config = loadAgentConfig(name);
 
@@ -132,9 +76,9 @@ function createAgentSessionHost(
 
 	// Model precedence: --model flag → agent.json → shared default → built-in.
 	const resolved = resolveCliModel({
-		cliProvider: args.provider,
-		cliModel: args.model ?? config.model ?? sharedDefaultModel() ?? DEFAULT_MODEL,
-		cliThinking: args.thinking,
+		cliProvider: opts.provider,
+		cliModel: opts.model ?? config.model ?? sharedDefaultModel() ?? DEFAULT_MODEL,
+		cliThinking: opts.thinking,
 		modelRegistry,
 	});
 	if (resolved.warning) {
@@ -153,47 +97,54 @@ function createAgentSessionHost(
 		return { error: `No credentials found for provider "${model.provider}". Log in with the steward CLI.` };
 	}
 
-	const thinkingLevel = args.thinking ?? resolved.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+	const thinkingLevel = opts.thinking ?? resolved.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
 	const host = new SessionHost({ name, model, thinkingLevel, authStorage, integrationAccounts });
 	return { host, config };
 }
 
+export interface RunDaemonOptions {
+	/** Manual bind-port override for this run (debugging); 0/absent → OS-assigned ephemeral. */
+	port?: number;
+	/** Start a fresh session — honored only once deployed (a forming agent stays in its birth session). */
+	fresh?: boolean;
+	provider?: string;
+	model?: string;
+	thinking?: ThinkingLevel;
+}
+
 /**
- * Hidden `daemon <name>` subcommand: start the agent's `SessionHost` and wrap it in a
- * long-running HTTP/SSE server clients attach to. Binds the agent's stable port (its durable
- * identity in agent.json), then writes the ephemeral pid/port/token descriptor to the temp dir
- * so attach clients can find it, and blocks on the listening server until a signal tears it down.
+ * The `daemon <name>` runner: start the agent's `SessionHost`, then wrap it in a long-running
+ * HTTP/SSE server clients attach to. Binds an OS-assigned ephemeral port (unless `--port` overrides),
+ * writes the pid/port/token to the temp-dir config so clients can find it, and blocks on the listening
+ * server until a signal tears it down. The `@opsyhq/cli` client's hidden `daemon` subcommand and every
+ * OS service unit invoke this.
  */
-async function runDaemon(positionals: string[], args: Args): Promise<number> {
-	const name = positionals[0];
-	if (!name) {
-		process.stderr.write(`Usage: ${APP_NAME} daemon <name> [--port <n>]\n`);
-		return 1;
-	}
+export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Promise<number> {
 	if (!agentExists(name)) {
 		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
 		return 1;
 	}
 
-	const built = createAgentSessionHost(name, args);
+	const built = createAgentSessionHost(name, opts);
 	if ("error" in built) {
 		process.stderr.write(`${built.error}\n`);
 		return 1;
 	}
 	const { host, config } = built;
 
-	// A forming agent stays in its single birth session; `--new` only takes effect once deployed.
-	const fresh = isDeployed(config) ? Boolean(args.new) : false;
+	// A forming agent stays in its single birth session; `fresh` only takes effect once deployed.
+	const fresh = isDeployed(config) ? Boolean(opts.fresh) : false;
 	await host.start({ fresh });
 
-	// The port the daemon prefers to bind: the agent's durable identity in agent.json, with
-	// `--port` as a transient override for this run. 0/absent means let the OS assign one.
-	const port = args.port ?? config.port ?? 0;
+	// Every daemon binds an OS-assigned ephemeral port and writes it back to the temp config, where
+	// clients discover it — no port is reserved up front. This is also what lets deploy stand up the
+	// supervised daemon alongside the still-serving birth daemon: two ephemeral binds never collide.
+	// `--port` is a manual override for this run (e.g. to pin a known port for debugging).
+	const port = opts.port ?? 0;
 
-	// pid/port/token are ephemeral runtime state — the temp-dir descriptor, not agent.json.
-	// runDaemonMode patches `port` to the actual bound port once listening (matters when 0).
-	const token = mintDaemonToken();
-	saveDaemonDescriptor(name, {
+	// Bearer token for /events + /control: the STEWARD_DAEMON_TOKEN override, else a fresh 256-bit hex.
+	const token = process.env[ENV_DAEMON_TOKEN]?.trim() || randomBytes(32).toString("hex");
+	saveDaemonConfig(name, {
 		pid: process.pid,
 		port,
 		token,
@@ -202,19 +153,20 @@ async function runDaemon(positionals: string[], args: Args): Promise<number> {
 	});
 
 	const server = await runDaemonMode(host, { port, token });
-	// runDaemonMode patches the descriptor with the OS-assigned port once listening.
-	const boundPort = loadDaemonDescriptor(name)?.port ?? port;
+	// runDaemonMode patches the config with the OS-assigned port once listening.
+	const boundPort = loadDaemonConfig(name)?.port ?? port;
 	console.log(`${APP_NAME} daemon for "${name}" listening on http://127.0.0.1:${boundPort}`);
 
-	// steward has no existing signal handler to reuse. server.close() drops the broadcaster
-	// subscription (via the server's "close" listener); we then release the env + descriptor.
+	// server.close() drops the broadcaster subscription (via the server's "close" listener); we then
+	// release the host + config.
 	let shuttingDown = false;
 	const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
 		if (shuttingDown) return;
 		shuttingDown = true;
 		server.close();
 		await host.cleanup();
-		deleteDaemonDescriptor(name);
+		// No deleteDaemonConfig here: the config is a health-validated discovery hint, and a deploy
+		// handoff's supervised successor may already own it.
 		process.exit(signal === "SIGINT" ? 130 : 143);
 	};
 	process.on("SIGTERM", () => void shutdown("SIGTERM"));
@@ -234,18 +186,4 @@ function sharedDefaultModel(): string | undefined {
 	if (!model) return undefined;
 	const provider = getDefaultProvider();
 	return provider ? `${provider}/${model}` : model;
-}
-
-function readLine(prompt: string): Promise<string> {
-	process.stdout.write(prompt);
-	const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
-	return new Promise((resolve) => {
-		rl.once("line", (line) => {
-			// Resolve before close(): close() synchronously emits "close", whose
-			// handler would otherwise resolve("") first and win.
-			resolve(line);
-			rl.close();
-		});
-		rl.once("close", () => resolve(""));
-	});
 }

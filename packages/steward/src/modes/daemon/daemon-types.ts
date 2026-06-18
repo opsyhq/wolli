@@ -40,6 +40,9 @@ export type DaemonCommand =
 	// deploy verb (Item 6) depends on it. Absent → the daemon defaults to "new".
 	| { id?: string; type: "new_session"; reason?: "deploy" | "new" }
 	| { id?: string; type: "reload" }
+	// The single post-confirm deploy commit: flip the latch, install the OS service, swap to a
+	// fresh deployed session. Returns the fresh snapshot (config now reads as deployed).
+	| { id?: string; type: "deploy" }
 
 	// State
 	| { id?: string; type: "get_state" }

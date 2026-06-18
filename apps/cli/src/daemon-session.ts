@@ -9,8 +9,8 @@
  *   - reads that change rarely (`config`/`cwd`, the loaded-resource summary, the command set) are
  *      served from the cached hello/get_state snapshot; per-turn reads (entries, messages) round-trip.
  *
- * Lifecycle (`open`) is intentionally minimal here — descriptor → /health → attach, else spawn a
- * detached `daemon` and poll /health. Slice 3 (Item 6) hardens it into the full liveness ladder.
+ * Lifecycle (`open`) is intentionally minimal: read the daemon config → /health → attach, else spawn
+ * a detached `daemon` and poll /health.
  */
 
 import { spawn } from "node:child_process";
@@ -18,12 +18,14 @@ import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, AgentMessage, SessionContext, SessionTreeEntry } from "@opsyhq/agent";
 import {
 	type DaemonCommand,
+	type DaemonConfig,
 	type DaemonResponse,
 	type DaemonSessionState,
 	type ExtensionCommandContext,
 	type ExtensionShortcut,
+	getServiceManager,
 	type KeyId,
-	loadDaemonDescriptor,
+	loadDaemonConfig,
 	type MessageRenderer,
 	type ResourceSummary,
 	type SlashCommandInfo,
@@ -73,8 +75,9 @@ export class DaemonSession {
 	/** The extension-UI request stream's client half (Item 5). Wired by `InteractiveMode`. */
 	onUiRequest?: (req: DaemonUiRequest) => void;
 
-	private readonly base: string;
-	private readonly token: string;
+	// Not readonly: `reconnect()` re-points the transport at a different daemon (the deploy handoff).
+	private base: string;
+	private token: string;
 
 	private constructor(base: string, token: string) {
 		this.base = base;
@@ -90,12 +93,11 @@ export class DaemonSession {
 	}
 
 	/**
-	 * Resolve the agent's daemon (descriptor → /health) and attach, spawning a detached daemon if
-	 * none is live. Minimal for Slice 1 — Slice 3 adds the liveness ladder + PID-reuse guard + service
-	 * manager + takeover.
+	 * Resolve the agent's daemon (config → /health) and attach, spawning a detached daemon if none is
+	 * live.
 	 */
 	static async open(name: string): Promise<DaemonSession> {
-		const existing = loadDaemonDescriptor(name);
+		const existing = loadDaemonConfig(name);
 		if (existing && (await isHealthy(existing.port))) {
 			return DaemonSession.attach(`http://127.0.0.1:${existing.port}`, existing.token);
 		}
@@ -108,8 +110,8 @@ export class DaemonSession {
 		});
 		child.unref();
 
-		const desc = await waitForHealth(name);
-		return DaemonSession.attach(`http://127.0.0.1:${desc.port}`, desc.token);
+		const config = await waitForHealth(name);
+		return DaemonSession.attach(`http://127.0.0.1:${config.port}`, config.token);
 	}
 
 	// ---- The single transport seam ----
@@ -156,7 +158,7 @@ export class DaemonSession {
 				}
 			}
 		} catch {
-			// The stream ended or was aborted — Slice 3 adds reconnect; for now the TUI exits on its own.
+			// The stream ended or was aborted; the consumer stops and the TUI exits on its own.
 		}
 	}
 
@@ -213,6 +215,19 @@ export class DaemonSession {
 		this.abortController?.abort();
 	}
 
+	/**
+	 * Move the transport onto a different daemon (the deploy handoff): drop the current SSE, re-point
+	 * at the new endpoint, reopen. The handler set survives, so subscribers keep receiving events; the
+	 * fresh `connect()` delivers the new daemon's hello snapshot.
+	 */
+	async reconnect(port: number, token: string): Promise<void> {
+		this.close();
+		this.base = `http://127.0.0.1:${port}`;
+		this.token = token;
+		await this.connect();
+		await this.refreshResources();
+	}
+
 	// ---- What InteractiveMode calls (was sessionHost.* / harness.*) ----
 	subscribe(cb: (e: AgentHarnessEvent) => void): () => void {
 		this.handlers.add(cb);
@@ -245,6 +260,43 @@ export class DaemonSession {
 	async newSession(opts: { reason: "deploy" | "new" }): Promise<void> {
 		this.snap = await this.send<DaemonSessionState>({ type: "new_session", reason: opts.reason });
 		await this.refreshResources();
+	}
+
+	/**
+	 * Persist the deploy (the human's Yes). The daemon flips the latch, registers the OS service, and
+	 * swaps to a fresh deployed session. With a real backend it also starts the supervised daemon (on
+	 * its own OS-assigned port); we then reconnect onto it and stop the birth daemon. The two are told
+	 * apart by pid: both bind ephemeral ports, so the supervised daemon is simply the one whose config
+	 * pid differs from the birth daemon's. With the `none` backend there is no supervisor — the same
+	 * daemon stays, so we just refresh the snapshot.
+	 */
+	async deploy(): Promise<void> {
+		// Capture the birth daemon before its deploy handler starts the supervised one (which overwrites
+		// the shared config), so we can both tell the two apart and stop the birth daemon afterward.
+		const birth = loadDaemonConfig(this.config.name);
+
+		this.snap = await this.send<DaemonSessionState>({ type: "deploy" });
+
+		if (getServiceManager().kind === "none") {
+			await this.refreshResources();
+			return;
+		}
+
+		// Wait for the supervised daemon — a different pid than the birth daemon, answering /health —
+		// then move our transport onto it. (waitForHealth's /health check skips the transient
+		// pre-bind config frame whose port is still 0.)
+		const supervised = await waitForHealth(this.config.name, (cfg) => cfg.pid !== birth?.pid);
+		await this.reconnect(supervised.port, supervised.token);
+
+		// The birth daemon has handed off; stop it. Its shutdown won't touch the now-supervised config
+		// (no daemon deletes the config on shutdown — it's a discovery hint the successor already owns).
+		if (birth) {
+			try {
+				process.kill(birth.pid, "SIGTERM");
+			} catch {
+				// Already gone.
+			}
+		}
 	}
 
 	clearQueue(): Promise<{ steering: AgentMessage[]; followUp: AgentMessage[] }> {
@@ -343,13 +395,20 @@ async function isHealthy(port: number): Promise<boolean> {
 	}
 }
 
-/** Poll the descriptor + `/health` until the spawned daemon answers (or time out). */
-async function waitForHealth(name: string): Promise<{ port: number; token: string }> {
+/**
+ * Poll the config + `/health` until a matching daemon answers (or time out). The optional predicate
+ * narrows which config counts — the deploy handoff waits for the supervised daemon (a pid different
+ * from the outgoing birth daemon's), ignoring the birth daemon's soon-to-be-overwritten config.
+ */
+async function waitForHealth(
+	name: string,
+	predicate: (config: DaemonConfig) => boolean = () => true,
+): Promise<{ pid: number; port: number; token: string }> {
 	const deadline = Date.now() + HEALTH_TIMEOUT_MS;
 	while (Date.now() < deadline) {
-		const desc = loadDaemonDescriptor(name);
-		if (desc && (await isHealthy(desc.port))) {
-			return { port: desc.port, token: desc.token };
+		const config = loadDaemonConfig(name);
+		if (config && predicate(config) && (await isHealthy(config.port))) {
+			return { pid: config.pid, port: config.port, token: config.token };
 		}
 		await sleep(HEALTH_POLL_MS);
 	}

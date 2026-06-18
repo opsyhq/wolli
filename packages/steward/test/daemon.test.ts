@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { type Api, fauxAssistantMessage, type Model, registerFauxProvider } from "@earendil-works/pi-ai";
 import type { ServerType } from "@hono/node-server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createAgent, deployAgent } from "../src/core/agent-config.ts";
+import { createAgent, deployAgent, isDeployed, loadAgentConfig } from "../src/core/agent-config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { SessionHost } from "../src/core/session-host.ts";
@@ -180,6 +180,9 @@ beforeEach(() => {
 	sharedDir = mkdtempSync(join(tmpdir(), "steward-daemon-shared-"));
 	process.env.STEWARD_HOME = home;
 	process.env.STEWARD_SHARED_DIR = sharedDir;
+	// The deploy verb installs an OS service — force the inert `none` backend so the suite never
+	// registers a real launchd/systemd unit.
+	process.env.STEWARD_SERVICE_MANAGER = "none";
 	createAgent({ name: AGENT });
 });
 
@@ -198,6 +201,7 @@ afterEach(async () => {
 	for (const registration of registrations.splice(0)) registration.unregister();
 	delete process.env.STEWARD_HOME;
 	delete process.env.STEWARD_SHARED_DIR;
+	delete process.env.STEWARD_SERVICE_MANAGER;
 	rmSync(home, { recursive: true, force: true });
 	rmSync(sharedDir, { recursive: true, force: true });
 });
@@ -392,5 +396,22 @@ describe("daemon client-support verbs (Slice 0)", () => {
 		const res = await control({ type: "new_session", reason: "deploy" });
 		expect(res).toMatchObject({ command: "new_session", success: true });
 		expect(res.data).toMatchObject({ isStreaming: false });
+	});
+
+	it("deploy flips the latch and swaps to a fresh deployed session", async () => {
+		await startDaemon(); // forming (not pre-deployed)
+		expect(isDeployed(loadAgentConfig(AGENT))).toBe(false);
+		const before = await control({ type: "get_state" });
+		const birthSessionId = before.data.sessionId;
+
+		const res = await control({ type: "deploy" });
+		expect(res).toMatchObject({ command: "deploy", success: true });
+		// The swap re-reads agent.json, so the returned snapshot config reads as deployed.
+		expect(res.data.config.deployedAt).toBeTruthy();
+		expect(res.data).toMatchObject({ isStreaming: false });
+		// Deploy always swaps to a fresh session — the supervised daemon resumes the most-recent one.
+		expect(res.data.sessionId).not.toBe(birthSessionId);
+		// And the latch is persisted to disk.
+		expect(isDeployed(loadAgentConfig(AGENT))).toBe(true);
 	});
 });
