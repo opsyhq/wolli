@@ -208,6 +208,11 @@ export class DaemonSession {
 		this.commands = commands.commands;
 	}
 
+	/** Abort the SSE stream so the process can exit (used by the one-shot `--print` client). */
+	close(): void {
+		this.abortController?.abort();
+	}
+
 	// ---- What InteractiveMode calls (was sessionHost.* / harness.*) ----
 	subscribe(cb: (e: AgentHarnessEvent) => void): () => void {
 		this.handlers.add(cb);

@@ -1,7 +1,7 @@
 import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@opsyhq/tui";
 import type { ToolRenderContext } from "@opsyhq/steward";
-import { getToolRenderer, type ToolRenderer } from "../../tool-renderers/index.ts";
-import { getTextOutput as getRenderedTextOutput } from "../../tool-renderers/render-utils.ts";
+import { getToolRenderer, type ToolRenderer } from "../../../tool-renderers/index.ts";
+import { getTextOutput as getRenderedTextOutput } from "../../../tool-renderers/render-utils.ts";
 import { convertToPng } from "@opsyhq/steward";
 import { theme } from "@opsyhq/steward";
 

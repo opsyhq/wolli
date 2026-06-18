@@ -32,7 +32,6 @@ import { SessionHost } from "./core/session-host.ts";
 import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
 import { runIntegrations } from "./integrations-cli.ts";
 import { runDaemonMode } from "./modes/daemon/daemon-mode.ts";
-import { runPrintMode } from "./modes/print-mode.ts";
 import { runPackages } from "./package-manager-cli.ts";
 
 export async function main(argv: string[]): Promise<number> {
@@ -64,7 +63,11 @@ export async function main(argv: string[]): Promise<number> {
 	if (command === "integrations") return runIntegrations(rest, args.help);
 	if (command === "packages") return runPackages(rest, args.help);
 	if (command === "daemon") return runDaemon(rest, args);
-	return runAgent(command, rest, args);
+
+	// Agent sessions — interactive `<name>` and the one-shot `--print` — are served by the
+	// `@opsyhq/cli` client (it attaches/spawns the daemon); the engine never runs them in-process.
+	process.stderr.write(`Unknown command "${command}".\n`);
+	return 1;
 }
 
 async function runDelete(positionals: string[]): Promise<number> {
@@ -110,17 +113,9 @@ function runList(): number {
 	return 0;
 }
 
-async function runAgent(name: string, positionals: string[], args: Args): Promise<number> {
-	if (!agentExists(name)) {
-		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
-		return 1;
-	}
-	return runSession(name, positionals, args);
-}
-
 /**
  * Resolve model/auth once and construct the `SessionHost` — the shared front half of
- * every agent-running command (`runSession`, `runDaemon`). Returns the unstarted `host`
+ * every agent-running command (`runDaemon`). Returns the unstarted `host`
  * plus the `config` it was built from (callers need `config` for the `fresh` decision),
  * or an `{ error }` for the model/auth failures that should print to stderr and exit 1.
  */
@@ -164,38 +159,6 @@ function createAgentSessionHost(
 }
 
 /**
- * Run a single-shot `--print` / inline-message turn in-process. The interactive TUI is no
- * longer served here — it runs in the `@opsyhq/cli` client against the agent's daemon — so a
- * bare `<name>` with no message is rejected (the client owns that path). `--print` becomes a
- * daemon client in Slice 2; until then it stays in-process.
- */
-async function runSession(name: string, positionals: string[], args: Args): Promise<number> {
-	const built = createAgentSessionHost(name, args);
-	if ("error" in built) {
-		process.stderr.write(`${built.error}\n`);
-		return 1;
-	}
-	const { host, config } = built;
-	const message = positionals.join(" ").trim();
-
-	if (!args.print && !message) {
-		process.stderr.write("Interactive sessions are served by the steward CLI client, not the engine.\n");
-		return 1;
-	}
-	if (args.print && !message) {
-		process.stderr.write(`Print mode needs a message: ${APP_NAME} ${name} --print "<message>"\n`);
-		return 1;
-	}
-
-	// A forming agent stays in its single birth session; `--new` only takes effect once deployed.
-	const fresh = isDeployed(config) ? Boolean(args.new) : false;
-	await host.start({ fresh });
-	const code = await runPrintMode(host.harness, { message });
-	await host.cleanup();
-	return code;
-}
-
-/**
  * Hidden `daemon <name>` subcommand: start the agent's `SessionHost` and wrap it in a
  * long-running HTTP/SSE server clients attach to. Binds the agent's stable port (its durable
  * identity in agent.json), then writes the ephemeral pid/port/token descriptor to the temp dir
@@ -219,7 +182,7 @@ async function runDaemon(positionals: string[], args: Args): Promise<number> {
 	}
 	const { host, config } = built;
 
-	// Same rule as runSession: `--new` only applies once deployed.
+	// A forming agent stays in its single birth session; `--new` only takes effect once deployed.
 	const fresh = isDeployed(config) ? Boolean(args.new) : false;
 	await host.start({ fresh });
 

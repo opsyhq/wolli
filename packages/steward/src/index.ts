@@ -306,8 +306,6 @@ export {
 	Theme,
 	theme,
 } from "./modes/interactive/theme/theme.ts";
-export { isFailureMessage } from "./modes/message.ts";
-export { runPrintMode } from "./modes/print-mode.ts";
 export { stripAnsi } from "./utils/ansi.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export { convertToPng } from "./utils/image-convert.ts";
