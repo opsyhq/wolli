@@ -246,8 +246,17 @@ describe("daemon HTTP/SSE server", () => {
 		await startDaemon();
 		const res = await control({ type: "get_state" });
 		expect(res).toMatchObject({ command: "get_state", success: true });
-		expect(res.data).toMatchObject({ isStreaming: false, messageCount: 0, thinkingLevel: "off" });
+		expect(res.data).toMatchObject({
+			isStreaming: false,
+			messageCount: 0,
+			thinkingLevel: "off",
+			pendingMessageCount: 0,
+		});
 		expect(res.data.model).toBeDefined();
+		// Session identity is surfaced (mirrors pi's RpcSessionState).
+		expect(typeof res.data.sessionId).toBe("string");
+		expect(res.data.sessionId.length).toBeGreaterThan(0);
+		expect(typeof res.data.sessionFile).toBe("string");
 	});
 
 	it("errors on an unknown command", async () => {

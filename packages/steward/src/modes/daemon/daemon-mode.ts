@@ -60,7 +60,11 @@ function snapshot(host: SessionHost): DaemonSessionState {
 		model: harness.getModel(),
 		thinkingLevel: harness.getThinkingLevel(),
 		isStreaming: !harness.isIdle,
+		sessionId: host.getSessionId(),
+		sessionName: host.getSessionName(),
+		sessionFile: host.getSessionFile(),
 		messageCount: host.buildSessionContext().messages.length,
+		pendingMessageCount: host.getPendingMessageCount(),
 	};
 }
 

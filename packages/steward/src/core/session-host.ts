@@ -721,6 +721,29 @@ export class SessionHost {
 		return this.harness.getFollowUpMessages();
 	}
 
+	/** Number of queued messages (steer + follow-up + next-turn), kept in sync via queue_update. */
+	getPendingMessageCount(): number {
+		return this._pendingMessageCount;
+	}
+
+	/** The live session's id (the JSONL session file's id). */
+	getSessionId(): string {
+		if (!this._sessionManager) throw new Error("SessionHost not started.");
+		return this._sessionManager.getSessionId();
+	}
+
+	/** The live session's display name, or undefined when unnamed. */
+	getSessionName(): string | undefined {
+		if (!this._sessionManager) throw new Error("SessionHost not started.");
+		return this._sessionManager.getSessionName();
+	}
+
+	/** Path to the live session's JSONL file, or undefined when not yet persisted. */
+	getSessionFile(): string | undefined {
+		if (!this._sessionManager) throw new Error("SessionHost not started.");
+		return this._sessionManager.getSessionFile();
+	}
+
 	/**
 	 * Resolve a model by `{provider, modelId}` off the encapsulated registry and switch the
 	 * live harness to it. Guards on `hasConfiguredAuth` (mirrors the extension `setModel`
