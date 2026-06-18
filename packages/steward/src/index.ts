@@ -134,6 +134,7 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
+export { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 export {
 	type IntegrationAccountRecord,
 	IntegrationAccountStorage,

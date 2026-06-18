@@ -28,6 +28,34 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
+  apps/cli:
+    dependencies:
+      '@earendil-works/pi-ai':
+        specifier: ^0.79.3
+        version: 0.79.3(ws@8.21.0)(zod@4.4.3)
+      '@opsyhq/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@opsyhq/steward':
+        specifier: workspace:*
+        version: link:../../packages/steward
+      '@opsyhq/tui':
+        specifier: workspace:*
+        version: link:../../packages/tui
+    devDependencies:
+      '@types/node':
+        specifier: 24.12.4
+        version: 24.12.4
+      shx:
+        specifier: 0.4.0
+        version: 0.4.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@24.12.4)(jiti@2.7.0)(yaml@2.9.0)
+
   packages/agent:
     dependencies:
       '@earendil-works/pi-ai':

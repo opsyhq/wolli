@@ -344,3 +344,53 @@ describe("daemon HTTP/SSE server", () => {
 		expect(agentEnds).toBe(2);
 	});
 });
+
+describe("daemon client-support verbs (Slice 0)", () => {
+	it("get_state snapshot now carries config + cwd", async () => {
+		await startDaemon();
+		const res = await control({ type: "get_state" });
+		expect(res.success).toBe(true);
+		expect(res.data.config).toMatchObject({ name: AGENT });
+		expect(typeof res.data.cwd).toBe("string");
+		expect(res.data.cwd.length).toBeGreaterThan(0);
+	});
+
+	it("get_entries returns the live session entries", async () => {
+		await startDaemon();
+		const res = await control({ type: "get_entries" });
+		expect(res).toMatchObject({ command: "get_entries", success: true });
+		expect(Array.isArray(res.data.entries)).toBe(true);
+	});
+
+	it("get_resource_summary returns loaded-resource counts", async () => {
+		await startDaemon();
+		const res = await control({ type: "get_resource_summary" });
+		expect(res).toMatchObject({ command: "get_resource_summary", success: true });
+		expect(typeof res.data.extensions).toBe("number");
+		expect(Array.isArray(res.data.diagnostics)).toBe(true);
+	});
+
+	it("seed_assistant_message adds an assistant message visible in get_messages", async () => {
+		await startDaemon();
+		const seeded = await control({ type: "seed_assistant_message", text: "What is my purpose?" });
+		expect(seeded).toMatchObject({ command: "seed_assistant_message", success: true });
+		expect(seeded.data).toMatchObject({ role: "assistant" });
+		const msgs = await control({ type: "get_messages" });
+		expect(JSON.stringify(msgs.data.messages)).toContain("What is my purpose?");
+	});
+
+	it("append_message appends a message into the session branch", async () => {
+		await startDaemon();
+		const append = await control({ type: "append_message", message: fauxAssistantMessage("appended note") });
+		expect(append).toMatchObject({ command: "append_message", success: true });
+		const msgs = await control({ type: "get_messages" });
+		expect(JSON.stringify(msgs.data.messages)).toContain("appended note");
+	});
+
+	it("new_session accepts a deploy reason", async () => {
+		await startDaemon({ deploy: true });
+		const res = await control({ type: "new_session", reason: "deploy" });
+		expect(res).toMatchObject({ command: "new_session", success: true });
+		expect(res.data).toMatchObject({ isStreaming: false });
+	});
+});

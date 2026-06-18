@@ -9,11 +9,13 @@
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type {
 	AgentEvent,
+	AgentMessage,
 	ModelUpdateEvent,
 	QueueUpdateEvent,
 	ThinkingLevel,
 	ThinkingLevelUpdateEvent,
 } from "@opsyhq/agent";
+import type { AgentConfig } from "../../core/agent-config.ts";
 
 // ============================================================================
 // Commands (POST /control body)
@@ -34,13 +36,21 @@ export type DaemonCommand =
 	| { id?: string; type: "compact"; customInstructions?: string }
 	| { id?: string; type: "wait_for_idle" }
 	| { id?: string; type: "clear_queue" }
-	| { id?: string; type: "new_session" }
+	// `reason` distinguishes a plain reset ("new") from a post-deploy swap ("deploy"); the
+	// deploy verb (Item 6) depends on it. Absent → the daemon defaults to "new".
+	| { id?: string; type: "new_session"; reason?: "deploy" | "new" }
 	| { id?: string; type: "reload" }
 
 	// State
 	| { id?: string; type: "get_state" }
 	| { id?: string; type: "get_messages" }
 	| { id?: string; type: "get_commands" }
+	// Read-only views the TUI client needs that map 1:1 onto existing host methods.
+	| { id?: string; type: "get_entries" }
+	| { id?: string; type: "get_resource_summary" }
+	// Session-mutation helpers the TUI client drives (birth opener seed; resumed-message append).
+	| { id?: string; type: "seed_assistant_message"; text: string }
+	| { id?: string; type: "append_message"; message: AgentMessage }
 
 	// Model / thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
@@ -71,6 +81,10 @@ export interface DaemonSessionState {
 	sessionFile?: string;
 	messageCount: number;
 	pendingMessageCount: number;
+	/** The agent's config (mirrors `host.config`) — the client reads it without a round-trip. */
+	config: AgentConfig;
+	/** The agent's home dir (mirrors `host.getCwd()`) — built-in tool renderers reconstruct from it. */
+	cwd: string;
 }
 
 // ============================================================================

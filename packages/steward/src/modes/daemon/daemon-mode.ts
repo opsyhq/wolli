@@ -65,6 +65,8 @@ function snapshot(host: SessionHost): DaemonSessionState {
 		sessionFile: host.getSessionFile(),
 		messageCount: host.buildSessionContext().messages.length,
 		pendingMessageCount: host.getPendingMessageCount(),
+		config: host.config,
+		cwd: host.getCwd(),
 	};
 }
 
@@ -123,7 +125,7 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 			return ok(id, "clear_queue", await host.clearQueue());
 		case "new_session":
 			// Return the fresh snapshot — never the harness the swap returns.
-			await host.newSession({ reason: "new" });
+			await host.newSession({ reason: cmd.reason ?? "new" });
 			return ok(id, "new_session", snapshot(host));
 		case "reload":
 			await host.reload();
@@ -143,6 +145,17 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 			return ok(id, "get_messages", { messages: host.buildSessionContext().messages });
 		case "get_commands":
 			return ok(id, "get_commands", { commands: host.getCommands() });
+		case "get_entries":
+			return ok(id, "get_entries", { entries: host.getEntries() });
+		case "get_resource_summary":
+			return ok(id, "get_resource_summary", host.getResourceSummary());
+
+		// Session-mutation helpers
+		case "seed_assistant_message":
+			return ok(id, "seed_assistant_message", await host.seedAssistantMessage(cmd.text));
+		case "append_message":
+			await harness.appendMessage(cmd.message);
+			return ok(id, "append_message");
 
 		default: {
 			const unknown = cmd as { type: string };

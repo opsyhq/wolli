@@ -10,9 +10,11 @@
 			"@opsyhq/coding-agent": ["./packages/coding-agent/src/index.ts"],
 			"@opsyhq/coding-agent/*": ["./packages/coding-agent/src/*"],
 			"@opsyhq/steward": ["./packages/steward/src/index.ts"],
-			"@opsyhq/steward/*": ["./packages/steward/src/*"]
+			"@opsyhq/steward/*": ["./packages/steward/src/*"],
+			"@opsyhq/cli": ["./apps/cli/src/main.ts"],
+			"@opsyhq/cli/*": ["./apps/cli/src/*"]
 		}
 	},
-	"include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"],
+	"include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "apps/*/src/**/*.ts", "apps/*/test/**/*.ts"],
 	"exclude": ["**/node_modules/**", "**/dist/**", "packages/coding-agent/**"]
 }
