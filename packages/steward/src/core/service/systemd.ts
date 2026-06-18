@@ -5,12 +5,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { APP_NAME, getAgentDir } from "../../config.ts";
-import {
-	daemonLaunchCommand,
-	type ServiceInstallOptions,
-	type ServiceManager,
-	serviceEnvironment,
-} from "./service-manager.ts";
+import { daemonLaunchCommand, type ServiceManager, serviceEnvironment } from "./service-manager.ts";
 
 /** systemd unit name for an agent, e.g. `steward-scribe.service`. */
 export function systemdUnitName(name: string): string {
@@ -61,12 +56,12 @@ export class SystemdServiceManager implements ServiceManager {
 		return spawnSync("systemctl", ["--user", ...args], { encoding: "utf-8" });
 	}
 
-	install(name: string, opts?: ServiceInstallOptions): void {
+	install(name: string): void {
 		// Write + enable the unit for boot (no `--now`); `start` runs it. Split so the caller controls
 		// when it runs.
 		const unit = buildSystemdUnit({
 			description: `${APP_NAME} agent "${name}" daemon`,
-			execStart: daemonLaunchCommand(name, opts),
+			execStart: daemonLaunchCommand(name),
 			workingDirectory: getAgentDir(name),
 			environment: serviceEnvironment(),
 		});

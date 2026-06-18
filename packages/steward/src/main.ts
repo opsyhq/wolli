@@ -60,8 +60,8 @@ export async function main(argv: string[]): Promise<number> {
 /**
  * Resolve model/auth once and construct the `SessionHost` — the front half of the daemon runner.
  * Returns the unstarted `host` plus the `config` it was built from (the caller needs `config` for
- * the stable port + the `fresh` decision), or an `{ error }` for the model/auth failures that
- * should print to stderr and exit 1.
+ * the `fresh` decision), or an `{ error }` for the model/auth failures that should print to stderr
+ * and exit 1.
  */
 function createAgentSessionHost(
 	name: string,
@@ -103,7 +103,7 @@ function createAgentSessionHost(
 }
 
 export interface RunDaemonOptions {
-	/** Preferred bind port (overrides `agent.json.port`); 0/absent → OS-assigned. */
+	/** Manual bind-port override for this run (debugging); 0/absent → OS-assigned ephemeral. */
 	port?: number;
 	/** Start a fresh session — honored only once deployed (a forming agent stays in its birth session). */
 	fresh?: boolean;
@@ -114,10 +114,10 @@ export interface RunDaemonOptions {
 
 /**
  * The `daemon <name>` runner: start the agent's `SessionHost`, then wrap it in a long-running
- * HTTP/SSE server clients attach to. Binds the agent's port (its stable port from agent.json once
- * deployed, else an OS-assigned ephemeral one), writes the pid/port/token to the temp-dir config so
- * clients can find it, and blocks on the listening server until a signal tears it down. The
- * `@opsyhq/cli` client's hidden `daemon` subcommand and every OS service unit invoke this.
+ * HTTP/SSE server clients attach to. Binds an OS-assigned ephemeral port (unless `--port` overrides),
+ * writes the pid/port/token to the temp-dir config so clients can find it, and blocks on the listening
+ * server until a signal tears it down. The `@opsyhq/cli` client's hidden `daemon` subcommand and every
+ * OS service unit invoke this.
  */
 export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Promise<number> {
 	if (!agentExists(name)) {
@@ -136,11 +136,11 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
 	const fresh = isDeployed(config) ? Boolean(opts.fresh) : false;
 	await host.start({ fresh });
 
-	// Birth (forming) binds an OS-assigned ephemeral port; a deployed agent binds its stable
-	// agent.json port. `--port` overrides for this run (the OS service unit passes it). This split is
-	// what lets deploy stand up the supervised daemon on the stable port while the birth daemon is
-	// still serving its ephemeral one — no port takeover. The bound port is written back to the config.
-	const port = opts.port ?? (isDeployed(config) ? config.port : 0) ?? 0;
+	// Every daemon binds an OS-assigned ephemeral port and writes it back to the temp config, where
+	// clients discover it — no port is reserved up front. This is also what lets deploy stand up the
+	// supervised daemon alongside the still-serving birth daemon: two ephemeral binds never collide.
+	// `--port` is a manual override for this run (e.g. to pin a known port for debugging).
+	const port = opts.port ?? 0;
 
 	// Bearer token for /events + /control: the STEWARD_DAEMON_TOKEN override, else a fresh 256-bit hex.
 	const token = process.env[ENV_DAEMON_TOKEN]?.trim() || randomBytes(32).toString("hex");

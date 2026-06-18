@@ -5,12 +5,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { APP_NAME, getAgentDir, getDaemonRuntimeDir } from "../../config.ts";
-import {
-	daemonLaunchCommand,
-	type ServiceInstallOptions,
-	type ServiceManager,
-	serviceEnvironment,
-} from "./service-manager.ts";
+import { daemonLaunchCommand, type ServiceManager, serviceEnvironment } from "./service-manager.ts";
 
 /** Reverse-DNS label launchd keys the agent by, e.g. `com.steward.scribe`. */
 export function launchAgentLabel(name: string): string {
@@ -76,11 +71,11 @@ ${envXml}</dict>
 export class LaunchdServiceManager implements ServiceManager {
 	readonly kind = "launchd" as const;
 
-	install(name: string, opts?: ServiceInstallOptions): void {
+	install(name: string): void {
 		// Write the plist; `start` bootstraps it. (Split so the caller controls when it runs.)
 		const plist = buildLaunchAgentPlist({
 			label: launchAgentLabel(name),
-			programArguments: daemonLaunchCommand(name, opts),
+			programArguments: daemonLaunchCommand(name),
 			workingDirectory: getAgentDir(name),
 			stdoutPath: join(getDaemonRuntimeDir(), `${name}.out.log`),
 			stderrPath: join(getDaemonRuntimeDir(), `${name}.err.log`),

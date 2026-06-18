@@ -5,7 +5,8 @@
  * server: the `port` it bound, the bearer `token` for `/events` + `/control`, and the owning `pid`.
  * A discovery hint, not a lock: clients validate it via `/health` before trusting it, so a stale
  * entry is harmless — it's overwritten by the next daemon start and removed when the agent is
- * deleted. Gone on reboot. The durable identity (the stable port) lives in agent.json, not here.
+ * deleted. Gone on reboot. This is the sole record of a daemon's port: nothing is reserved up
+ * front, so the agent's identity is its name (the config filename), not a fixed port.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";

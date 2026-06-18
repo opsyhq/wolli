@@ -6,12 +6,12 @@
  */
 
 import { deleteDaemonConfig, loadDaemonConfig } from "../daemon-config.ts";
-import type { ServiceInstallOptions, ServiceManager } from "./service-manager.ts";
+import type { ServiceManager } from "./service-manager.ts";
 
 export class NoneServiceManager implements ServiceManager {
 	readonly kind = "none" as const;
 
-	install(_name: string, _opts?: ServiceInstallOptions): void {
+	install(_name: string): void {
 		// No OS supervisor to register with — the already-running daemon serves the session.
 	}
 
@@ -19,7 +19,7 @@ export class NoneServiceManager implements ServiceManager {
 		// Nothing was registered.
 	}
 
-	start(_name: string, _opts?: ServiceInstallOptions): void {
+	start(_name: string): void {
 		// No supervisor to start; the daemon lifecycle is the client's (DaemonSession.open) concern.
 	}
 

@@ -7,7 +7,6 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import {
@@ -29,12 +28,6 @@ export const AgentConfigSchema = Type.Object({
 	purpose: Type.String(),
 	createdAt: Type.String(),
 	model: Type.Optional(Type.String()),
-	/**
-	 * The stable port the agent's daemon prefers to bind — its durable identity, so
-	 * clients can find it across restarts. Absent (or 0) means let the OS assign an
-	 * ephemeral port each run. The actual bound port lives in the tmp daemon descriptor.
-	 */
-	port: Type.Optional(Type.Number()),
 	/**
 	 * The single human-held latch. `null` (or absent) means the agent is still in
 	 * its birth phase — it maintains its own files but may not act unattended. An
@@ -95,37 +88,16 @@ export function listAgents(): AgentConfig[] {
 	return configs;
 }
 
-/**
- * Allocate a free loopback port by binding `:0`, reading the OS-assigned port, then releasing it.
- * Stamped into `agent.json.port` at `new`: a deployed agent's daemon binds this stable port (the
- * durable identity clients attach to). The allocation is inherently racy — the port is free here but
- * could be taken by the time a deployed daemon binds it, which simply fails the bind; a forming agent
- * avoids the race entirely by binding an OS-assigned ephemeral port.
- */
-export function allocateStablePort(): Promise<number> {
-	return new Promise((resolve, reject) => {
-		const server = createServer();
-		server.on("error", reject);
-		server.listen(0, "127.0.0.1", () => {
-			const address = server.address();
-			const port = typeof address === "object" && address ? address.port : 0;
-			server.close((err) => (err ? reject(err) : resolve(port)));
-		});
-	});
-}
-
 export interface CreateAgentOptions {
 	name: string;
 	/** Optional at birth — left empty until the agent authors its own purpose via the deploy tool. Defaults to "". */
 	purpose?: string;
 	model?: string;
-	/** The stable loopback port for the agent's daemon — see `allocateStablePort`. Omitted → OS-assigned. */
-	port?: number;
 }
 
 /** Create an agent's home tree (`agent.json`, empty memory files, sessions/, workspace/). */
 export function createAgent(options: CreateAgentOptions): AgentConfig {
-	const { name, purpose, model, port } = options;
+	const { name, purpose, model } = options;
 	if (!isValidAgentName(name)) {
 		throw new Error(
 			`Invalid agent name "${name}". Use lowercase letters, digits, and hyphens (must start with a letter or digit).`,
@@ -145,7 +117,6 @@ export function createAgent(options: CreateAgentOptions): AgentConfig {
 		purpose: purpose ?? "",
 		createdAt: new Date().toISOString(),
 		...(model ? { model } : {}),
-		...(port ? { port } : {}),
 		deployedAt: null,
 	};
 	saveAgentConfig(name, config);

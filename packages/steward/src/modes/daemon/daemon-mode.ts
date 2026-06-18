@@ -133,19 +133,19 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 			await host.reload();
 			return ok(id, "reload");
 		case "deploy": {
-			// The human's single Yes. Flip the latch, register the OS service unit on the agent's stable
-			// port, and swap to a fresh deployed session — persisted to disk, so the supervised daemon
-			// (which resumes the most-recent session) picks up THIS fresh one. For a real backend, start
-			// the supervised daemon now: it binds the stable port while this birth daemon keeps serving
-			// its ephemeral one (no takeover). The client then reconnects to it and stops this daemon.
-			// With the `none` backend there is no supervisor, so this daemon stays on the fresh session.
+			// The human's single Yes. Flip the latch, register the OS service unit, and swap to a fresh
+			// deployed session — persisted to disk, so the supervised daemon (which resumes the most-recent
+			// session) picks up THIS fresh one. For a real backend, start the supervised daemon now: it
+			// binds its own ephemeral port while this birth daemon keeps serving its own (two ephemeral
+			// binds never collide). The client then reconnects to it and stops this daemon. With the `none`
+			// backend there is no supervisor, so this daemon stays on the fresh session.
 			const name = host.config.name;
 			const serviceManager = getServiceManager();
 			deployAgent(name);
-			serviceManager.install(name, { port: host.config.port });
+			serviceManager.install(name);
 			await host.newSession({ reason: "deploy" });
 			if (serviceManager.kind !== "none") {
-				serviceManager.start(name, { port: host.config.port });
+				serviceManager.start(name);
 			}
 			return ok(id, "deploy", snapshot(host));
 		}

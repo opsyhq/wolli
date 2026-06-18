@@ -264,31 +264,33 @@ export class DaemonSession {
 
 	/**
 	 * Persist the deploy (the human's Yes). The daemon flips the latch, registers the OS service, and
-	 * swaps to a fresh deployed session. With a real backend it also starts the supervised daemon on
-	 * the agent's stable port; we then reconnect onto it (the birth daemon is on a separate ephemeral
-	 * port, so no takeover) and stop the birth daemon. With the `none` backend there is no supervisor —
-	 * the same daemon stays, so we just refresh the snapshot.
+	 * swaps to a fresh deployed session. With a real backend it also starts the supervised daemon (on
+	 * its own OS-assigned port); we then reconnect onto it and stop the birth daemon. The two are told
+	 * apart by pid: both bind ephemeral ports, so the supervised daemon is simply the one whose config
+	 * pid differs from the birth daemon's. With the `none` backend there is no supervisor — the same
+	 * daemon stays, so we just refresh the snapshot.
 	 */
 	async deploy(): Promise<void> {
 		// Capture the birth daemon before its deploy handler starts the supervised one (which overwrites
-		// the shared config), so we can stop it once the handoff lands.
+		// the shared config), so we can both tell the two apart and stop the birth daemon afterward.
 		const birth = loadDaemonConfig(this.config.name);
-		const stablePort = this.config.port;
 
 		this.snap = await this.send<DaemonSessionState>({ type: "deploy" });
 
-		if (getServiceManager().kind === "none" || !stablePort) {
+		if (getServiceManager().kind === "none") {
 			await this.refreshResources();
 			return;
 		}
 
-		// Wait for the supervised daemon to take the stable port, then move our transport onto it.
-		const supervised = await waitForHealth(this.config.name, (cfg) => cfg.port === stablePort);
+		// Wait for the supervised daemon — a different pid than the birth daemon, answering /health —
+		// then move our transport onto it. (waitForHealth's /health check skips the transient
+		// pre-bind config frame whose port is still 0.)
+		const supervised = await waitForHealth(this.config.name, (cfg) => cfg.pid !== birth?.pid);
 		await this.reconnect(supervised.port, supervised.token);
 
 		// The birth daemon has handed off; stop it. Its shutdown won't touch the now-supervised config
-		// (it only deletes a config still pointing at its own pid).
-		if (birth && birth.pid !== supervised.pid) {
+		// (no daemon deletes the config on shutdown — it's a discovery hint the successor already owns).
+		if (birth) {
 			try {
 				process.kill(birth.pid, "SIGTERM");
 			} catch {
@@ -395,8 +397,8 @@ async function isHealthy(port: number): Promise<boolean> {
 
 /**
  * Poll the config + `/health` until a matching daemon answers (or time out). The optional predicate
- * narrows which config counts — the deploy handoff waits for the one on the stable port, ignoring the
- * outgoing birth daemon's stale config.
+ * narrows which config counts — the deploy handoff waits for the supervised daemon (a pid different
+ * from the outgoing birth daemon's), ignoring the birth daemon's soon-to-be-overwritten config.
  */
 async function waitForHealth(
 	name: string,

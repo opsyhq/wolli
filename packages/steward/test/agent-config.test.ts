@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAgentConfigPath, getAgentDir, getSoulPath } from "../src/config.ts";
 import {
 	agentExists,
-	allocateStablePort,
 	createAgent,
 	deleteAgent,
 	deployAgent,
@@ -43,17 +42,6 @@ describe("isValidAgentName", () => {
 	});
 });
 
-describe("allocateStablePort", () => {
-	it("returns a usable loopback port and releases it", async () => {
-		const port = await allocateStablePort();
-		expect(port).toBeGreaterThan(0);
-		expect(port).toBeLessThan(65536);
-		// Released after allocation — a second call succeeds (and is free to bind).
-		const again = await allocateStablePort();
-		expect(again).toBeGreaterThan(0);
-	});
-});
-
 describe("agent-config round-trip", () => {
 	it("creates and loads an agent", () => {
 		const created = createAgent({ name: "scribe", purpose: "take meeting notes" });
@@ -75,16 +63,6 @@ describe("agent-config round-trip", () => {
 	it("persists an optional model", () => {
 		createAgent({ name: "scribe", purpose: "x", model: "anthropic/claude-opus-4-8" });
 		expect(loadAgentConfig("scribe").model).toBe("anthropic/claude-opus-4-8");
-	});
-
-	it("persists an optional stable port", () => {
-		createAgent({ name: "scribe", purpose: "x", port: 54321 });
-		expect(loadAgentConfig("scribe").port).toBe(54321);
-	});
-
-	it("omits port from agent.json when not provided", () => {
-		createAgent({ name: "scribe", purpose: "x" });
-		expect(loadAgentConfig("scribe").port).toBeUndefined();
 	});
 
 	it("rejects duplicate creation", () => {

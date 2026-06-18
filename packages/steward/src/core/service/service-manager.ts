@@ -11,19 +11,14 @@ import { SystemdServiceManager } from "./systemd.ts";
 
 export type ServiceKind = "launchd" | "systemd" | "none";
 
-export interface ServiceInstallOptions {
-	/** The stable loopback port passed to `daemon <name>` (omitted/0 → OS-assigned, config-discovered). */
-	port?: number;
-}
-
 export interface ServiceManager {
 	readonly kind: ServiceKind;
 	/** Write + load the OS unit (KeepAlive/RunAtLoad) so the agent's daemon is always-on, boot-persistent. */
-	install(name: string, opts?: ServiceInstallOptions): void;
+	install(name: string): void;
 	/** Stop + remove the OS unit. Best-effort; safe when nothing is installed. */
 	uninstall(name: string): void;
 	/** Ensure the installed service is running. */
-	start(name: string, opts?: ServiceInstallOptions): void;
+	start(name: string): void;
 	/** Stop the running service without removing its unit. */
 	stop(name: string): void;
 	/** Whether the service's daemon is loaded/active. */
@@ -52,14 +47,13 @@ export function getServiceManager(kind: ServiceKind = detectServiceManager()): S
 }
 
 /**
- * The command the OS unit (and the none-spawn) run: the current node binary + this CLI's entry +
- * `daemon <name>`, with `--port` when a stable port is known. Resolved from `process.execPath` +
- * `process.argv[1]` — both point at the running `steward` CLI inside the daemon that installs.
+ * The command the OS unit runs: the current node binary + this CLI's entry + `daemon <name>`.
+ * Resolved from `process.execPath` + `process.argv[1]` — both point at the running `steward` CLI
+ * inside the daemon that installs. No port: the supervised daemon binds an OS-assigned ephemeral
+ * port and writes it to the temp config, where clients discover it.
  */
-export function daemonLaunchCommand(name: string, opts?: ServiceInstallOptions): string[] {
-	const command = [process.execPath, process.argv[1], "daemon", name];
-	if (opts?.port) command.push("--port", String(opts.port));
-	return command;
+export function daemonLaunchCommand(name: string): string[] {
+	return [process.execPath, process.argv[1], "daemon", name];
 }
 
 /** The subset of env the service inherits so it resolves the same homes/credentials as the installer. */

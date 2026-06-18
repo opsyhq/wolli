@@ -45,15 +45,11 @@ describe("getServiceManager", () => {
 });
 
 describe("daemonLaunchCommand", () => {
-	it("is node + this CLI + `daemon <name>`", () => {
+	it("is node + this CLI + `daemon <name>` (no port — the daemon binds ephemeral)", () => {
 		const command = daemonLaunchCommand(AGENT);
 		expect(command[0]).toBe(process.execPath);
 		expect(command.slice(2)).toEqual(["daemon", AGENT]);
-	});
-
-	it("appends --port when a stable port is given", () => {
-		expect(daemonLaunchCommand(AGENT, { port: 4321 }).slice(-3)).toEqual([AGENT, "--port", "4321"]);
-		expect(daemonLaunchCommand(AGENT, { port: 0 })).not.toContain("--port");
+		expect(command).not.toContain("--port");
 	});
 });
 
@@ -108,7 +104,7 @@ describe("none backend", () => {
 	const none = getServiceManager("none");
 
 	it("install/uninstall are inert (no OS supervisor)", () => {
-		expect(() => none.install(AGENT, { port: 1 })).not.toThrow();
+		expect(() => none.install(AGENT)).not.toThrow();
 		expect(() => none.uninstall(AGENT)).not.toThrow();
 	});
 

@@ -1,14 +1,14 @@
 /**
  * `new <name>` — create an agent, then drop into its birth conversation.
  *
- * Allocates the agent's stable loopback port (persisted into agent.json) so its daemon prefers a
- * fixed port across restarts, creates the home tree, then opens a daemon client and runs the
- * interactive birth session seeded with the opener. Birth is daemon-first: abandoning a forming
- * agent leaves only a temp daemon config + a detached daemon that idles out — no OS service unit
- * (those land only at deploy).
+ * Creates the home tree, then opens a daemon client and runs the interactive birth session seeded
+ * with the opener. Birth is daemon-first: abandoning a forming agent leaves only a temp daemon
+ * config + a detached daemon that idles out — no OS service unit (those land only at deploy). The
+ * daemon binds an OS-assigned ephemeral port and writes it to the temp config; clients discover it
+ * there, so no port is reserved up front.
  */
 
-import { agentExists, allocateStablePort, APP_NAME, createAgent } from "@opsyhq/steward";
+import { agentExists, APP_NAME, createAgent } from "@opsyhq/steward";
 import { DaemonSession } from "../daemon-session.ts";
 import { InteractiveMode } from "../modes/interactive/interactive-mode.ts";
 
@@ -26,9 +26,8 @@ export async function runNew(positionals: string[], model?: string): Promise<num
 		return 1;
 	}
 
-	const port = await allocateStablePort();
 	try {
-		const config = createAgent({ name, model, port });
+		const config = createAgent({ name, model });
 		process.stdout.write(`Created agent "${config.name}".\n`);
 	} catch (error) {
 		process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

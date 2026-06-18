@@ -13,7 +13,6 @@ export {
 	type AgentConfig,
 	AgentConfigSchema,
 	agentExists,
-	allocateStablePort,
 	type CreateAgentOptions,
 	createAgent,
 	deleteAgent,
@@ -207,7 +206,6 @@ export {
 export {
 	detectServiceManager,
 	getServiceManager,
-	type ServiceInstallOptions,
 	type ServiceKind,
 	type ServiceManager,
 } from "./core/service/service-manager.ts";
