@@ -10,7 +10,8 @@
 
 import { agentExists, APP_NAME, type Args, createAgent, main as engineMain, parseArgs } from "@opsyhq/steward";
 import { DaemonSession } from "./daemon-session.ts";
-import { InteractiveMode } from "./interactive/interactive-mode.ts";
+import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
+import { runPrint } from "./modes/print-mode.ts";
 
 /**
  * The first thing a newly created agent "says" — seeded as an assistant message into the birth
@@ -23,9 +24,8 @@ export async function main(argv: string[]): Promise<number> {
 	const command = args.positionals[0];
 	const message = args.positionals.slice(1).join(" ").trim();
 
-	// Verbs the engine still owns (no interactive TUI), plus global help/version and the one-shot
-	// `--print`/inline path (Slice 2 moves it client-side). The engine `main` re-parses argv and
-	// handles these — including its own diagnostics/usage output.
+	// Verbs the engine still owns (no interactive TUI), plus global help/version. The engine `main`
+	// re-parses argv and handles these — including its own diagnostics/usage output.
 	const engineOwned =
 		command === "list" ||
 		command === "delete" ||
@@ -33,12 +33,35 @@ export async function main(argv: string[]): Promise<number> {
 		command === "packages" ||
 		command === "daemon";
 	if (args.help || args.version || !command || engineOwned) return engineMain(argv);
-	if (command !== "new" && (args.print || message)) return engineMain(argv);
 
-	// apps/cli owns `new` + interactive `<name>` from here; surface arg diagnostics like the engine does.
+	// apps/cli owns `new`, the one-shot `--print`/inline path, and interactive `<name>` from here;
+	// surface arg diagnostics like the engine does.
 	for (const diagnostic of args.diagnostics) process.stderr.write(`${diagnostic.message}\n`);
 	if (command === "new") return runNew(args);
+	if (args.print || message) return runPrintTurn(command, message);
 	return runInteractive(command);
+}
+
+/**
+ * One-shot `--print` / inline-message turn as a daemon client: attach to (or spawn) the agent's
+ * daemon, stream the turn, print the final message, then drop the SSE connection so the process
+ * exits. (Slice 3 / Item 6 owns the daemon's own lifecycle after the client detaches.)
+ */
+async function runPrintTurn(name: string, message: string): Promise<number> {
+	if (!agentExists(name)) {
+		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
+		return 1;
+	}
+	if (!message) {
+		process.stderr.write(`Print mode needs a message: ${APP_NAME} ${name} --print "<message>"\n`);
+		return 1;
+	}
+	const session = await DaemonSession.open(name);
+	try {
+		return await runPrint(session, message);
+	} finally {
+		session.close();
+	}
 }
 
 /** Attach to (or spawn) the agent's daemon and run the interactive TUI against it. */

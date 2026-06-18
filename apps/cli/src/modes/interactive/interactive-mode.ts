@@ -58,7 +58,6 @@ import {
 	getThemeByName,
 	initTheme,
 	isDeployed,
-	isFailureMessage,
 	KeybindingsManager,
 	keyDisplayText,
 	type KeyId,
@@ -75,7 +74,7 @@ import {
 	type TruncationResult,
 	type WorkingIndicatorOptions,
 } from "@opsyhq/steward";
-import { DaemonSession, type DaemonUiRequest } from "../daemon-session.ts";
+import { DaemonSession, type DaemonUiRequest } from "../../daemon-session.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
@@ -1400,13 +1399,13 @@ export class InteractiveMode {
 					if (this.getUserMessageText(event.message) === DEPLOY_INSTRUCTION) break;
 					this.addMessageToChat(event.message);
 					this.updatePendingMessagesDisplay();
-				} else if (isAssistantMessage(event.message) && !isFailureMessage(event.message)) {
+				} else if (isAssistantMessage(event.message) && event.message.stopReason !== "error" && event.message.stopReason !== "aborted") {
 					// Failure messages are surfaced at message_end; don't open a bubble for them.
 					this.beginAssistantMessage();
 				}
 				break;
 			case "message_update":
-				if (isAssistantMessage(event.message) && !isFailureMessage(event.message))
+				if (isAssistantMessage(event.message) && event.message.stopReason !== "error" && event.message.stopReason !== "aborted")
 					this.updateAssistantMessage(event.message);
 				break;
 			case "message_end":
@@ -1815,7 +1814,7 @@ export class InteractiveMode {
 	}
 
 	private finalizeAssistantMessage(message: AssistantMessage): void {
-		if (isFailureMessage(message)) {
+		if (message.stopReason === "error" || message.stopReason === "aborted") {
 			// Drop any partial bubble and show the error/abort detail instead.
 			// A dedicated failure path handles aborted/error stop reasons here, and no
 			// component is ever opened for failure messages (see the `message_start`
