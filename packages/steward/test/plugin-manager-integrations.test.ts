@@ -1,10 +1,10 @@
 /**
- * Integrations as a first-class package resource in `DefaultPackageManager`.
+ * Integrations as a first-class plugin resource in `DefaultPluginManager`.
  *
  * These cover the invariants of the self-contained-integration model:
- *  - a dual-half package (one manifest declaring both `steward.integrations` and
+ *  - a dual-half plugin (one manifest declaring both `steward.integrations` and
  *    `steward.extensions`) resolves BOTH halves in place from a single install, each
- *    carrying package metadata (`origin: "package"`) — no symlink, no file copy;
+ *    carrying plugin metadata (`origin: "package"`) — no symlink, no file copy;
  *  - `<agentDir>/integrations/` is auto-discovered like extensions;
  *  - install/persist is per-agent: it writes only the named agent's `settings.json`,
  *    never a sibling agent's, and the persisted local source round-trips through resolve.
@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DefaultPackageManager } from "../src/core/package-manager.ts";
+import { DefaultPluginManager } from "../src/core/plugin-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 let tempDir: string;
@@ -58,13 +58,13 @@ function writeDualHalfPackage(dir: string): { integrationPath: string; extension
 	return { integrationPath: join(dir, "index.ts"), extensionPath: join(dir, "telegram-chat.ts") };
 }
 
-describe("DefaultPackageManager — integrations as a package resource", () => {
-	it("resolves both halves of a dual-half package in place, each with origin: package", async () => {
+describe("DefaultPluginManager — integrations as a plugin resource", () => {
+	it("resolves both halves of a dual-half plugin in place, each with origin: package", async () => {
 		const pkgDir = join(tempDir, "telegram-pkg");
 		const { integrationPath, extensionPath } = writeDualHalfPackage(pkgDir);
 
-		const settingsManager = SettingsManager.inMemory({ packages: [pkgDir] });
-		const pm = new DefaultPackageManager({ cwd: tempDir, agentDir, settingsManager });
+		const settingsManager = SettingsManager.inMemory({ plugins: [pkgDir] });
+		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
 
 		const result = await pm.resolve();
 
@@ -91,7 +91,7 @@ describe("DefaultPackageManager — integrations as a package resource", () => {
 		writeFileSync(intPath, "export default function () {}");
 
 		const settingsManager = SettingsManager.inMemory({});
-		const pm = new DefaultPackageManager({ cwd: tempDir, agentDir, settingsManager });
+		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
 
 		const result = await pm.resolve();
 
@@ -110,7 +110,7 @@ describe("DefaultPackageManager — integrations as a package resource", () => {
 		mkdirSync(otherAgentDir, { recursive: true });
 
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
-		const pm = new DefaultPackageManager({ cwd: tempDir, agentDir, settingsManager });
+		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
 
 		await pm.installAndPersist(pkgDir);
 
@@ -118,7 +118,7 @@ describe("DefaultPackageManager — integrations as a package resource", () => {
 		const aliceSettingsPath = join(agentDir, "settings.json");
 		expect(existsSync(aliceSettingsPath)).toBe(true);
 		const persisted = JSON.parse(readFileSync(aliceSettingsPath, "utf-8"));
-		expect(persisted.packages).toHaveLength(1);
+		expect(persisted.plugins).toHaveLength(1);
 
 		// Bob's home is untouched — no settings.json leaked into a shared/other agent.
 		expect(existsSync(join(otherAgentDir, "settings.json"))).toBe(false);
@@ -126,7 +126,7 @@ describe("DefaultPackageManager — integrations as a package resource", () => {
 		// The persisted local source round-trips: a fresh manager reading the same
 		// settings resolves the integration half in place.
 		const reread = SettingsManager.create(tempDir, agentDir);
-		const pm2 = new DefaultPackageManager({ cwd: tempDir, agentDir, settingsManager: reread });
+		const pm2 = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager: reread });
 		const result = await pm2.resolve();
 		const integration = result.integrations.find((r) => r.path === integrationPath);
 		expect(integration?.enabled).toBe(true);

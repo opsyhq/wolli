@@ -18,7 +18,7 @@ import { bearerAuth } from "hono/bearer-auth";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
 import { getAgentDir } from "../../config.ts";
 import { deployAgent } from "../../core/agent-config.ts";
-import { createAgentPackageManager } from "../../core/agent-package-manager.ts";
+import { createAgentPluginManager } from "../../core/agent-plugin-manager.ts";
 import { loadDaemonConfig, saveDaemonConfig } from "../../core/daemon-config.ts";
 import type {
 	ExtensionUIContext,
@@ -29,7 +29,7 @@ import type {
 import { loadIntegrations } from "../../core/integrations/loader.ts";
 import { onboardIntegration } from "../../core/integrations/onboarding.ts";
 import type { Integration, IntegrationOnboardUI } from "../../core/integrations/types.ts";
-import type { DefaultPackageManager } from "../../core/package-manager.ts";
+import type { DefaultPluginManager } from "../../core/plugin-manager.ts";
 import { getServiceManager } from "../../core/service/service-manager.ts";
 import type { SessionHost } from "../../core/session-host.ts";
 import { getCwdRelativePath, resolvePath } from "../../utils/paths.ts";
@@ -117,11 +117,11 @@ async function handlePrompt(
 	return ok(cmd.id, "prompt");
 }
 
-/** Resolve the install root of a just-installed source (for package-scoped onboarding). */
-function packageRootForSpec(packageManager: DefaultPackageManager, spec: string): string | undefined {
+/** Resolve the install root of a just-installed source (for plugin-scoped onboarding). */
+function pluginRootForSpec(pluginManager: DefaultPluginManager, spec: string): string | undefined {
 	// npm/git managed installs resolve cwd-independently; a local source resolves against the
 	// daemon's cwd (the one writer runs server-side).
-	const installed = packageManager.getInstalledPath(spec);
+	const installed = pluginManager.getInstalledPath(spec);
 	if (installed) return installed;
 	const local = resolvePath(spec, process.cwd());
 	return existsSync(local) ? local : undefined;
@@ -135,16 +135,16 @@ function packageRootForSpec(packageManager: DefaultPackageManager, spec: string)
  */
 async function runDaemonOnboarding(
 	host: SessionHost,
-	selectServices: (input: { integrations: Integration[]; packageManager: DefaultPackageManager }) => string[],
+	selectServices: (input: { integrations: Integration[]; pluginManager: DefaultPluginManager }) => string[],
 ): Promise<OnboardServiceResult[]> {
 	const name = host.config.name;
 	const agentDir = getAgentDir(name);
-	const { packageManager } = createAgentPackageManager(name);
-	const resolved = await packageManager.resolve();
+	const { pluginManager } = createAgentPluginManager(name);
+	const resolved = await pluginManager.resolve();
 	const integrationPaths = resolved.integrations.filter((r) => r.enabled).map((r) => r.path);
 	const { integrations } = await loadIntegrations(integrationPaths, agentDir);
 
-	const services = selectServices({ integrations, packageManager });
+	const services = selectServices({ integrations, pluginManager });
 	// The host's live account store is the single writer; its bound uiContext renders dialogs over the wire.
 	const accounts = host.integrationAccounts;
 	const ui: IntegrationOnboardUI = host.extensionRunner.getUIContext();
@@ -239,32 +239,33 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 			await harness.appendMessage(cmd.message);
 			return ok(id, "append_message");
 
-		// Packages / integrations — single-writer mutations: run the persist primitive in-process,
-		// then reload so the daemon's own resources/accounts are never stale.
-		case "install_package": {
-			const { packageManager } = createAgentPackageManager(host.config.name);
-			await packageManager.installAndPersist(cmd.source);
+		// Plugins — single-writer mutations: run the persist primitive in-process, then reload so
+		// the daemon's own resources/accounts are never stale.
+		case "install_plugin": {
+			const { pluginManager } = createAgentPluginManager(host.config.name);
+			await pluginManager.installAndPersist(cmd.source);
 			await host.reload();
-			return ok(id, "install_package");
+			return ok(id, "install_plugin");
 		}
-		case "remove_package": {
-			const { packageManager } = createAgentPackageManager(host.config.name);
-			const removed = await packageManager.removeAndPersist(cmd.source);
+		case "remove_plugin": {
+			const { pluginManager } = createAgentPluginManager(host.config.name);
+			const removed = await pluginManager.removeAndPersist(cmd.source);
 			await host.reload();
-			return ok(id, "remove_package", { removed });
+			return ok(id, "remove_plugin", { removed });
 		}
-		case "update_packages": {
-			const { packageManager } = createAgentPackageManager(host.config.name);
-			await packageManager.update(cmd.source);
+		case "update_plugins": {
+			const { pluginManager } = createAgentPluginManager(host.config.name);
+			await pluginManager.update(cmd.source);
 			await host.reload();
-			return ok(id, "update_packages");
+			return ok(id, "update_plugins");
 		}
 		// Onboarding writes through the host's live account store, so no second reload is needed
-		// (the credential is already in-memory-consistent); `install_package` did the reload.
-		case "onboard_package":
-			return ok(id, "onboard_package", {
-				results: await runDaemonOnboarding(host, ({ integrations, packageManager }) => {
-					const root = packageRootForSpec(packageManager, cmd.source);
+		// (the credential is already in-memory-consistent); `install_plugin` did the reload. The
+		// source scopes onboarding to the just-installed plugin's integrations that declare `onboard`.
+		case "onboard_plugin":
+			return ok(id, "onboard_plugin", {
+				results: await runDaemonOnboarding(host, ({ integrations, pluginManager }) => {
+					const root = pluginRootForSpec(pluginManager, cmd.source);
 					const services: string[] = [];
 					for (const integration of integrations) {
 						if (root && getCwdRelativePath(integration.resolvedPath, root) === undefined) continue;
@@ -275,8 +276,6 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 					return services;
 				}),
 			});
-		case "onboard_integration":
-			return ok(id, "onboard_integration", { results: await runDaemonOnboarding(host, () => [cmd.service]) });
 
 		default: {
 			const unknown = cmd as { type: string };

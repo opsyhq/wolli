@@ -3,18 +3,20 @@
  *
  * Agent surfaces are daemon clients: interactive `<name>`, the one-shot `--print`/inline-message
  * path, and `new` (birth chat) attach a `DaemonSession` to the agent's daemon (spawning one if
- * needed) — the CLI never builds a `SessionHost`. `new`/`list`/`delete`/`integrations`/`packages`
- * are local commands (the latter two route their mutating arms to the daemon, the single writer);
- * the hidden `daemon` subcommand runs the engine's `runDaemon` in-process (the long-running server).
- * Only `--help`/`--version` route through the engine `main`.
+ * needed) — the CLI never builds a `SessionHost`. `new`/`list`/`delete` are local commands; the
+ * agent-scoped `<name> plugins ...` subcommand routes its mutating arms to the daemon (the single
+ * writer); the hidden `daemon` subcommand runs the engine's `runDaemon` in-process (the
+ * long-running server). Only `--help`/`--version` route through the engine `main`.
+ *
+ * `plugins` is a reserved second positional: an inline chat message whose first word is `plugins`
+ * is no longer deliverable (messages not starting with `plugins` are unaffected).
  */
 
 import { agentExists, APP_NAME, main as engineMain, parseArgs, runDaemon } from "@opsyhq/steward";
 import { runDelete } from "./commands/delete.ts";
-import { runIntegrations } from "./commands/integrations.ts";
 import { runList } from "./commands/list.ts";
 import { runNew } from "./commands/new.ts";
-import { runPackages } from "./commands/packages.ts";
+import { runPlugins } from "./commands/plugins.ts";
 import { DaemonSession } from "./daemon-session.ts";
 import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
@@ -22,12 +24,12 @@ import { runPrintMode } from "./modes/print-mode.ts";
 export async function main(argv: string[]): Promise<number> {
 	const args = parseArgs(argv);
 	const command = args.positionals[0];
+	const sub = args.positionals[1];
 	const message = args.positionals.slice(1).join(" ").trim();
 
-	// `integrations`/`packages` own their per-subcommand help, so route them (with `args.help`) before
-	// the global --help/--version intercept hands off to the engine.
-	if (command === "integrations") return runIntegrations(args.positionals.slice(1), args.help);
-	if (command === "packages") return runPackages(args.positionals.slice(1), args.help);
+	// The agent-scoped `<agent> plugins <verb> ...` subcommand owns its per-verb help, so route it
+	// (with `args.help`) before the global --help/--version intercept hands off to the engine.
+	if (sub === "plugins") return runPlugins(command, args.positionals.slice(2), args.help);
 
 	if (args.help || args.version || !command) return engineMain(argv);
 

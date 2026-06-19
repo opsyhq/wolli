@@ -31,10 +31,10 @@ import { spawnProcess } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
-import type { PackageSource, SettingsManager } from "./settings-manager.ts";
+import type { PluginSource, SettingsManager } from "./settings-manager.ts";
 // PathMetadata + SourceScope are owned by source-info.ts in steward (single source
 // of truth, shared with skills/prompts/themes loaders). Re-exported so the
-// resource-loader can keep importing PathMetadata from the package manager.
+// resource-loader can keep importing PathMetadata from the plugin manager.
 import type { PathMetadata, SourceScope } from "./source-info.ts";
 
 export type { PathMetadata } from "./source-info.ts";
@@ -74,28 +74,28 @@ export interface ProgressEvent {
 
 export type ProgressCallback = (event: ProgressEvent) => void;
 
-export interface PackageUpdate {
+export interface PluginUpdate {
 	source: string;
 	displayName: string;
 	type: "npm" | "git";
 	scope: "user";
 }
 
-export interface ConfiguredPackage {
+export interface ConfiguredPlugin {
 	source: string;
 	scope: "user";
 	filtered: boolean;
 	installedPath?: string;
 }
 
-export interface PackageManager {
+export interface PluginManager {
 	resolve(onMissing?: (source: string) => Promise<MissingSourceAction>): Promise<ResolvedPaths>;
 	install(source: string): Promise<void>;
 	installAndPersist(source: string): Promise<void>;
 	remove(source: string): Promise<void>;
 	removeAndPersist(source: string): Promise<boolean>;
 	update(source?: string): Promise<void>;
-	listConfiguredPackages(): ConfiguredPackage[];
+	listConfiguredPlugins(): ConfiguredPlugin[];
 	resolveExtensionSources(sources: string[], options?: { temporary?: boolean }): Promise<ResolvedPaths>;
 	addSourceToSettings(source: string): boolean;
 	removeSourceFromSettings(source: string): boolean;
@@ -103,7 +103,7 @@ export interface PackageManager {
 	getInstalledPath(source: string): string | undefined;
 }
 
-interface PackageManagerOptions {
+interface PluginManagerOptions {
 	cwd: string;
 	agentDir: string;
 	settingsManager: SettingsManager;
@@ -140,7 +140,7 @@ interface GitUpdateTarget extends ConfiguredUpdateSource {
 	parsed: GitSource;
 }
 
-interface StewardManifest {
+interface PluginManifest {
 	extensions?: string[];
 	integrations?: string[];
 	skills?: string[];
@@ -174,7 +174,7 @@ function resourcePrecedenceRank(m: PathMetadata): number {
 	return scopeBase + (m.source === "local" ? 0 : 1);
 }
 
-interface PackageFilter {
+interface PluginFilter {
 	extensions?: string[];
 	integrations?: string[];
 	skills?: string[];
@@ -486,10 +486,10 @@ function collectAutoThemeEntries(dir: string): string[] {
 	return entries;
 }
 
-function readStewardManifestFile(packageJsonPath: string): StewardManifest | null {
+function readPluginManifestFile(packageJsonPath: string): PluginManifest | null {
 	try {
 		const content = readFileSync(packageJsonPath, "utf-8");
-		const pkg = JSON.parse(content) as { steward?: StewardManifest };
+		const pkg = JSON.parse(content) as { steward?: PluginManifest };
 		return pkg.steward ?? null;
 	} catch {
 		return null;
@@ -499,7 +499,7 @@ function readStewardManifestFile(packageJsonPath: string): StewardManifest | nul
 function resolveExtensionEntries(dir: string): string[] | null {
 	const packageJsonPath = join(dir, "package.json");
 	if (existsSync(packageJsonPath)) {
-		const manifest = readStewardManifestFile(packageJsonPath);
+		const manifest = readPluginManifestFile(packageJsonPath);
 		if (manifest?.extensions?.length) {
 			const entries: string[] = [];
 			for (const extPath of manifest.extensions) {
@@ -728,13 +728,13 @@ function applyPatterns(allPaths: string[], patterns: string[], baseDir: string):
 	return new Set(result);
 }
 
-export class DefaultPackageManager implements PackageManager {
+export class DefaultPluginManager implements PluginManager {
 	private cwd: string;
 	private agentDir: string;
 	private settingsManager: SettingsManager;
 	private progressCallback: ProgressCallback | undefined;
 
-	constructor(options: PackageManagerOptions) {
+	constructor(options: PluginManagerOptions) {
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
 		this.settingsManager = options.settingsManager;
@@ -746,34 +746,34 @@ export class DefaultPackageManager implements PackageManager {
 
 	addSourceToSettings(source: string): boolean {
 		const currentSettings = this.settingsManager.getGlobalSettings();
-		const currentPackages = currentSettings.packages ?? [];
-		const normalizedSource = this.normalizePackageSourceForSettings(source);
+		const currentPackages = currentSettings.plugins ?? [];
+		const normalizedSource = this.normalizePluginSourceForSettings(source);
 		const matchIndex = currentPackages.findIndex((existing) => this.packageSourcesMatch(existing, source));
 		if (matchIndex !== -1) {
 			const existing = currentPackages[matchIndex];
-			if (this.getPackageSourceString(existing) === normalizedSource) {
+			if (this.getPluginSourceString(existing) === normalizedSource) {
 				return false;
 			}
 			const nextPackages = [...currentPackages];
 			nextPackages[matchIndex] =
 				typeof existing === "string" ? normalizedSource : { ...existing, source: normalizedSource };
-			this.settingsManager.setPackages(nextPackages);
+			this.settingsManager.setPlugins(nextPackages);
 			return true;
 		}
 		const nextPackages = [...currentPackages, normalizedSource];
-		this.settingsManager.setPackages(nextPackages);
+		this.settingsManager.setPlugins(nextPackages);
 		return true;
 	}
 
 	removeSourceFromSettings(source: string): boolean {
 		const currentSettings = this.settingsManager.getGlobalSettings();
-		const currentPackages = currentSettings.packages ?? [];
+		const currentPackages = currentSettings.plugins ?? [];
 		const nextPackages = currentPackages.filter((existing) => !this.packageSourcesMatch(existing, source));
 		const changed = nextPackages.length !== currentPackages.length;
 		if (!changed) {
 			return false;
 		}
-		this.settingsManager.setPackages(nextPackages);
+		this.settingsManager.setPlugins(nextPackages);
 		return true;
 	}
 
@@ -821,13 +821,13 @@ export class DefaultPackageManager implements PackageManager {
 		const globalSettings = this.settingsManager.getGlobalSettings();
 
 		// Per-agent only: packages live in the agent's own settings ("user" scope).
-		const allPackages: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
-		for (const pkg of globalSettings.packages ?? []) {
+		const allPackages: Array<{ pkg: PluginSource; scope: SourceScope }> = [];
+		for (const pkg of globalSettings.plugins ?? []) {
 			allPackages.push({ pkg, scope: "user" });
 		}
 
 		const packageSources = this.dedupePackages(allPackages);
-		await this.resolvePackageSources(packageSources, accumulator, onMissing);
+		await this.resolvePluginSources(packageSources, accumulator, onMissing);
 
 		const globalBaseDir = this.agentDir;
 
@@ -855,16 +855,16 @@ export class DefaultPackageManager implements PackageManager {
 	async resolveExtensionSources(sources: string[], options?: { temporary?: boolean }): Promise<ResolvedPaths> {
 		const accumulator = this.createAccumulator();
 		const scope: SourceScope = options?.temporary ? "temporary" : "user";
-		const packageSources = sources.map((source) => ({ pkg: source as PackageSource, scope }));
-		await this.resolvePackageSources(packageSources, accumulator);
+		const packageSources = sources.map((source) => ({ pkg: source as PluginSource, scope }));
+		await this.resolvePluginSources(packageSources, accumulator);
 		return this.toResolvedPaths(accumulator);
 	}
 
-	listConfiguredPackages(): ConfiguredPackage[] {
+	listConfiguredPlugins(): ConfiguredPlugin[] {
 		const globalSettings = this.settingsManager.getGlobalSettings();
-		const configuredPackages: ConfiguredPackage[] = [];
+		const configuredPackages: ConfiguredPlugin[] = [];
 
-		for (const pkg of globalSettings.packages ?? []) {
+		for (const pkg of globalSettings.plugins ?? []) {
 			const source = typeof pkg === "string" ? pkg : pkg.source;
 			configuredPackages.push({
 				source,
@@ -933,7 +933,7 @@ export class DefaultPackageManager implements PackageManager {
 		let matched = false;
 		const updateSources: ConfiguredUpdateSource[] = [];
 
-		for (const pkg of globalSettings.packages ?? []) {
+		for (const pkg of globalSettings.plugins ?? []) {
 			const sourceStr = typeof pkg === "string" ? pkg : pkg.source;
 			if (identity && this.getPackageIdentity(sourceStr) !== identity) continue;
 			matched = true;
@@ -941,7 +941,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		if (source && !matched) {
-			throw new Error(this.buildNoMatchingPackageMessage(source, [...(globalSettings.packages ?? [])]));
+			throw new Error(this.buildNoMatchingPackageMessage(source, [...(globalSettings.plugins ?? [])]));
 		}
 
 		await this.updateConfiguredSources(updateSources);
@@ -1034,21 +1034,21 @@ export class DefaultPackageManager implements PackageManager {
 		await this.runNpmCommand(this.getNpmInstallArgs(specs, installRoot));
 	}
 
-	async checkForAvailableUpdates(): Promise<PackageUpdate[]> {
+	async checkForAvailableUpdates(): Promise<PluginUpdate[]> {
 		if (isOfflineModeEnabled()) {
 			return [];
 		}
 
 		const globalSettings = this.settingsManager.getGlobalSettings();
-		const allPackages: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
-		for (const pkg of globalSettings.packages ?? []) {
+		const allPackages: Array<{ pkg: PluginSource; scope: SourceScope }> = [];
+		for (const pkg of globalSettings.plugins ?? []) {
 			allPackages.push({ pkg, scope: "user" });
 		}
 
 		const packageSources = this.dedupePackages(allPackages);
 		const checks = packageSources
-			.filter((entry): entry is { pkg: PackageSource; scope: "user" } => entry.scope !== "temporary")
-			.map((entry) => async (): Promise<PackageUpdate | undefined> => {
+			.filter((entry): entry is { pkg: PluginSource; scope: "user" } => entry.scope !== "temporary")
+			.map((entry) => async (): Promise<PluginUpdate | undefined> => {
 				const source = typeof entry.pkg === "string" ? entry.pkg : entry.pkg.source;
 				const parsed = this.parseSource(source);
 				if (parsed.type === "local" || parsed.pinned) {
@@ -1089,11 +1089,11 @@ export class DefaultPackageManager implements PackageManager {
 			});
 
 		const results = await this.runWithConcurrency(checks, UPDATE_CHECK_CONCURRENCY);
-		return results.filter((result): result is PackageUpdate => result !== undefined);
+		return results.filter((result): result is PluginUpdate => result !== undefined);
 	}
 
-	private async resolvePackageSources(
-		sources: Array<{ pkg: PackageSource; scope: SourceScope }>,
+	private async resolvePluginSources(
+		sources: Array<{ pkg: PluginSource; scope: SourceScope }>,
 		accumulator: ResourceAccumulator,
 		onMissing?: (source: string) => Promise<MissingSourceAction>,
 	): Promise<void> {
@@ -1156,7 +1156,7 @@ export class DefaultPackageManager implements PackageManager {
 	private resolveLocalExtensionSource(
 		source: LocalSource,
 		accumulator: ResourceAccumulator,
-		filter: PackageFilter | undefined,
+		filter: PluginFilter | undefined,
 		metadata: PathMetadata,
 		baseDir: string,
 	): void {
@@ -1195,7 +1195,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 	}
 
-	private getPackageSourceString(pkg: PackageSource): string {
+	private getPluginSourceString(pkg: PluginSource): string {
 		return typeof pkg === "string" ? pkg : pkg.source;
 	}
 
@@ -1222,7 +1222,7 @@ export class DefaultPackageManager implements PackageManager {
 		return `local:${this.resolvePathFromBase(parsed.path, baseDir)}`;
 	}
 
-	private buildNoMatchingPackageMessage(source: string, configuredPackages: PackageSource[]): string {
+	private buildNoMatchingPackageMessage(source: string, configuredPackages: PluginSource[]): string {
 		const suggestion = this.findSuggestedConfiguredSource(source, configuredPackages);
 		if (!suggestion) {
 			return `No matching package found for ${source}`;
@@ -1230,12 +1230,12 @@ export class DefaultPackageManager implements PackageManager {
 		return `No matching package found for ${source}. Did you mean ${suggestion}?`;
 	}
 
-	private findSuggestedConfiguredSource(source: string, configuredPackages: PackageSource[]): string | undefined {
+	private findSuggestedConfiguredSource(source: string, configuredPackages: PluginSource[]): string | undefined {
 		const trimmedSource = source.trim();
 		const suggestions = new Set<string>();
 
 		for (const pkg of configuredPackages) {
-			const sourceStr = this.getPackageSourceString(pkg);
+			const sourceStr = this.getPluginSourceString(pkg);
 			const parsed = this.parseSource(sourceStr);
 			if (parsed.type === "npm") {
 				if (trimmedSource === parsed.name || trimmedSource === parsed.spec) {
@@ -1255,13 +1255,13 @@ export class DefaultPackageManager implements PackageManager {
 		return suggestions.values().next().value;
 	}
 
-	private packageSourcesMatch(existing: PackageSource, inputSource: string): boolean {
-		const left = this.getSourceMatchKeyForSettings(this.getPackageSourceString(existing));
+	private packageSourcesMatch(existing: PluginSource, inputSource: string): boolean {
+		const left = this.getSourceMatchKeyForSettings(this.getPluginSourceString(existing));
 		const right = this.getSourceMatchKeyForInput(inputSource);
 		return left === right;
 	}
 
-	private normalizePackageSourceForSettings(source: string): string {
+	private normalizePluginSourceForSettings(source: string): string {
 		const parsed = this.parseSource(source);
 		if (parsed.type !== "local") {
 			return source;
@@ -1523,9 +1523,9 @@ export class DefaultPackageManager implements PackageManager {
 
 	/** Dedupe packages by identity (first occurrence wins). */
 	private dedupePackages(
-		packages: Array<{ pkg: PackageSource; scope: SourceScope }>,
-	): Array<{ pkg: PackageSource; scope: SourceScope }> {
-		const seen = new Map<string, { pkg: PackageSource; scope: SourceScope }>();
+		packages: Array<{ pkg: PluginSource; scope: SourceScope }>,
+	): Array<{ pkg: PluginSource; scope: SourceScope }> {
+		const seen = new Map<string, { pkg: PluginSource; scope: SourceScope }>();
 
 		for (const entry of packages) {
 			const sourceStr = typeof entry.pkg === "string" ? entry.pkg : entry.pkg.source;
@@ -1831,15 +1831,15 @@ export class DefaultPackageManager implements PackageManager {
 	private collectPackageResources(
 		packageRoot: string,
 		accumulator: ResourceAccumulator,
-		filter: PackageFilter | undefined,
+		filter: PluginFilter | undefined,
 		metadata: PathMetadata,
 	): boolean {
 		if (filter) {
 			for (const resourceType of RESOURCE_TYPES) {
-				const patterns = filter[resourceType as keyof PackageFilter];
+				const patterns = filter[resourceType as keyof PluginFilter];
 				const target = this.getTargetMap(accumulator, resourceType);
 				if (patterns !== undefined) {
-					this.applyPackageFilter(packageRoot, patterns, resourceType, target, metadata);
+					this.applyPluginFilter(packageRoot, patterns, resourceType, target, metadata);
 				} else {
 					this.collectDefaultResources(packageRoot, resourceType, target, metadata);
 				}
@@ -1847,10 +1847,10 @@ export class DefaultPackageManager implements PackageManager {
 			return true;
 		}
 
-		const manifest = this.readStewardManifest(packageRoot);
+		const manifest = this.readPluginManifest(packageRoot);
 		if (manifest) {
 			for (const resourceType of RESOURCE_TYPES) {
-				const entries = manifest[resourceType as keyof StewardManifest];
+				const entries = manifest[resourceType as keyof PluginManifest];
 				this.addManifestEntries(
 					entries,
 					packageRoot,
@@ -1883,8 +1883,8 @@ export class DefaultPackageManager implements PackageManager {
 		target: Map<string, { metadata: PathMetadata; enabled: boolean }>,
 		metadata: PathMetadata,
 	): void {
-		const manifest = this.readStewardManifest(packageRoot);
-		const entries = manifest?.[resourceType as keyof StewardManifest];
+		const manifest = this.readPluginManifest(packageRoot);
+		const entries = manifest?.[resourceType as keyof PluginManifest];
 		if (entries) {
 			this.addManifestEntries(entries, packageRoot, resourceType, target, metadata);
 			return;
@@ -1899,7 +1899,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 	}
 
-	private applyPackageFilter(
+	private applyPluginFilter(
 		packageRoot: string,
 		userPatterns: string[],
 		resourceType: ResourceType,
@@ -1934,8 +1934,8 @@ export class DefaultPackageManager implements PackageManager {
 		packageRoot: string,
 		resourceType: ResourceType,
 	): { allFiles: string[]; enabledByManifest: Set<string> } {
-		const manifest = this.readStewardManifest(packageRoot);
-		const entries = manifest?.[resourceType as keyof StewardManifest];
+		const manifest = this.readPluginManifest(packageRoot);
+		const entries = manifest?.[resourceType as keyof PluginManifest];
 		if (entries && entries.length > 0) {
 			const allFiles = this.collectFilesFromManifestEntries(entries, packageRoot, resourceType);
 			const manifestPatterns = entries.filter(isOverridePattern);
@@ -1952,7 +1952,7 @@ export class DefaultPackageManager implements PackageManager {
 		return { allFiles, enabledByManifest: new Set(allFiles) };
 	}
 
-	private readStewardManifest(packageRoot: string): StewardManifest | null {
+	private readPluginManifest(packageRoot: string): PluginManifest | null {
 		const packageJsonPath = join(packageRoot, "package.json");
 		if (!existsSync(packageJsonPath)) {
 			return null;
@@ -1960,7 +1960,7 @@ export class DefaultPackageManager implements PackageManager {
 
 		try {
 			const content = readFileSync(packageJsonPath, "utf-8");
-			const pkg = JSON.parse(content) as { steward?: StewardManifest };
+			const pkg = JSON.parse(content) as { steward?: PluginManifest };
 			return pkg.steward ?? null;
 		} catch {
 			return null;

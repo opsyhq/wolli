@@ -1,7 +1,7 @@
 /**
  * Standalone startup-TUI dialog mounts — a pure, generic dialog-mount helper (no daemon coupling).
  * Each call spins up a short-lived TUI for one prompt and tears it down on answer. The onboarding
- * dispatcher in `commands/integrations.ts` uses these to render the daemon's onboarding dialogs.
+ * dispatcher in `commands/plugins.ts` uses these to render the daemon's onboarding dialogs.
  */
 
 import { ProcessTerminal, setKeybindings, TUI } from "@opsyhq/tui";
