@@ -99,7 +99,7 @@ export function getPackageDir(): string {
 export function getThemesDir(): string {
 	const packageDir = getPackageDir();
 	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
-	return join(packageDir, srcOrDist, "modes", "interactive", "theme");
+	return join(packageDir, srcOrDist, "theme");
 }
 
 /** User's custom themes dir, e.g. ~/.steward/agent/themes (shared agent dir). */

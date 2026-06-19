@@ -4,13 +4,8 @@ import {
 	type KeybindingsConfig,
 	type KeyId,
 	TUI_KEYBINDINGS,
-	KeybindingsManager as TuiKeybindingsManager,
+	type KeybindingsManager as TuiKeybindingsManager,
 } from "@opsyhq/tui";
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-// config.ts uses `getAgentDir(name)` for per-agent dirs and exposes the shared
-// agent dir as `getSharedAgentDir()`, which is the value used here.
-import { getSharedAgentDir } from "../config.ts";
 
 export interface AppKeybindings {
 	"app.interrupt": true;
@@ -265,28 +260,8 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	deleteSessionNoninvasive: "app.session.deleteNoninvasive",
 } as const satisfies Record<string, Keybinding>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isLegacyKeybindingName(key: string): key is keyof typeof KEYBINDING_NAME_MIGRATIONS {
 	return key in KEYBINDING_NAME_MIGRATIONS;
-}
-
-function toKeybindingsConfig(value: unknown): KeybindingsConfig {
-	if (!isRecord(value)) return {};
-
-	const config: KeybindingsConfig = {};
-	for (const [key, binding] of Object.entries(value)) {
-		if (typeof binding === "string") {
-			config[key] = binding as KeyId;
-			continue;
-		}
-		if (Array.isArray(binding) && binding.every((entry) => typeof entry === "string")) {
-			config[key] = binding as KeyId[];
-		}
-	}
-	return config;
 }
 
 export function migrateKeybindingsConfig(rawConfig: Record<string, unknown>): {
@@ -329,44 +304,11 @@ function orderKeybindingsConfig(config: Record<string, unknown>): Record<string,
 	return ordered;
 }
 
-function loadRawConfig(path: string): Record<string, unknown> | undefined {
-	if (!existsSync(path)) return undefined;
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
-		return isRecord(parsed) ? parsed : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-export class KeybindingsManager extends TuiKeybindingsManager {
-	private configPath: string | undefined;
-
-	constructor(userBindings: KeybindingsConfig = {}, configPath?: string) {
-		super(KEYBINDINGS, userBindings);
-		this.configPath = configPath;
-	}
-
-	static create(agentDir: string = getSharedAgentDir()): KeybindingsManager {
-		const configPath = join(agentDir, "keybindings.json");
-		const userBindings = KeybindingsManager.loadFromFile(configPath);
-		return new KeybindingsManager(userBindings, configPath);
-	}
-
-	reload(): void {
-		if (!this.configPath) return;
-		this.setUserBindings(KeybindingsManager.loadFromFile(this.configPath));
-	}
-
-	getEffectiveConfig(): KeybindingsConfig {
-		return this.getResolvedBindings();
-	}
-
-	private static loadFromFile(path: string): KeybindingsConfig {
-		const rawConfig = loadRawConfig(path);
-		if (!rawConfig) return {};
-		return toKeybindingsConfig(migrateKeybindingsConfig(rawConfig).config);
-	}
-}
+/**
+ * Structural alias for the app keybindings manager. The runtime class (keybindings.json loading +
+ * effective-binding resolution) is client-only and lives in apps/cli; the extension contract only
+ * needs the type, which is structurally the @opsyhq/tui manager.
+ */
+export type KeybindingsManager = TuiKeybindingsManager;
 
 export type { Keybinding, KeyId, KeybindingsConfig };

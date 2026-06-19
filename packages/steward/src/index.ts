@@ -6,7 +6,16 @@
  */
 
 export { serializeConversation } from "@opsyhq/agent";
-export { type Args, parseArgs, printHelp } from "./cli/args.ts";
+// Shared UI components + keybinding-hint helpers imported by the @opsyhq/cli daemon client (the
+// interactive TUI lives in apps/cli); DynamicBorder and the keyHint/keyText helpers are also part
+// of the extension SDK surface.
+export { DynamicBorder } from "./components/dynamic-border.ts";
+export {
+	keyDisplayText,
+	keyHint,
+	keyText,
+	rawKeyHint,
+} from "./components/keybinding-hints.ts";
 export * from "./config.ts";
 export {
 	AGENT_SCHEMA_VERSION,
@@ -143,7 +152,7 @@ export {
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
 export type { ToolRenderContext } from "./core/extensions/types.ts";
-export { FooterDataProvider, type ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
+export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 export {
 	type IntegrationAccountRecord,
@@ -173,10 +182,12 @@ export {
 	loadIntegrations,
 } from "./core/integrations/index.ts";
 export {
+	KEYBINDINGS,
 	type Keybinding,
 	type KeybindingsConfig,
-	KeybindingsManager,
+	type KeybindingsManager,
 	type KeyId,
+	migrateKeybindingsConfig,
 } from "./core/keybindings.ts";
 export {
 	loadMemory,
@@ -243,11 +254,9 @@ export {
 } from "./core/settings-manager.ts";
 export {
 	formatSkillsForPrompt,
-	type LoadSkillsFromDirOptions,
 	type LoadSkillsOptions,
 	type LoadSkillsResult,
 	loadSkills,
-	loadSkillsFromDir,
 	type ParsedSkillBlock,
 	parseSkillBlock,
 	type Skill,
@@ -257,7 +266,7 @@ export { BUILTIN_SLASH_COMMANDS } from "./core/slash-commands.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export { type BuildSystemPromptOptions, buildSystemPrompt } from "./core/system-prompt.ts";
 export { type BashToolDetails, type BashToolInput, createBashTool } from "./core/tools/bash.ts";
-export { createDeployTool, type DeployToolDetails, type DeployToolInput } from "./core/tools/deploy.ts";
+export { createDeployTool, type DeployToolDetails } from "./core/tools/deploy.ts";
 export { createEditTool, type EditToolDetails, type EditToolInput } from "./core/tools/edit.ts";
 // edit-diff render helpers consumed by the apps/cli built-in edit renderer (Phase 2, Slice 1).
 export {
@@ -291,7 +300,7 @@ export { createMemoryTool, type MemoryToolDetails, type MemoryToolInput } from "
 export { resolveReadPathAsync, resolveToCwd } from "./core/tools/path-utils.ts";
 export { createReadTool, type ReadToolDetails, type ReadToolInput } from "./core/tools/read.ts";
 export { createWriteTool, type WriteToolInput } from "./core/tools/write.ts";
-export { main, type RunDaemonOptions, runDaemon } from "./main.ts";
+export { type RunDaemonOptions, runDaemon } from "./daemon/server.ts";
 export type {
 	DaemonCommand,
 	DaemonResponse,
@@ -299,22 +308,7 @@ export type {
 	ExtensionUIRequest,
 	ExtensionUIResponse,
 	OnboardServiceResult,
-} from "./modes/daemon/daemon-types.ts";
-// UI components for extensions + the @opsyhq/cli daemon client (the interactive TUI lives in
-// apps/cli; these are the shared pieces it imports — kept here because the engine's startup/
-// onboarding flow and extension runner still depend on them).
-export { CountdownTimer } from "./modes/interactive/components/countdown-timer.ts";
-export { DynamicBorder } from "./modes/interactive/components/dynamic-border.ts";
-export { ExtensionInputComponent } from "./modes/interactive/components/extension-input.ts";
-export { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
-export {
-	formatKeyText,
-	type KeyTextFormatOptions,
-	keyDisplayText,
-	keyHint,
-	keyText,
-	rawKeyHint,
-} from "./modes/interactive/components/keybinding-hints.ts";
+} from "./daemon/types.ts";
 export {
 	getAvailableThemesWithPaths,
 	getEditorTheme,
@@ -329,9 +323,11 @@ export {
 	setThemeInstance,
 	Theme,
 	theme,
-} from "./modes/interactive/theme/theme.ts";
+} from "./theme/theme.ts";
 export { stripAnsi } from "./utils/ansi.ts";
+export { applyExifOrientation } from "./utils/exif-orientation.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
-export { convertToPng } from "./utils/image-convert.ts";
+export { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "./utils/fs-watch.ts";
 export { formatPathRelativeToCwdOrAbsolute, resolvePath } from "./utils/paths.ts";
+export { loadPhoton, type PhotonImageType } from "./utils/photon.ts";
 export { ensureTool } from "./utils/tools-manager.ts";

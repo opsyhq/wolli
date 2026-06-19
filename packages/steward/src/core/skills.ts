@@ -155,13 +155,6 @@ function validateDescription(description: string | undefined): string[] {
 	return errors;
 }
 
-export interface LoadSkillsFromDirOptions {
-	/** Directory to scan for skills */
-	dir: string;
-	/** Source identifier for these skills */
-	source: string;
-}
-
 function createSkillSourceInfo(filePath: string, baseDir: string, source: string): SourceInfo {
 	switch (source) {
 		case "user":
@@ -194,11 +187,6 @@ function createSkillSourceInfo(filePath: string, baseDir: string, source: string
  * - otherwise, load direct .md children in the root
  * - recurse into subdirectories to find SKILL.md
  */
-export function loadSkillsFromDir(options: LoadSkillsFromDirOptions): LoadSkillsResult {
-	const { dir, source } = options;
-	return loadSkillsFromDirInternal(dir, source, true);
-}
-
 function loadSkillsFromDirInternal(
 	dir: string,
 	source: string,

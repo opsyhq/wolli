@@ -8,7 +8,7 @@
 
 import type { Api, KnownProvider, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@opsyhq/agent";
-import { isValidThinkingLevel } from "../cli/args.ts";
+import { isValidThinkingLevel } from "./defaults.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 
 /** Default model IDs for each known provider */

@@ -6,7 +6,7 @@
  * UI-agnostic (the `ui` it forwards is whatever the caller built), so it is unit-testable
  * with a stub UI surface + an in-memory account store. The paired extension (the mapping
  * half of a dual-half package) is resolved in place by the package manager — no copy. The
- * daemon drives this via `runDaemonOnboarding` (`modes/daemon/daemon-mode.ts`), forwarding the
+ * daemon drives this via `runDaemonOnboarding` (`daemon/server.ts`), forwarding the
  * agent's live account store and its wire-backed UI context.
  */
 

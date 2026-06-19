@@ -15,8 +15,8 @@ import { createAgent, deployAgent, isDeployed, loadAgentConfig } from "../src/co
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { SessionHost } from "../src/core/session-host.ts";
-import { runDaemonMode } from "../src/modes/daemon/daemon-mode.ts";
-import { FORWARDED_EVENT_TYPES } from "../src/modes/daemon/daemon-types.ts";
+import { runDaemonMode } from "../src/daemon/server.ts";
+import { FORWARDED_EVENT_TYPES } from "../src/daemon/types.ts";
 
 const AGENT = "scribe";
 const TOKEN = "test-bearer-token-1234567890";

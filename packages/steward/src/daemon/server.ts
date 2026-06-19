@@ -1,39 +1,49 @@
 /**
- * Daemon mode: a long-running HTTP/SSE server wrapping a `SessionHost`.
+ * Daemon server + runner.
+ *
+ * `runDaemon(name, opts)` resolves the agent's model/auth, starts its `SessionHost`, then binds a
+ * long-running loopback HTTP/SSE server around it and blocks until a signal tears it down:
  *
  *   - `GET /events`  (SSE)  — the curated event stream + async prompt acks;
  *   - `POST /control`       — commands, whose sync response is the HTTP body;
  *   - `GET /health`         — liveness, no auth.
  *
- * `SessionHost` owns every lifecycle concern (start/newSession/reload/cleanup); this is a
- * thin wrapper that calls into it.
+ * `SessionHost` owns every lifecycle concern (start/newSession/reload/cleanup); the server is a
+ * thin wrapper that calls into it. The `@opsyhq/cli` client's hidden `daemon` subcommand and every
+ * OS service unit invoke `runDaemon`.
  */
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { type ServerType, serve } from "@hono/node-server";
-import type { AgentHarness, AgentHarnessEvent } from "@opsyhq/agent";
+import type { AgentHarness, AgentHarnessEvent, ThinkingLevel } from "@opsyhq/agent";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
-import { getAgentDir } from "../../config.ts";
-import { deployAgent } from "../../core/agent-config.ts";
-import { createAgentPluginManager } from "../../core/agent-plugin-manager.ts";
-import { loadDaemonConfig, saveDaemonConfig } from "../../core/daemon-config.ts";
+import { APP_NAME, ENV_DAEMON_TOKEN, getAgentDir, VERSION } from "../config.ts";
+import { type AgentConfig, agentExists, deployAgent, isDeployed, loadAgentConfig } from "../core/agent-config.ts";
+import { createAgentPluginManager } from "../core/agent-plugin-manager.ts";
+import { AuthStorage } from "../core/auth-storage.ts";
+import { loadDaemonConfig, saveDaemonConfig } from "../core/daemon-config.ts";
+import { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "../core/defaults.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
-} from "../../core/extensions/index.ts";
-import { loadIntegrations } from "../../core/integrations/loader.ts";
-import { onboardIntegration } from "../../core/integrations/onboarding.ts";
-import type { Integration, IntegrationOnboardUI } from "../../core/integrations/types.ts";
-import type { DefaultPluginManager } from "../../core/plugin-manager.ts";
-import { getServiceManager } from "../../core/service/service-manager.ts";
-import type { SessionHost } from "../../core/session-host.ts";
-import { getCwdRelativePath, resolvePath } from "../../utils/paths.ts";
-import { type Theme, theme } from "../interactive/theme/theme.ts";
+} from "../core/extensions/index.ts";
+import { IntegrationAccountStorage } from "../core/integration-account-storage.ts";
+import { loadIntegrations } from "../core/integrations/loader.ts";
+import { onboardIntegration } from "../core/integrations/onboarding.ts";
+import type { Integration, IntegrationOnboardUI } from "../core/integrations/types.ts";
+import { ModelRegistry } from "../core/model-registry.ts";
+import { resolveCliModel } from "../core/model-resolver.ts";
+import type { DefaultPluginManager } from "../core/plugin-manager.ts";
+import { getServiceManager } from "../core/service/service-manager.ts";
+import { SessionHost } from "../core/session-host.ts";
+import { getDefaultModel, getDefaultProvider } from "../core/settings.ts";
+import { type Theme, theme } from "../theme/theme.ts";
+import { getCwdRelativePath, resolvePath } from "../utils/paths.ts";
 import {
 	type DaemonCommand,
 	type DaemonCommandType,
@@ -44,7 +54,7 @@ import {
 	type ExtensionUIResponse,
 	FORWARDED_EVENT_TYPES,
 	type OnboardServiceResult,
-} from "./daemon-types.ts";
+} from "./types.ts";
 
 /** How many recent events the broadcaster keeps for `Last-Event-ID` replay. */
 const RING_SIZE = 256;
@@ -285,13 +295,137 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 }
 
 /**
- * Run the daemon: bind a loopback HTTP/SSE server wrapping `host`, subscribe the broadcaster
- * to the live harness (re-subscribing after every swap), and resolve once it is listening.
- * Returns the `serve()` server so the launcher can `server.close()` on shutdown — closing the
- * server drops the broadcaster subscription (via the `close` listener below), the leak
- * `host.cleanup()` does not cover.
+ * Resolve model/auth once and construct the `SessionHost` — the front half of the daemon runner.
+ * Returns the unstarted `host` plus the `config` it was built from (the caller needs `config` for
+ * the `fresh` decision), or an `{ error }` for the model/auth failures that should print to stderr
+ * and exit 1.
  */
-export async function runDaemonMode(host: SessionHost, options: { port: number; token: string }): Promise<ServerType> {
+function createAgentSessionHost(
+	name: string,
+	opts: { provider?: string; model?: string; thinking?: ThinkingLevel },
+): { host: SessionHost; config: AgentConfig } | { error: string } {
+	const config = loadAgentConfig(name);
+
+	const authStorage = AuthStorage.create();
+	// Integration accounts are per-agent (`~/.steward/agents/<name>/integrations.json`).
+	const integrationAccounts = IntegrationAccountStorage.create(name);
+	const modelRegistry = ModelRegistry.create(authStorage);
+
+	// Model precedence: --model flag → agent.json → shared default → built-in.
+	const resolved = resolveCliModel({
+		cliProvider: opts.provider,
+		cliModel: opts.model ?? config.model ?? sharedDefaultModel() ?? DEFAULT_MODEL,
+		cliThinking: opts.thinking,
+		modelRegistry,
+	});
+	if (resolved.warning) {
+		process.stderr.write(`${resolved.warning}\n`);
+	}
+	if (resolved.error || !resolved.model) {
+		return { error: resolved.error ?? "Could not resolve a model." };
+	}
+	const model = resolved.model;
+
+	// Auth precedence (handled by AuthStorage): runtime → auth.json (api key / OAuth)
+	// → env var. hasAuth() doesn't refresh tokens — it just checks something exists.
+	// If it returns false, every credential source (including the env var) is absent,
+	// so the only actionable hint is to log in.
+	if (!authStorage.hasAuth(model.provider)) {
+		return { error: `No credentials found for provider "${model.provider}". Log in with the steward CLI.` };
+	}
+
+	const thinkingLevel = opts.thinking ?? resolved.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+	const host = new SessionHost({ name, model, thinkingLevel, authStorage, integrationAccounts });
+	return { host, config };
+}
+
+export interface RunDaemonOptions {
+	/** Manual bind-port override for this run (debugging); 0/absent → OS-assigned ephemeral. */
+	port?: number;
+	/** Start a fresh session — honored only once deployed (a forming agent stays in its birth session). */
+	fresh?: boolean;
+	provider?: string;
+	model?: string;
+	thinking?: ThinkingLevel;
+}
+
+/**
+ * The `daemon <name>` runner: start the agent's `SessionHost`, then wrap it in a long-running
+ * HTTP/SSE server clients attach to. Binds an OS-assigned ephemeral port (unless `--port` overrides),
+ * writes the pid/port/token to the temp-dir config so clients can find it, and blocks on the listening
+ * server until a signal tears it down. The `@opsyhq/cli` client's hidden `daemon` subcommand and every
+ * OS service unit invoke this.
+ */
+export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Promise<number> {
+	if (!agentExists(name)) {
+		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
+		return 1;
+	}
+
+	const built = createAgentSessionHost(name, opts);
+	if ("error" in built) {
+		process.stderr.write(`${built.error}\n`);
+		return 1;
+	}
+	const { host, config } = built;
+
+	// A forming agent stays in its single birth session; `fresh` only takes effect once deployed.
+	const fresh = isDeployed(config) ? Boolean(opts.fresh) : false;
+	await host.start({ fresh });
+
+	// Every daemon binds an OS-assigned ephemeral port and writes it back to the temp config, where
+	// clients discover it — no port is reserved up front. This is also what lets deploy stand up the
+	// supervised daemon alongside the still-serving birth daemon: two ephemeral binds never collide.
+	// `--port` is a manual override for this run (e.g. to pin a known port for debugging).
+	const port = opts.port ?? 0;
+
+	// Bearer token for /events + /control: the STEWARD_DAEMON_TOKEN override, else a fresh 256-bit hex.
+	const token = process.env[ENV_DAEMON_TOKEN]?.trim() || randomBytes(32).toString("hex");
+	saveDaemonConfig(name, {
+		pid: process.pid,
+		port,
+		token,
+		startedAt: new Date().toISOString(),
+		version: VERSION,
+	});
+
+	const server = await runDaemonMode(host, { port, token });
+
+	// serve()'s callback patched the config with the OS-assigned port once listening.
+	const boundPort = loadDaemonConfig(name)?.port ?? port;
+	console.log(`${APP_NAME} daemon for "${name}" listening on http://127.0.0.1:${boundPort}`);
+
+	// server.close() drops the broadcaster subscription (via the server's "close" listener); we then
+	// release the host + config.
+	let shuttingDown = false;
+	const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+		if (shuttingDown) return;
+		shuttingDown = true;
+		server.close();
+		await host.cleanup();
+		// No deleteDaemonConfig here: the config is a health-validated discovery hint, and a deploy
+		// handoff's supervised successor may already own it.
+		process.exit(signal === "SIGINT" ? 130 : 143);
+	};
+	process.on("SIGTERM", () => void shutdown("SIGTERM"));
+	process.on("SIGINT", () => void shutdown("SIGINT"));
+
+	// The listening server keeps the event loop alive; block until a signal exits.
+	return new Promise<number>(() => {});
+}
+
+/**
+ * Bind a loopback HTTP/SSE server wrapping `host`, subscribe the broadcaster to the live harness
+ * (re-subscribing after every swap), and resolve once it is listening. Returns the `serve()` server
+ * so `runDaemon` can `server.close()` on shutdown — closing the server drops the broadcaster
+ * subscription (via the `close` listener below), the leak `host.cleanup()` does not cover. Exported
+ * for the daemon integration test, which drives it directly against a faux host; not part of the SDK
+ * barrel.
+ */
+export async function runDaemonMode(
+	host: SessionHost,
+	{ port, token }: { port: number; token: string },
+): Promise<ServerType> {
 	const startedAt = new Date().toISOString();
 
 	// ---- Event broadcaster ------------------------------------------------
@@ -576,9 +710,9 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 
 	// ---- HTTP app ---------------------------------------------------------
 	const app = new Hono();
-	app.use("/events", bearerAuth({ token: options.token }));
-	app.use("/control", bearerAuth({ token: options.token }));
-	app.use("/ui-response", bearerAuth({ token: options.token }));
+	app.use("/events", bearerAuth({ token }));
+	app.use("/control", bearerAuth({ token }));
+	app.use("/ui-response", bearerAuth({ token }));
 
 	app.get("/health", (c) => c.json({ status: "ok", agent: host.config.name, pid: process.pid, startedAt }));
 
@@ -668,7 +802,7 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 	};
 
 	const server = await new Promise<ServerType>((resolve) => {
-		const s = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: options.port }, (info) => {
+		const s = serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, (info) => {
 			writePortBack(info.port);
 			resolve(s);
 		});
@@ -684,4 +818,16 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 	});
 
 	return server;
+}
+
+/**
+ * The shared default model as a `provider/model` reference (or just the model
+ * id when no provider is set), read from `~/.steward/agent/settings.json`. Used
+ * to seed model resolution when neither `--model` nor agent.json picks a model.
+ */
+function sharedDefaultModel(): string | undefined {
+	const model = getDefaultModel();
+	if (!model) return undefined;
+	const provider = getDefaultProvider();
+	return provider ? `${provider}/${model}` : model;
 }

@@ -44,21 +44,17 @@ import {
 	ensureTool,
 	executeBashWithOperations,
 	type ExtensionCommandContextActions,
-	ExtensionInputComponent,
-	ExtensionSelectorComponent,
 	type ExtensionShortcut,
 	type ExtensionUIContext,
 	type ExtensionUIDialogOptions,
 	type ExtensionUIRequest,
 	type ExtensionWidgetOptions,
-	FooterDataProvider,
 	getAvailableThemesWithPaths,
 	getEditorTheme,
 	getMarkdownTheme,
 	getThemeByName,
 	initTheme,
 	isDeployed,
-	KeybindingsManager,
 	keyDisplayText,
 	type KeyId,
 	parseSkillBlock,
@@ -75,12 +71,16 @@ import {
 	type WorkingIndicatorOptions,
 } from "@opsyhq/steward";
 import { DaemonSession } from "../../daemon-session.ts";
+import { FooterDataProvider } from "../../footer-data-provider.ts";
+import { KeybindingsManager } from "../../keybindings-manager.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
 import { CustomMessageComponent } from "./components/custom-message.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
+import { ExtensionInputComponent } from "./components/extension-input.ts";
+import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";

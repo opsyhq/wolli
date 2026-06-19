@@ -6,7 +6,7 @@
  */
 
 import type { ThinkingLevel } from "@opsyhq/agent";
-import { APP_NAME, CONFIG_DIR_NAME, ENV_HOME } from "../config.ts";
+import { APP_NAME, CONFIG_DIR_NAME, ENV_HOME } from "@opsyhq/steward";
 
 export interface Args {
 	provider?: string;
@@ -23,12 +23,6 @@ export interface Args {
 	/** Subcommand / agent name followed by any inline message words. */
 	positionals: string[];
 	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
-}
-
-const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
-
-export function isValidThinkingLevel(level: string): level is ThinkingLevel {
-	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
 }
 
 export function parseArgs(args: string[]): Args {
@@ -49,15 +43,7 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--model" && i + 1 < args.length) {
 			result.model = args[++i];
 		} else if (arg === "--thinking" && i + 1 < args.length) {
-			const level = args[++i];
-			if (isValidThinkingLevel(level)) {
-				result.thinking = level;
-			} else {
-				result.diagnostics.push({
-					type: "warning",
-					message: `Invalid thinking level "${level}". Valid values: ${VALID_THINKING_LEVELS.join(", ")}`,
-				});
-			}
+			result.thinking = args[++i] as ThinkingLevel;
 		} else if (arg === "--port" && i + 1 < args.length) {
 			result.port = Number(args[++i]);
 		} else if (arg === "--new") {

@@ -15,8 +15,8 @@ import type {
 	ThinkingLevel,
 	ThinkingLevelUpdateEvent,
 } from "@opsyhq/agent";
-import type { AgentConfig } from "../../core/agent-config.ts";
-import type { OnboardIntegrationResult } from "../../core/integrations/onboarding.ts";
+import type { AgentConfig } from "../core/agent-config.ts";
+import type { OnboardIntegrationResult } from "../core/integrations/onboarding.ts";
 
 // ============================================================================
 // Commands (POST /control body)

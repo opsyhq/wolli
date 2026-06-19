@@ -3,10 +3,8 @@
  */
 
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@opsyhq/tui";
-import { theme } from "../theme/theme.ts";
+import { DynamicBorder, keyHint, theme } from "@opsyhq/steward";
 import { CountdownTimer } from "./countdown-timer.ts";
-import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint } from "./keybinding-hints.ts";
 
 export interface ExtensionInputOptions {
 	tui?: TUI;
