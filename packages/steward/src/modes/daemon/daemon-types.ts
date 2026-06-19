@@ -16,6 +16,7 @@ import type {
 	ThinkingLevelUpdateEvent,
 } from "@opsyhq/agent";
 import type { AgentConfig } from "../../core/agent-config.ts";
+import type { OnboardIntegrationResult } from "../../core/integrations/onboarding.ts";
 
 // ============================================================================
 // Commands (POST /control body)
@@ -55,6 +56,14 @@ export type DaemonCommand =
 	| { id?: string; type: "seed_assistant_message"; text: string }
 	| { id?: string; type: "append_message"; message: AgentMessage }
 
+	// Packages / integrations — the daemon is the single writer: the CLI's mutating arms route here
+	// so the install/onboard primitive runs in-process, then the daemon reloads itself (never stale).
+	| { id?: string; type: "install_package"; source: string }
+	| { id?: string; type: "remove_package"; source: string }
+	| { id?: string; type: "update_packages"; source?: string }
+	| { id?: string; type: "onboard_package"; source: string }
+	| { id?: string; type: "onboard_integration"; service: string }
+
 	// Model / thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
 	| { id?: string; type: "set_model"; provider: string; modelId: string };
@@ -64,6 +73,16 @@ export type DaemonCommandType = DaemonCommand["type"];
 // ============================================================================
 // Responses (POST /control response body)
 // ============================================================================
+
+/**
+ * One service's structured onboarding outcome. The `onboard_package`/`onboard_integration` verbs
+ * return `{ results: OnboardServiceResult[] }` so the client prints them (the daemon never logs).
+ */
+export interface OnboardServiceResult {
+	service: string;
+	status: OnboardIntegrationResult["status"];
+	message?: string;
+}
 
 /** A generic success arm (`data` is the verb-specific payload) plus the shared error arm. */
 export type DaemonResponse =

@@ -10,12 +10,15 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { type ServerType, serve } from "@hono/node-server";
 import type { AgentHarness, AgentHarnessEvent } from "@opsyhq/agent";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
+import { getAgentDir } from "../../config.ts";
 import { deployAgent } from "../../core/agent-config.ts";
+import { createAgentPackageManager } from "../../core/agent-package-manager.ts";
 import { loadDaemonConfig, saveDaemonConfig } from "../../core/daemon-config.ts";
 import type {
 	ExtensionUIContext,
@@ -23,8 +26,13 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
+import { loadIntegrations } from "../../core/integrations/loader.ts";
+import { onboardIntegration } from "../../core/integrations/onboarding.ts";
+import type { Integration, IntegrationOnboardUI } from "../../core/integrations/types.ts";
+import type { DefaultPackageManager } from "../../core/package-manager.ts";
 import { getServiceManager } from "../../core/service/service-manager.ts";
 import type { SessionHost } from "../../core/session-host.ts";
+import { getCwdRelativePath, resolvePath } from "../../utils/paths.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import {
 	type DaemonCommand,
@@ -35,6 +43,7 @@ import {
 	type ExtensionUIRequest,
 	type ExtensionUIResponse,
 	FORWARDED_EVENT_TYPES,
+	type OnboardServiceResult,
 } from "./daemon-types.ts";
 
 /** How many recent events the broadcaster keeps for `Last-Event-ID` replay. */
@@ -106,6 +115,50 @@ async function handlePrompt(
 		.catch((e) => accepted.reject(e instanceof Error ? e : new Error(String(e))));
 	await accepted.promise;
 	return ok(cmd.id, "prompt");
+}
+
+/** Resolve the install root of a just-installed source (for package-scoped onboarding). */
+function packageRootForSpec(packageManager: DefaultPackageManager, spec: string): string | undefined {
+	// npm/git managed installs resolve cwd-independently; a local source resolves against the
+	// daemon's cwd (the one writer runs server-side).
+	const installed = packageManager.getInstalledPath(spec);
+	if (installed) return installed;
+	const local = resolvePath(spec, process.cwd());
+	return existsSync(local) ? local : undefined;
+}
+
+/**
+ * Drive integration onboarding for the selected services, writing each credential through the host's
+ * live account store (no cross-process staleness) and rendering `onboard(ctx)`'s dialogs via the
+ * runner's bound `uiContext` (which emits them to attached clients). Returns structured per-service
+ * results for the client to print.
+ */
+async function runDaemonOnboarding(
+	host: SessionHost,
+	selectServices: (input: { integrations: Integration[]; packageManager: DefaultPackageManager }) => string[],
+): Promise<OnboardServiceResult[]> {
+	const name = host.config.name;
+	const agentDir = getAgentDir(name);
+	const { packageManager } = createAgentPackageManager(name);
+	const resolved = await packageManager.resolve();
+	const integrationPaths = resolved.integrations.filter((r) => r.enabled).map((r) => r.path);
+	const { integrations } = await loadIntegrations(integrationPaths, agentDir);
+
+	const services = selectServices({ integrations, packageManager });
+	// The host's live account store is the single writer; its bound uiContext renders dialogs over the wire.
+	const accounts = host.integrationAccounts;
+	const ui: IntegrationOnboardUI = host.extensionRunner.getUIContext();
+
+	const results: OnboardServiceResult[] = [];
+	for (const service of services) {
+		const result = await onboardIntegration({ service, integrations, accounts, ui });
+		results.push(
+			result.status === "error"
+				? { service, status: result.status, message: result.message }
+				: { service, status: result.status },
+		);
+	}
+	return results;
 }
 
 /**
@@ -185,6 +238,45 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 		case "append_message":
 			await harness.appendMessage(cmd.message);
 			return ok(id, "append_message");
+
+		// Packages / integrations — single-writer mutations: run the persist primitive in-process,
+		// then reload so the daemon's own resources/accounts are never stale.
+		case "install_package": {
+			const { packageManager } = createAgentPackageManager(host.config.name);
+			await packageManager.installAndPersist(cmd.source);
+			await host.reload();
+			return ok(id, "install_package");
+		}
+		case "remove_package": {
+			const { packageManager } = createAgentPackageManager(host.config.name);
+			const removed = await packageManager.removeAndPersist(cmd.source);
+			await host.reload();
+			return ok(id, "remove_package", { removed });
+		}
+		case "update_packages": {
+			const { packageManager } = createAgentPackageManager(host.config.name);
+			await packageManager.update(cmd.source);
+			await host.reload();
+			return ok(id, "update_packages");
+		}
+		// Onboarding writes through the host's live account store, so no second reload is needed
+		// (the credential is already in-memory-consistent); `install_package` did the reload.
+		case "onboard_package":
+			return ok(id, "onboard_package", {
+				results: await runDaemonOnboarding(host, ({ integrations, packageManager }) => {
+					const root = packageRootForSpec(packageManager, cmd.source);
+					const services: string[] = [];
+					for (const integration of integrations) {
+						if (root && getCwdRelativePath(integration.resolvedPath, root) === undefined) continue;
+						for (const [service, config] of integration.definitions) {
+							if (config.onboard) services.push(service);
+						}
+					}
+					return services;
+				}),
+			});
+		case "onboard_integration":
+			return ok(id, "onboard_integration", { results: await runDaemonOnboarding(host, () => [cmd.service]) });
 
 		default: {
 			const unknown = cmd as { type: string };

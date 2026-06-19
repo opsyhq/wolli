@@ -31,7 +31,6 @@ const ui: IntegrationOnboardUI = {
 	confirm: async () => false,
 	input: async () => undefined,
 	notify: () => {},
-	custom: () => Promise.reject(new Error("custom() is not exercised by these tests")),
 };
 
 const tmpDirs: string[] = [];

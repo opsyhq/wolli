@@ -24,6 +24,9 @@ export {
 	saveAgentConfig,
 	setAgentPurpose,
 } from "./core/agent-config.ts";
+// Per-agent package-manager factory: the daemon builds it to run installs server-side, and the
+// @opsyhq/cli client's `integrations`/`packages` commands use it for their read-only `list` arms.
+export { type AgentPackageManager, createAgentPackageManager } from "./core/agent-package-manager.ts";
 export {
 	type ApiKeyCredential,
 	type AuthCredential,
@@ -192,6 +195,13 @@ export {
 	type ResolveCliModelResult,
 	resolveCliModel,
 } from "./core/model-resolver.ts";
+// Read types the @opsyhq/cli client's local `list` arms consume against `dist`.
+export type {
+	ConfiguredPackage,
+	PackageManager,
+	ResolvedPaths,
+	ResolvedResource,
+} from "./core/package-manager.ts";
 // Config-value resolution (so integration `onboard(ctx)` can type `ctx.resolve`).
 export {
 	resolveConfigValueOrThrow,
@@ -288,6 +298,7 @@ export type {
 	DaemonSessionState,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
+	OnboardServiceResult,
 } from "./modes/daemon/daemon-types.ts";
 // UI components for extensions + the @opsyhq/cli daemon client (the interactive TUI lives in
 // apps/cli; these are the shared pieces it imports — kept here because the engine's startup/

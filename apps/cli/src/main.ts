@@ -3,15 +3,18 @@
  *
  * Agent surfaces are daemon clients: interactive `<name>`, the one-shot `--print`/inline-message
  * path, and `new` (birth chat) attach a `DaemonSession` to the agent's daemon (spawning one if
- * needed) — the CLI never builds a `SessionHost`. `new`/`list`/`delete` are local commands; the
- * hidden `daemon` subcommand runs the engine's `runDaemon` in-process (the long-running
- * server). `integrations`/`packages` (+ help/version) route through the engine `main`.
+ * needed) — the CLI never builds a `SessionHost`. `new`/`list`/`delete`/`integrations`/`packages`
+ * are local commands (the latter two route their mutating arms to the daemon, the single writer);
+ * the hidden `daemon` subcommand runs the engine's `runDaemon` in-process (the long-running server).
+ * Only `--help`/`--version` route through the engine `main`.
  */
 
 import { agentExists, APP_NAME, main as engineMain, parseArgs, runDaemon } from "@opsyhq/steward";
 import { runDelete } from "./commands/delete.ts";
+import { runIntegrations } from "./commands/integrations.ts";
 import { runList } from "./commands/list.ts";
 import { runNew } from "./commands/new.ts";
+import { runPackages } from "./commands/packages.ts";
 import { DaemonSession } from "./daemon-session.ts";
 import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
@@ -21,9 +24,12 @@ export async function main(argv: string[]): Promise<number> {
 	const command = args.positionals[0];
 	const message = args.positionals.slice(1).join(" ").trim();
 
-	// Verbs the engine still owns; it re-parses argv and emits their diagnostics/usage.
-	const engineOwned = command === "integrations" || command === "packages";
-	if (args.help || args.version || !command || engineOwned) return engineMain(argv);
+	// `integrations`/`packages` own their per-subcommand help, so route them (with `args.help`) before
+	// the global --help/--version intercept hands off to the engine.
+	if (command === "integrations") return runIntegrations(args.positionals.slice(1), args.help);
+	if (command === "packages") return runPackages(args.positionals.slice(1), args.help);
+
+	if (args.help || args.version || !command) return engineMain(argv);
 
 	for (const diagnostic of args.diagnostics) process.stderr.write(`${diagnostic.message}\n`);
 

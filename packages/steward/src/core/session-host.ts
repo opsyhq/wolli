@@ -290,6 +290,14 @@ export class SessionHost {
 		return this._config;
 	}
 
+	/**
+	 * The agent's live per-agent integration account store — the single writer the daemon's
+	 * onboarding handler persists credentials through (no cross-process staleness).
+	 */
+	get integrationAccounts(): IntegrationAccountStorage {
+		return this.options.integrationAccounts;
+	}
+
 	/** The live extension runner. Throws if accessed before `start()`. */
 	get extensionRunner(): ExtensionRunner {
 		if (!this._extensionRunner) throw new Error("SessionHost not started.");

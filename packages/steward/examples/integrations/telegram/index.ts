@@ -36,11 +36,9 @@
  */
 
 import { run } from "@grammyjs/runner";
-// `getMarkdownTheme` (value) + the integration types are host-provided via the loader's
-// VIRTUAL_MODULES / aliases, so @opsyhq/steward is a peerDependency, not a dependency.
-import { getMarkdownTheme, type IntegrationOnboardContext, type IntegrationsAPI } from "@opsyhq/steward";
-// Markdown/matchesKey/Container/Text are likewise host-provided (@opsyhq/tui).
-import { Container, Markdown, matchesKey, Text } from "@opsyhq/tui";
+// The integration types are host-provided via the loader's VIRTUAL_MODULES / aliases, so
+// @opsyhq/steward is a peerDependency, not a dependency.
+import type { IntegrationOnboardContext, IntegrationsAPI } from "@opsyhq/steward";
 import { Bot, GrammyError } from "grammy";
 import { Type } from "typebox";
 
@@ -138,22 +136,9 @@ async function sendChunk(
  * (cancelled) if the user dismisses a step, submits nothing, or verification fails.
  */
 async function onboard(ctx: IntegrationOnboardContext): Promise<{ botToken: string } | undefined> {
-	// Guide screen (template: examples/extensions/summarize.ts) — Enter/Esc to continue.
-	await ctx.ui.custom<undefined>((_tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(new Text(theme.fg("accent", theme.bold("Connect Telegram")), 1, 0));
-		container.addChild(new Markdown(ONBOARD_GUIDE, 1, 1, getMarkdownTheme()));
-		container.addChild(new Text(theme.fg("dim", "Press Enter or Esc to continue"), 1, 0));
-		return {
-			render: (width: number) => container.render(width),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				if (matchesKey(data, "enter") || matchesKey(data, "escape")) {
-					done(undefined);
-				}
-			},
-		};
-	});
+	// Guide text — onboarding renders over the wire (the daemon is the single writer), so the BotFather
+	// walkthrough prints as a notification ahead of the token prompt rather than a custom guide screen.
+	ctx.ui.notify(ONBOARD_GUIDE, "info");
 
 	// undefined = cancelled. The pasted value is the raw token itself, not a reference.
 	const entered = await ctx.ui.input("Paste the bot token from BotFather");

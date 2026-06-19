@@ -29,11 +29,12 @@ import type { SourceInfo } from "../source-info.ts";
 /**
  * The narrowed UI surface an integration's `onboard(ctx)` may use — the dialog
  * primitives only, no chat chrome (editor/widgets/footer/theme). Mirrors
- * `ProjectTrustContext.ui` (a `Pick` of `ExtensionUIContext`), with `custom` added so an
- * author can render a rich guide screen. Calling anything outside this set is a compile
- * error rather than a silent no-op.
+ * `ProjectTrustContext.ui` (a `Pick` of `ExtensionUIContext`). `custom` is excluded:
+ * onboarding dialogs are serialized to attached clients, and a component factory can't
+ * cross that boundary. Calling anything outside this set is a compile error rather than a
+ * silent no-op.
  */
-export type IntegrationOnboardUI = Pick<ExtensionUIContext, "select" | "confirm" | "input" | "notify" | "custom">;
+export type IntegrationOnboardUI = Pick<ExtensionUIContext, "select" | "confirm" | "input" | "notify">;
 
 /**
  * Context handed to an integration's `onboard(ctx)` during guided setup: the narrowed
@@ -41,7 +42,7 @@ export type IntegrationOnboardUI = Pick<ExtensionUIContext, "select" | "confirm"
  * typed `$ENV` reference before returning it, and an abort `signal`.
  */
 export interface IntegrationOnboardContext {
-	/** Dialog primitives: select / confirm / input / notify / custom. */
+	/** Dialog primitives: select / confirm / input / notify. */
 	ui: IntegrationOnboardUI;
 	/** Resolve a `$ENV` / `${ENV}` / `!cmd` reference to its live value (to test a credential). */
 	resolve: typeof resolveConfigValueUncached;

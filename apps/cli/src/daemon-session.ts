@@ -28,6 +28,7 @@ import {
 	type KeyId,
 	loadDaemonConfig,
 	type MessageRenderer,
+	type OnboardServiceResult,
 	type ResourceSummary,
 	type SlashCommandInfo,
 	type UserBashEvent,
@@ -302,6 +303,34 @@ export class DaemonSession {
 
 	appendMessage(message: AgentMessage): Promise<void> {
 		return this.send({ type: "append_message", message });
+	}
+
+	// ---- Package / integration verbs — single-writer mutations routed to the daemon ----
+	// The daemon runs the install/onboard primitive against its own live resources/accounts and
+	// reloads itself, so a running daemon never goes stale (the reason these aren't a local CLI write).
+	installPackage(source: string): Promise<void> {
+		return this.send({ type: "install_package", source });
+	}
+
+	removePackage(source: string): Promise<{ removed: boolean }> {
+		return this.send({ type: "remove_package", source });
+	}
+
+	updatePackages(source?: string): Promise<void> {
+		return this.send({ type: "update_packages", source });
+	}
+
+	async onboardPackage(source: string): Promise<OnboardServiceResult[]> {
+		const { results } = await this.send<{ results: OnboardServiceResult[] }>({ type: "onboard_package", source });
+		return results;
+	}
+
+	async onboardIntegration(service: string): Promise<OnboardServiceResult[]> {
+		const { results } = await this.send<{ results: OnboardServiceResult[] }>({
+			type: "onboard_integration",
+			service,
+		});
+		return results;
 	}
 
 	/** Per-turn read — the session tree changes every turn, so it round-trips. */

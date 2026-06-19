@@ -1,16 +1,17 @@
 /**
- * `steward packages <install|remove|update|list> <agent> [source]` CLI.
+ * `steward packages <install|remove|update|list> <agent> [source]` — a daemon client.
  *
- * The package CLI over the per-agent `DefaultPackageManager` — the same package manager
- * that backs `integrations` and resolves extensions/skills/prompts/themes. Per-agent
- * only: no project scope, no trust gating, no self-update; every package is installed
- * into and persisted under the named agent's home.
+ * The mutating arms (`install`/`remove`/`update`) route to the agent's daemon, the single writer:
+ * it runs the install/persist primitive against its own resources and reloads itself, so a running
+ * daemon never goes stale. `list` is a read-only local view (disk is the source of truth — no daemon).
+ *
+ * The package manager runs server-side, so there's no install progress dim-line (its progress
+ * callback doesn't reach the client); success/error messages are preserved.
  */
 
+import { agentExists, APP_NAME, createAgentPackageManager } from "@opsyhq/steward";
 import chalk from "chalk";
-import { createAgentPackageManager } from "./cli/agent-package-manager.ts";
-import { APP_NAME } from "./config.ts";
-import { agentExists } from "./core/agent-config.ts";
+import { DaemonSession } from "../daemon-session.ts";
 
 type PackagesCommand = "install" | "remove" | "update" | "list";
 
@@ -142,33 +143,48 @@ export async function runPackages(rest: string[], help = false): Promise<number>
 		return 1;
 	}
 
-	const { packageManager } = createAgentPackageManager(options.agent);
-	packageManager.setProgressCallback((event) => {
-		if (event.type === "start") {
-			process.stdout.write(chalk.dim(`${event.message}\n`));
-		}
-	});
+	// Require the source up front (for install/remove) so we never spawn a daemon just to usage-error.
+	if (options.command === "install" && !options.source) {
+		console.error(chalk.red("Missing install source."));
+		console.error(chalk.dim(`Usage: ${usage}`));
+		return 1;
+	}
+	if (options.command === "remove" && !options.source) {
+		console.error(chalk.red("Missing remove source."));
+		console.error(chalk.dim(`Usage: ${usage}`));
+		return 1;
+	}
 
+	// `list` is a read-only local view — disk is the source of truth, no stale risk, no daemon needed.
+	if (options.command === "list") {
+		const { packageManager } = createAgentPackageManager(options.agent);
+		const configured = packageManager.listConfiguredPackages();
+		if (configured.length === 0) {
+			console.log(chalk.dim("No packages installed."));
+			return 0;
+		}
+		console.log(chalk.bold("Installed packages:"));
+		for (const pkg of configured) {
+			const display = pkg.filtered ? `${pkg.source} (filtered)` : pkg.source;
+			console.log(`  ${display}`);
+			if (pkg.installedPath) {
+				console.log(chalk.dim(`    ${pkg.installedPath}`));
+			}
+		}
+		return 0;
+	}
+
+	// Mutating arms route to the daemon (the single writer).
+	const session = await DaemonSession.open(options.agent);
 	try {
 		switch (options.command) {
-			case "install": {
-				if (!options.source) {
-					console.error(chalk.red("Missing install source."));
-					console.error(chalk.dim(`Usage: ${usage}`));
-					return 1;
-				}
-				await packageManager.installAndPersist(options.source);
+			case "install":
+				await session.installPackage(options.source as string);
 				console.log(chalk.green(`Installed ${options.source}`));
 				return 0;
-			}
 
 			case "remove": {
-				if (!options.source) {
-					console.error(chalk.red("Missing remove source."));
-					console.error(chalk.dim(`Usage: ${usage}`));
-					return 1;
-				}
-				const removed = await packageManager.removeAndPersist(options.source);
+				const { removed } = await session.removePackage(options.source as string);
 				if (!removed) {
 					console.error(chalk.red(`No matching package found for ${options.source}`));
 					return 1;
@@ -177,31 +193,16 @@ export async function runPackages(rest: string[], help = false): Promise<number>
 				return 0;
 			}
 
-			case "update": {
-				await packageManager.update(options.source);
+			case "update":
+				await session.updatePackages(options.source);
 				console.log(chalk.green(options.source ? `Updated ${options.source}` : "Updated packages"));
 				return 0;
-			}
-
-			case "list": {
-				const configured = packageManager.listConfiguredPackages();
-				if (configured.length === 0) {
-					console.log(chalk.dim("No packages installed."));
-					return 0;
-				}
-				console.log(chalk.bold("Installed packages:"));
-				for (const pkg of configured) {
-					const display = pkg.filtered ? `${pkg.source} (filtered)` : pkg.source;
-					console.log(`  ${display}`);
-					if (pkg.installedPath) {
-						console.log(chalk.dim(`    ${pkg.installedPath}`));
-					}
-				}
-				return 0;
-			}
 		}
+		return 0;
 	} catch (error) {
 		console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
 		return 1;
+	} finally {
+		session.close();
 	}
 }

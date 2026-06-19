@@ -1,10 +1,9 @@
 /**
  * Engine CLI entry point.
  *
- * `main(argv)` handles the verbs the engine still owns — `integrations` / `packages` (+ help /
- * version) — for the `@opsyhq/cli` client, which delegates them here. Agent surfaces (`new` /
- * `list` / `delete` / interactive / `--print`) live in `@opsyhq/cli`; the daemon runner is the
- * exported `runDaemon`.
+ * `main(argv)` handles only `--help` / `--version` for the `@opsyhq/cli` client, which delegates
+ * them here. Every agent surface (`new` / `list` / `delete` / `integrations` / `packages` /
+ * interactive / `--print`) lives in `@opsyhq/cli`; the daemon runner is the exported `runDaemon`.
  */
 
 import { randomBytes } from "node:crypto";
@@ -20,16 +19,12 @@ import { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel } from "./core/model-resolver.ts";
 import { SessionHost } from "./core/session-host.ts";
 import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
-import { runIntegrations } from "./integrations-cli.ts";
 import { runDaemonMode } from "./modes/daemon/daemon-mode.ts";
-import { runPackages } from "./package-manager-cli.ts";
 
 export async function main(argv: string[]): Promise<number> {
 	const args = parseArgs(argv);
 
-	// `integrations`/`packages` own their per-subcommand help, so don't let the global
-	// --help intercept swallow `<cmd> --help`.
-	if (args.help && args.positionals[0] !== "integrations" && args.positionals[0] !== "packages") {
+	if (args.help) {
 		printHelp();
 		return 0;
 	}
@@ -42,17 +37,14 @@ export async function main(argv: string[]): Promise<number> {
 		process.stderr.write(`${diagnostic.message}\n`);
 	}
 
-	const [command, ...rest] = args.positionals;
+	const [command] = args.positionals;
 	if (!command) {
 		printHelp();
 		return 1;
 	}
 
-	if (command === "integrations") return runIntegrations(rest, args.help);
-	if (command === "packages") return runPackages(rest, args.help);
-
-	// Agent surfaces (`new`/`list`/`delete`/interactive/`--print`) and the `daemon` runner are
-	// owned by the `@opsyhq/cli` client; the engine never dispatches them.
+	// Agent surfaces (`new`/`list`/`delete`/`integrations`/`packages`/interactive/`--print`) and the
+	// `daemon` runner are owned by the `@opsyhq/cli` client; the engine never dispatches them.
 	process.stderr.write(`Unknown command "${command}".\n`);
 	return 1;
 }

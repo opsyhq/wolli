@@ -5,9 +5,9 @@
  * rebind-on-`new_session` re-subscribe.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { type Api, fauxAssistantMessage, type Model, registerFauxProvider } from "@earendil-works/pi-ai";
 import type { ServerType } from "@hono/node-server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -66,6 +66,25 @@ async function control(command: object): Promise<{ success: boolean; command: st
 		body: JSON.stringify(command),
 	});
 	return res.json() as Promise<{ success: boolean; command: string; data?: any; error?: string }>;
+}
+
+/** Answer an awaited daemon-side dialog (the client half of the onboarding round-trip). */
+async function uiRespond(id: string, answer: Record<string, unknown>): Promise<void> {
+	await fetch(`${baseUrl()}/ui-response`, {
+		method: "POST",
+		headers: { "content-type": "application/json", Authorization: `Bearer ${TOKEN}` },
+		body: JSON.stringify({ type: "extension_ui_response", id, ...answer }),
+	});
+}
+
+/** Write a minimal self-contained local package fixture (a `steward` manifest + its files). */
+function writePackage(dir: string, steward: Record<string, string[]>, files: Record<string, string>): string {
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: basename(dir), steward }));
+	for (const [rel, content] of Object.entries(files)) {
+		writeFileSync(join(dir, rel), content);
+	}
+	return dir;
 }
 
 function newSse(): SseClient {
@@ -183,6 +202,8 @@ beforeEach(() => {
 	// The deploy verb installs an OS service — force the inert `none` backend so the suite never
 	// registers a real launchd/systemd unit.
 	process.env.STEWARD_SERVICE_MANAGER = "none";
+	// The package/onboarding verbs install local fixtures only — never let resolution hit the network.
+	process.env.STEWARD_OFFLINE = "1";
 	createAgent({ name: AGENT });
 });
 
@@ -202,6 +223,7 @@ afterEach(async () => {
 	delete process.env.STEWARD_HOME;
 	delete process.env.STEWARD_SHARED_DIR;
 	delete process.env.STEWARD_SERVICE_MANAGER;
+	delete process.env.STEWARD_OFFLINE;
 	rmSync(home, { recursive: true, force: true });
 	rmSync(sharedDir, { recursive: true, force: true });
 });
@@ -413,5 +435,85 @@ describe("daemon client-support verbs (Slice 0)", () => {
 		expect(res.data.sessionId).not.toBe(birthSessionId);
 		// And the latch is persisted to disk.
 		expect(isDeployed(loadAgentConfig(AGENT))).toBe(true);
+	});
+});
+
+describe("daemon package/onboarding consistency", () => {
+	it("install_package is reflected in get_resource_summary with no stale cache; update + remove work", async () => {
+		await startDaemon();
+		const before = (await control({ type: "get_resource_summary" })).data.extensions as number;
+
+		// A self-contained local package contributing one (no-op) extension.
+		const pkg = writePackage(
+			join(home, "ext-pkg"),
+			{ extensions: ["./ext.ts"] },
+			{ "ext.ts": "export default function () {}\n" },
+		);
+		expect(await control({ type: "install_package", source: pkg })).toMatchObject({
+			command: "install_package",
+			success: true,
+		});
+
+		// Single-writer freshness: the daemon installed + reloaded ITSELF, so the new extension is
+		// already visible — no manual reload, no stale in-memory resources.
+		expect((await control({ type: "get_resource_summary" })).data.extensions).toBe(before + 1);
+
+		expect(await control({ type: "update_packages" })).toMatchObject({
+			command: "update_packages",
+			success: true,
+		});
+
+		const removed = await control({ type: "remove_package", source: pkg });
+		expect(removed).toMatchObject({ command: "remove_package", success: true });
+		expect(removed.data).toEqual({ removed: true });
+		// Removal reloaded too — the extension is gone again.
+		expect((await control({ type: "get_resource_summary" })).data.extensions).toBe(before);
+	});
+
+	it("remove_package reports removed:false when nothing matches", async () => {
+		await startDaemon();
+		const res = await control({ type: "remove_package", source: join(home, "never-installed") });
+		expect(res).toMatchObject({ command: "remove_package", success: true });
+		expect(res.data).toEqual({ removed: false });
+	});
+
+	it("onboard_integration drives the dialog over SSE and writes through the live account store", async () => {
+		await startDaemon();
+
+		// A local integration package whose onboard() asks for a token over the wire.
+		const onboardSource = [
+			"export default function (steward) {",
+			"  steward.registerIntegration({",
+			'    name: "fakesvc",',
+			"    onboard: async (ctx) => {",
+			'      const token = await ctx.ui.input("Paste your token");',
+			"      return token === undefined ? undefined : { token };",
+			"    },",
+			"  });",
+			"}",
+			"",
+		].join("\n");
+		const pkg = writePackage(join(home, "int-pkg"), { integrations: ["./index.ts"] }, { "index.ts": onboardSource });
+		expect(await control({ type: "install_package", source: pkg })).toMatchObject({ success: true });
+
+		const client = newSse();
+		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
+		await client.waitFor((e) => e.event === "hello");
+
+		// The verb awaits the dialog round-trip, so fire it WITHOUT awaiting; the client answers the
+		// emitted frame concurrently over /ui-response, then the verb resolves.
+		const onboarding = control({ type: "onboard_integration", service: "fakesvc" });
+
+		const frame = await client.waitFor((e) => dataType(e) === "extension_ui_request");
+		const req = JSON.parse(frame.data) as { id: string; method: string };
+		expect(req.method).toBe("input");
+		await uiRespond(req.id, { value: "secret-token" });
+
+		const res = await onboarding;
+		expect(res).toMatchObject({ command: "onboard_integration", success: true });
+		expect(res.data.results).toEqual([{ service: "fakesvc", status: "connected" }]);
+
+		// Onboarding wrote through the host's LIVE account store — no cross-process refresh path.
+		expect(activeHost?.integrationAccounts.get("fakesvc", "default")).toEqual({ token: "secret-token" });
 	});
 });

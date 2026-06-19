@@ -9,8 +9,8 @@
  */
 
 import { getAgentDir } from "../config.ts";
-import { DefaultPackageManager } from "../core/package-manager.ts";
-import { SettingsManager } from "../core/settings-manager.ts";
+import { DefaultPackageManager } from "./package-manager.ts";
+import { SettingsManager } from "./settings-manager.ts";
 
 export interface AgentPackageManager {
 	agentDir: string;
