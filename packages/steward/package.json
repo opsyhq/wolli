@@ -23,7 +23,7 @@
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js && pnpm run copy-assets",
+		"build": "tsgo -p tsconfig.build.json && pnpm run copy-assets",
 		"copy-assets": "shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/",
 		"typecheck": "tsgo -p tsconfig.build.json --noEmit",
 		"test": "vitest --run"

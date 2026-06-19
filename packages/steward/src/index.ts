@@ -243,11 +243,9 @@ export {
 } from "./core/settings-manager.ts";
 export {
 	formatSkillsForPrompt,
-	type LoadSkillsFromDirOptions,
 	type LoadSkillsOptions,
 	type LoadSkillsResult,
 	loadSkills,
-	loadSkillsFromDir,
 	type ParsedSkillBlock,
 	parseSkillBlock,
 	type Skill,
@@ -257,7 +255,7 @@ export { BUILTIN_SLASH_COMMANDS } from "./core/slash-commands.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export { type BuildSystemPromptOptions, buildSystemPrompt } from "./core/system-prompt.ts";
 export { type BashToolDetails, type BashToolInput, createBashTool } from "./core/tools/bash.ts";
-export { createDeployTool, type DeployToolDetails, type DeployToolInput } from "./core/tools/deploy.ts";
+export { createDeployTool, type DeployToolDetails } from "./core/tools/deploy.ts";
 export { createEditTool, type EditToolDetails, type EditToolInput } from "./core/tools/edit.ts";
 // edit-diff render helpers consumed by the apps/cli built-in edit renderer (Phase 2, Slice 1).
 export {

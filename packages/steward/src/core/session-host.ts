@@ -432,7 +432,6 @@ export class SessionHost {
 			),
 			...this._skillDiagnostics,
 			...runner.getCommandDiagnostics(),
-			...runner.getShortcutDiagnostics(),
 		];
 		return {
 			extensions: this._extensionCount,

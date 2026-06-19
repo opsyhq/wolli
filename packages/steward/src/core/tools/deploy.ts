@@ -12,7 +12,7 @@
  */
 
 import type { AgentTool, AgentToolResult } from "@opsyhq/agent";
-import { type Static, Type } from "typebox";
+import { Type } from "typebox";
 import { getSoulPath } from "../../config.ts";
 import { setAgentPurpose } from "../agent-config.ts";
 import { SOUL_BUDGET, writeMemoryFile } from "../memory.ts";
@@ -27,8 +27,6 @@ const deploySchema = Type.Object({
 			"Your final SOUL.md — who you are, what you're for, and how you operate. Written verbatim to SOUL.md.",
 	}),
 });
-
-export type DeployToolInput = Static<typeof deploySchema>;
 
 export interface DeployToolDetails {
 	applied: boolean;
