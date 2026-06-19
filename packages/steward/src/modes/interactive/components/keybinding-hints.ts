@@ -5,7 +5,7 @@
 import { getKeybindings, type Keybinding, type KeyId } from "@opsyhq/tui";
 import { theme } from "../theme/theme.ts";
 
-export interface KeyTextFormatOptions {
+interface KeyTextFormatOptions {
 	capitalize?: boolean;
 }
 
@@ -14,7 +14,7 @@ function formatKeyPart(part: string, options: KeyTextFormatOptions): string {
 	return options.capitalize ? displayPart.charAt(0).toUpperCase() + displayPart.slice(1) : displayPart;
 }
 
-export function formatKeyText(key: string, options: KeyTextFormatOptions = {}): string {
+function formatKeyText(key: string, options: KeyTextFormatOptions = {}): string {
 	return key
 		.split("/")
 		.map((k) =>

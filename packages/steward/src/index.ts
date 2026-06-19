@@ -298,16 +298,13 @@ export type {
 	ExtensionUIResponse,
 	OnboardServiceResult,
 } from "./modes/daemon/daemon-types.ts";
-// UI components for extensions + the @opsyhq/cli daemon client (the interactive TUI lives in
-// apps/cli; these are the shared pieces it imports — kept here because the engine's startup/
-// onboarding flow and extension runner still depend on them).
-export { CountdownTimer } from "./modes/interactive/components/countdown-timer.ts";
+// Shared UI components + keybinding-hint helpers imported by the @opsyhq/cli daemon client (the
+// interactive TUI lives in apps/cli); DynamicBorder and the keyHint/keyText helpers are also part
+// of the extension SDK surface.
 export { DynamicBorder } from "./modes/interactive/components/dynamic-border.ts";
 export { ExtensionInputComponent } from "./modes/interactive/components/extension-input.ts";
 export { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 export {
-	formatKeyText,
-	type KeyTextFormatOptions,
 	keyDisplayText,
 	keyHint,
 	keyText,
