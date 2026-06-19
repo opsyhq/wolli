@@ -14,7 +14,7 @@ import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResul
 import { createIntegrationRuntime, loadIntegrations } from "./integrations/loader.ts";
 import type { IntegrationRunner } from "./integrations/runner.ts";
 import type { Integration, IntegrationRuntime, LoadIntegrationsResult } from "./integrations/types.ts";
-import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
+import { DefaultPluginManager, type PathMetadata, type ResolvedResource } from "./plugin-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -171,7 +171,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private agentDir: string;
 	private settingsManager: SettingsManager;
 	private eventBus: EventBus;
-	private packageManager: DefaultPackageManager;
+	private pluginManager: DefaultPluginManager;
 	private additionalExtensionPaths: string[];
 	private additionalSkillPaths: string[];
 	private additionalPromptTemplatePaths: string[];
@@ -228,7 +228,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.agentDir = resolvePath(options.agentDir);
 		this.settingsManager = options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir);
 		this.eventBus = options.eventBus ?? createEventBus();
-		this.packageManager = new DefaultPackageManager({
+		this.pluginManager = new DefaultPluginManager({
 			cwd: this.cwd,
 			agentDir: this.agentDir,
 			settingsManager: this.settingsManager,
@@ -365,8 +365,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		// reload() preserves SettingsManager.projectTrusted and reloads settings for that trust state.
 		await this.settingsManager.reload();
-		const resolvedPaths = await this.packageManager.resolve();
-		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
+		const resolvedPaths = await this.pluginManager.resolve();
+		const cliExtensionPaths = await this.pluginManager.resolveExtensionSources(this.additionalExtensionPaths, {
 			temporary: true,
 		});
 		const metadataByPath = new Map<string, PathMetadata>();
@@ -518,8 +518,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private async loadCurrentExtensionSet(options: { includeInlineFactories: boolean }): Promise<LoadExtensionsResult> {
-		const resolvedPaths = await this.packageManager.resolve();
-		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
+		const resolvedPaths = await this.pluginManager.resolve();
+		const cliExtensionPaths = await this.pluginManager.resolveExtensionSources(this.additionalExtensionPaths, {
 			temporary: true,
 		});
 		const enabledExtensions = resolvedPaths.extensions.filter((r) => r.enabled).map((r) => r.path);

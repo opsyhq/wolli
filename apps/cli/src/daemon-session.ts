@@ -305,31 +305,23 @@ export class DaemonSession {
 		return this.send({ type: "append_message", message });
 	}
 
-	// ---- Package / integration verbs — single-writer mutations routed to the daemon ----
+	// ---- Plugin verbs — single-writer mutations routed to the daemon ----
 	// The daemon runs the install/onboard primitive against its own live resources/accounts and
 	// reloads itself, so a running daemon never goes stale (the reason these aren't a local CLI write).
-	installPackage(source: string): Promise<void> {
-		return this.send({ type: "install_package", source });
+	installPlugin(source: string): Promise<void> {
+		return this.send({ type: "install_plugin", source });
 	}
 
-	removePackage(source: string): Promise<{ removed: boolean }> {
-		return this.send({ type: "remove_package", source });
+	removePlugin(source: string): Promise<{ removed: boolean }> {
+		return this.send({ type: "remove_plugin", source });
 	}
 
-	updatePackages(source?: string): Promise<void> {
-		return this.send({ type: "update_packages", source });
+	updatePlugins(source?: string): Promise<void> {
+		return this.send({ type: "update_plugins", source });
 	}
 
-	async onboardPackage(source: string): Promise<OnboardServiceResult[]> {
-		const { results } = await this.send<{ results: OnboardServiceResult[] }>({ type: "onboard_package", source });
-		return results;
-	}
-
-	async onboardIntegration(service: string): Promise<OnboardServiceResult[]> {
-		const { results } = await this.send<{ results: OnboardServiceResult[] }>({
-			type: "onboard_integration",
-			service,
-		});
+	async onboardPlugin(source: string): Promise<OnboardServiceResult[]> {
+		const { results } = await this.send<{ results: OnboardServiceResult[] }>({ type: "onboard_plugin", source });
 		return results;
 	}
 

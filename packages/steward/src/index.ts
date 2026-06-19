@@ -24,9 +24,9 @@ export {
 	saveAgentConfig,
 	setAgentPurpose,
 } from "./core/agent-config.ts";
-// Per-agent package-manager factory: the daemon builds it to run installs server-side, and the
-// @opsyhq/cli client's `integrations`/`packages` commands use it for their read-only `list` arms.
-export { type AgentPackageManager, createAgentPackageManager } from "./core/agent-package-manager.ts";
+// Per-agent plugin-manager factory: the daemon builds it to run installs server-side, and the
+// @opsyhq/cli client's `plugins` command uses it for its read-only `list` arm.
+export { type AgentPluginManager, createAgentPluginManager } from "./core/agent-plugin-manager.ts";
 export {
 	type ApiKeyCredential,
 	type AuthCredential,
@@ -195,13 +195,13 @@ export {
 	type ResolveCliModelResult,
 	resolveCliModel,
 } from "./core/model-resolver.ts";
-// Read types the @opsyhq/cli client's local `list` arms consume against `dist`.
+// Read types the @opsyhq/cli client's local `list` arm consumes against `dist`.
 export type {
-	ConfiguredPackage,
-	PackageManager,
+	ConfiguredPlugin,
+	PluginManager,
 	ResolvedPaths,
 	ResolvedResource,
-} from "./core/package-manager.ts";
+} from "./core/plugin-manager.ts";
 // Config-value resolution (so integration `onboard(ctx)` can type `ctx.resolve`).
 export {
 	resolveConfigValueOrThrow,

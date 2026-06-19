@@ -56,13 +56,12 @@ export type DaemonCommand =
 	| { id?: string; type: "seed_assistant_message"; text: string }
 	| { id?: string; type: "append_message"; message: AgentMessage }
 
-	// Packages / integrations — the daemon is the single writer: the CLI's mutating arms route here
-	// so the install/onboard primitive runs in-process, then the daemon reloads itself (never stale).
-	| { id?: string; type: "install_package"; source: string }
-	| { id?: string; type: "remove_package"; source: string }
-	| { id?: string; type: "update_packages"; source?: string }
-	| { id?: string; type: "onboard_package"; source: string }
-	| { id?: string; type: "onboard_integration"; service: string }
+	// Plugins — the daemon is the single writer: the CLI's mutating arms route here so the
+	// install/onboard primitive runs in-process, then the daemon reloads itself (never stale).
+	| { id?: string; type: "install_plugin"; source: string }
+	| { id?: string; type: "remove_plugin"; source: string }
+	| { id?: string; type: "update_plugins"; source?: string }
+	| { id?: string; type: "onboard_plugin"; source: string }
 
 	// Model / thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
@@ -75,8 +74,8 @@ export type DaemonCommandType = DaemonCommand["type"];
 // ============================================================================
 
 /**
- * One service's structured onboarding outcome. The `onboard_package`/`onboard_integration` verbs
- * return `{ results: OnboardServiceResult[] }` so the client prints them (the daemon never logs).
+ * One service's structured onboarding outcome. The `onboard_plugin` verb returns
+ * `{ results: OnboardServiceResult[] }` so the client prints them (the daemon never logs).
  */
 export interface OnboardServiceResult {
 	service: string;

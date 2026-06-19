@@ -438,19 +438,19 @@ describe("daemon client-support verbs (Slice 0)", () => {
 	});
 });
 
-describe("daemon package/onboarding consistency", () => {
-	it("install_package is reflected in get_resource_summary with no stale cache; update + remove work", async () => {
+describe("daemon plugin/onboarding consistency", () => {
+	it("install_plugin is reflected in get_resource_summary with no stale cache; update + remove work", async () => {
 		await startDaemon();
 		const before = (await control({ type: "get_resource_summary" })).data.extensions as number;
 
-		// A self-contained local package contributing one (no-op) extension.
+		// A self-contained local plugin contributing one (no-op) extension.
 		const pkg = writePackage(
 			join(home, "ext-pkg"),
 			{ extensions: ["./ext.ts"] },
 			{ "ext.ts": "export default function () {}\n" },
 		);
-		expect(await control({ type: "install_package", source: pkg })).toMatchObject({
-			command: "install_package",
+		expect(await control({ type: "install_plugin", source: pkg })).toMatchObject({
+			command: "install_plugin",
 			success: true,
 		});
 
@@ -458,29 +458,29 @@ describe("daemon package/onboarding consistency", () => {
 		// already visible — no manual reload, no stale in-memory resources.
 		expect((await control({ type: "get_resource_summary" })).data.extensions).toBe(before + 1);
 
-		expect(await control({ type: "update_packages" })).toMatchObject({
-			command: "update_packages",
+		expect(await control({ type: "update_plugins" })).toMatchObject({
+			command: "update_plugins",
 			success: true,
 		});
 
-		const removed = await control({ type: "remove_package", source: pkg });
-		expect(removed).toMatchObject({ command: "remove_package", success: true });
+		const removed = await control({ type: "remove_plugin", source: pkg });
+		expect(removed).toMatchObject({ command: "remove_plugin", success: true });
 		expect(removed.data).toEqual({ removed: true });
 		// Removal reloaded too — the extension is gone again.
 		expect((await control({ type: "get_resource_summary" })).data.extensions).toBe(before);
 	});
 
-	it("remove_package reports removed:false when nothing matches", async () => {
+	it("remove_plugin reports removed:false when nothing matches", async () => {
 		await startDaemon();
-		const res = await control({ type: "remove_package", source: join(home, "never-installed") });
-		expect(res).toMatchObject({ command: "remove_package", success: true });
+		const res = await control({ type: "remove_plugin", source: join(home, "never-installed") });
+		expect(res).toMatchObject({ command: "remove_plugin", success: true });
 		expect(res.data).toEqual({ removed: false });
 	});
 
-	it("onboard_integration drives the dialog over SSE and writes through the live account store", async () => {
+	it("onboard_plugin drives the just-installed plugin's onboarding over SSE and writes through the live account store", async () => {
 		await startDaemon();
 
-		// A local integration package whose onboard() asks for a token over the wire.
+		// A local plugin whose integration onboard() asks for a token over the wire.
 		const onboardSource = [
 			"export default function (steward) {",
 			"  steward.registerIntegration({",
@@ -494,15 +494,16 @@ describe("daemon package/onboarding consistency", () => {
 			"",
 		].join("\n");
 		const pkg = writePackage(join(home, "int-pkg"), { integrations: ["./index.ts"] }, { "index.ts": onboardSource });
-		expect(await control({ type: "install_package", source: pkg })).toMatchObject({ success: true });
+		expect(await control({ type: "install_plugin", source: pkg })).toMatchObject({ success: true });
 
 		const client = newSse();
 		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
 		await client.waitFor((e) => e.event === "hello");
 
 		// The verb awaits the dialog round-trip, so fire it WITHOUT awaiting; the client answers the
-		// emitted frame concurrently over /ui-response, then the verb resolves.
-		const onboarding = control({ type: "onboard_integration", service: "fakesvc" });
+		// emitted frame concurrently over /ui-response, then the verb resolves. Source-scoped: the
+		// daemon scans the just-installed plugin's integrations for any declaring `onboard`.
+		const onboarding = control({ type: "onboard_plugin", source: pkg });
 
 		const frame = await client.waitFor((e) => dataType(e) === "extension_ui_request");
 		const req = JSON.parse(frame.data) as { id: string; method: string };
@@ -510,7 +511,7 @@ describe("daemon package/onboarding consistency", () => {
 		await uiRespond(req.id, { value: "secret-token" });
 
 		const res = await onboarding;
-		expect(res).toMatchObject({ command: "onboard_integration", success: true });
+		expect(res).toMatchObject({ command: "onboard_plugin", success: true });
 		expect(res.data.results).toEqual([{ service: "fakesvc", status: "connected" }]);
 
 		// Onboarding wrote through the host's LIVE account store — no cross-process refresh path.

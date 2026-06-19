@@ -65,11 +65,11 @@ export type DefaultProjectTrust = "ask" | "always" | "never";
 export type TransportSetting = Transport;
 
 /**
- * Package source for npm/git packages.
- * - String form: load all resources from the package
+ * Plugin source for npm/git plugins.
+ * - String form: load all resources from the plugin
  * - Object form: filter which resources to load
  */
-export type PackageSource =
+export type PluginSource =
 	| string
 	| {
 			source: string;
@@ -102,7 +102,7 @@ export interface Settings {
 	enableInstallTelemetry?: boolean; // default: true - anonymous version/update ping after changelog-detected updates
 	enableAnalytics?: boolean; // default: false - opt-in analytics data sharing
 	trackingId?: string; // analytics tracking identifier, generated when analytics is enabled
-	packages?: PackageSource[]; // Array of npm/git package sources (string or object with filtering)
+	plugins?: PluginSource[]; // Array of npm/git plugin sources (string or object with filtering)
 	extensions?: string[]; // Array of local extension file paths or directories
 	integrations?: string[]; // Array of local integration file paths or directories
 	skills?: string[]; // Array of local skill file paths or directories
@@ -933,19 +933,19 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getPackages(): PackageSource[] {
-		return [...(this.settings.packages ?? [])];
+	getPlugins(): PluginSource[] {
+		return [...(this.settings.plugins ?? [])];
 	}
 
-	setPackages(packages: PackageSource[]): void {
-		this.globalSettings.packages = packages;
-		this.markModified("packages");
+	setPlugins(plugins: PluginSource[]): void {
+		this.globalSettings.plugins = plugins;
+		this.markModified("plugins");
 		this.save();
 	}
 
-	setProjectPackages(packages: PackageSource[]): void {
-		this.updateProjectSettings("packages", (settings) => {
-			settings.packages = packages;
+	setProjectPlugins(plugins: PluginSource[]): void {
+		this.updateProjectSettings("plugins", (settings) => {
+			settings.plugins = plugins;
 		});
 	}
 
