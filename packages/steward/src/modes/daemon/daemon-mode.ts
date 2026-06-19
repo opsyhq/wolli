@@ -24,8 +24,11 @@ import {
 	type DaemonEvent,
 	type DaemonResponse,
 	type DaemonSessionState,
+	type ExtensionUIRequest,
+	type ExtensionUIResponse,
 	FORWARDED_EVENT_TYPES,
 } from "./daemon-types.ts";
+import { createDaemonUIContext } from "./daemon-ui-context.ts";
 
 /** How many recent events the broadcaster keeps for `Last-Event-ID` replay. */
 const RING_SIZE = 256;
@@ -198,6 +201,18 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 	let seq = 0;
 	const ring: { id: number; frame: string }[] = [];
 
+	// Write one SSE payload to every live client (dropping any that aborted). An omitted `id`
+	// produces no `id:` line, so the frame is invisible to Last-Event-ID replay.
+	const writeToClients = async (payload: { id?: string; event: string; data: string }): Promise<void> => {
+		for (const client of clients) {
+			if (client.aborted) {
+				clients.delete(client);
+				continue;
+			}
+			await client.writeSSE(payload);
+		}
+	};
+
 	const broadcast = async (event: AgentHarnessEvent): Promise<void> => {
 		// Curation: forward only the allowlisted AgentEvent + queue/model/thinking updates;
 		// drop the internal own-events (save_point, settled, abort, session_*, tools_update, …).
@@ -207,13 +222,14 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 		const frame = JSON.stringify(event);
 		ring.push({ id, frame });
 		if (ring.length > RING_SIZE) ring.shift();
-		for (const client of clients) {
-			if (client.aborted) {
-				clients.delete(client);
-				continue;
-			}
-			await client.writeSSE({ id: String(id), event: "message", data: frame });
-		}
+		await writeToClients({ id: String(id), event: "message", data: frame });
+	};
+
+	// Push an extension-UI request to attach clients. NOT an AgentHarnessEvent: it bypasses the
+	// FORWARDED_EVENT_TYPES filter, consumes no `seq`, and never enters the ring — and it omits the
+	// SSE `id`, so a reconnect's Last-Event-ID replay can never re-deliver a since-resolved dialog.
+	const pushFrame = (request: ExtensionUIRequest): void => {
+		void writeToClients({ event: "message", data: JSON.stringify(request) });
 	};
 
 	// ---- Subscribe + rebind -----------------------------------------------
@@ -227,10 +243,34 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 	// Re-fire after every harness swap (build/newSession) and after reload.
 	host.setRebindHandler(resubscribe);
 
+	// ---- Extension-UI bridge ----------------------------------------------
+	// Swap the runner's noOpUIContext for one whose dialogs ride the SSE stream and resolve over
+	// `POST /ui-response`. Bound once: the host retains the bindings and re-applies the SAME context
+	// (its pendingExtensionRequests survive) to every runner build()/reload() stands up, so a fresh
+	// session never reverts to noOpUIContext and an in-flight dialog survives a harness swap.
+	const daemonUI = createDaemonUIContext(pushFrame);
+	host.bindInteractiveContext({
+		uiContext: daemonUI.context,
+		mode: "rpc",
+		commandContextActions: {
+			waitForIdle: () => host.harness.waitForIdle(),
+			newSession: async () => {
+				await host.newSession({ reason: "new" });
+				return { cancelled: false };
+			},
+			// Tree navigation is not a daemon concern — report cancelled, matching the client stubs.
+			fork: async () => ({ cancelled: true }),
+			navigateTree: async () => ({ cancelled: true }),
+			switchSession: async () => ({ cancelled: true }),
+			reload: () => host.reload(),
+		},
+	});
+
 	// ---- HTTP app ---------------------------------------------------------
 	const app = new Hono();
 	app.use("/events", bearerAuth({ token: options.token }));
 	app.use("/control", bearerAuth({ token: options.token }));
+	app.use("/ui-response", bearerAuth({ token: options.token }));
 
 	app.get("/health", (c) => c.json({ status: "ok", agent: host.config.name, pid: process.pid, startedAt }));
 
@@ -243,6 +283,10 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 			const replayUpTo = seq;
 			stream.onAbort(() => {
 				clients.delete(stream);
+				// With no client left to answer, resolve every parked dialog to cancel — otherwise a
+				// dialog open when its owning client dropped (notably `editor`, which has no
+				// signal/timeout) would hang forever. Other clients still attached keep dialogs parked.
+				if (clients.size === 0) daemonUI.cancelAllPending();
 			});
 
 			// Replay buffered events after the client's Last-Event-ID, bounded by the watermark.
@@ -284,6 +328,18 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 		} catch (e) {
 			return c.json(err(cmd.id, cmd.type, e instanceof Error ? e.message : String(e)));
 		}
+	});
+
+	// A client's answer to an awaited extension-UI dialog — resolve the parked promise by id.
+	app.post("/ui-response", async (c) => {
+		let response: ExtensionUIResponse;
+		try {
+			response = await c.req.json<ExtensionUIResponse>();
+		} catch {
+			return c.json({ success: false, error: "Malformed JSON body." });
+		}
+		daemonUI.resolveUiResponse(response);
+		return c.json({ success: true });
 	});
 
 	// ---- Serve ------------------------------------------------------------

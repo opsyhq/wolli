@@ -71,6 +71,62 @@ export type DaemonResponse =
 	| { id?: string; type: "response"; command: string; success: false; error: string };
 
 // ============================================================================
+// Extension UI (the round-trip the daemon-side extension runner drives)
+// ============================================================================
+
+/**
+ * An extension-UI request, pushed to attach clients as an SSE frame (NOT an `AgentHarnessEvent`
+ * — it bypasses the curated forwarded set and the replay ring). The four awaited dialogs
+ * (`select`/`confirm`/`input`/`editor`) park a promise keyed by `id`; the client answers via
+ * `POST /ui-response`. The five fire-and-forget methods carry no `id` correlation.
+ *
+ * Ported from pi `rpc-types.ts:213-248`, normalized so all nine `method` literals are camelCase
+ * (pi's `set_editor_text` becomes `setEditorText`).
+ */
+export type ExtensionUIRequest =
+	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
+	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "input";
+			title: string;
+			placeholder?: string;
+			timeout?: number;
+	  }
+	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "notify";
+			message: string;
+			notifyType?: "info" | "warning" | "error";
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "setStatus";
+			statusKey: string;
+			statusText: string | undefined;
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "setWidget";
+			widgetKey: string;
+			widgetLines: string[] | undefined;
+			widgetPlacement?: "aboveEditor" | "belowEditor";
+	  }
+	| { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
+	| { type: "extension_ui_request"; id: string; method: "setEditorText"; text: string };
+
+/** A client's answer to an awaited `ExtensionUIRequest`, posted to `/ui-response`. */
+export type ExtensionUIResponse =
+	| { type: "extension_ui_response"; id: string; value: string }
+	| { type: "extension_ui_response"; id: string; confirmed: boolean }
+	| { type: "extension_ui_response"; id: string; cancelled: true };
+
+// ============================================================================
 // Session state (get_state / hello snapshot)
 // ============================================================================
 

@@ -23,6 +23,7 @@ import {
 	type DaemonSessionState,
 	type ExtensionCommandContext,
 	type ExtensionShortcut,
+	type ExtensionUIRequest,
 	getServiceManager,
 	type KeyId,
 	loadDaemonConfig,
@@ -55,14 +56,6 @@ function deferred<T>(): Deferred<T> {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** A UI request as it arrives over the wire (the daemon-side bridge lands in Slice 4 / Item 5). */
-export interface DaemonUiRequest {
-	type: "extension_ui_request";
-	id: string;
-	method: string;
-	[key: string]: unknown;
-}
-
 export class DaemonSession {
 	private snap!: DaemonSessionState;
 	private queue: { steer: AgentMessage[]; followUp: AgentMessage[] } = { steer: [], followUp: [] };
@@ -73,7 +66,7 @@ export class DaemonSession {
 	private abortController?: AbortController;
 
 	/** The extension-UI request stream's client half (Item 5). Wired by `InteractiveMode`. */
-	onUiRequest?: (req: DaemonUiRequest) => void;
+	onUiRequest?: (req: ExtensionUIRequest) => void;
 
 	// Not readonly: `reconnect()` re-points the transport at a different daemon (the deploy handoff).
 	private base: string;
@@ -181,7 +174,7 @@ export class DaemonSession {
 		this.routeEvent(JSON.parse(data));
 	}
 
-	private routeEvent(evt: AgentHarnessEvent | DaemonUiRequest): void {
+	private routeEvent(evt: AgentHarnessEvent | ExtensionUIRequest): void {
 		switch (evt.type) {
 			case "extension_ui_request":
 				// Not an AgentHarnessEvent — hand to the UI bridge and do NOT forward to handlers.
@@ -372,12 +365,16 @@ export class DaemonSession {
 	}
 
 	// ---- The extension-UI round-trip's client half (Item 5) ----
-	respondUi(id: string, answer: Record<string, unknown>): Promise<Response> {
-		return fetch(`${this.base}/ui-response`, {
+	/** Answer a parked daemon-side dialog. Throws on a non-2xx so the caller can surface the failure. */
+	async respondUi(id: string, answer: Record<string, unknown>): Promise<void> {
+		const response = await fetch(`${this.base}/ui-response`, {
 			method: "POST",
 			headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
 			body: JSON.stringify({ type: "extension_ui_response", id, ...answer }),
 		});
+		if (!response.ok) {
+			throw new Error(`Failed to deliver extension UI response (HTTP ${response.status}).`);
+		}
 	}
 }
 
