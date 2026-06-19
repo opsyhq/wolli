@@ -201,18 +201,6 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 	let seq = 0;
 	const ring: { id: number; frame: string }[] = [];
 
-	// Write one SSE payload to every live client (dropping any that aborted). An omitted `id`
-	// produces no `id:` line, so the frame is invisible to Last-Event-ID replay.
-	const writeToClients = async (payload: { id?: string; event: string; data: string }): Promise<void> => {
-		for (const client of clients) {
-			if (client.aborted) {
-				clients.delete(client);
-				continue;
-			}
-			await client.writeSSE(payload);
-		}
-	};
-
 	const broadcast = async (event: AgentHarnessEvent): Promise<void> => {
 		// Curation: forward only the allowlisted AgentEvent + queue/model/thinking updates;
 		// drop the internal own-events (save_point, settled, abort, session_*, tools_update, …).
@@ -222,14 +210,25 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 		const frame = JSON.stringify(event);
 		ring.push({ id, frame });
 		if (ring.length > RING_SIZE) ring.shift();
-		await writeToClients({ id: String(id), event: "message", data: frame });
+		for (const client of clients) {
+			if (client.aborted) {
+				clients.delete(client);
+				continue;
+			}
+			await client.writeSSE({ id: String(id), event: "message", data: frame });
+		}
 	};
 
-	// Push an extension-UI request to attach clients. NOT an AgentHarnessEvent: it bypasses the
-	// FORWARDED_EVENT_TYPES filter, consumes no `seq`, and never enters the ring — and it omits the
-	// SSE `id`, so a reconnect's Last-Event-ID replay can never re-deliver a since-resolved dialog.
-	const pushFrame = (request: ExtensionUIRequest): void => {
-		void writeToClients({ event: "message", data: JSON.stringify(request) });
+	// The extension-UI sink: fire-and-forget, no `seq`/ring, no SSE `id` — so a request frame is
+	// not an AgentHarnessEvent and stays invisible to Last-Event-ID replay.
+	const output = (request: ExtensionUIRequest): void => {
+		for (const client of clients) {
+			if (client.aborted) {
+				clients.delete(client);
+				continue;
+			}
+			void client.writeSSE({ event: "message", data: JSON.stringify(request) });
+		}
 	};
 
 	// ---- Subscribe + rebind -----------------------------------------------
@@ -248,7 +247,7 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 	// `POST /ui-response`. Bound once: the host retains the bindings and re-applies the SAME context
 	// (its pendingExtensionRequests survive) to every runner build()/reload() stands up, so a fresh
 	// session never reverts to noOpUIContext and an in-flight dialog survives a harness swap.
-	const daemonUI = createDaemonUIContext(pushFrame);
+	const daemonUI = createDaemonUIContext(output);
 	host.bindInteractiveContext({
 		uiContext: daemonUI.context,
 		mode: "rpc",

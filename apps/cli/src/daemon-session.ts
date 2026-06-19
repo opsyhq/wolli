@@ -365,16 +365,13 @@ export class DaemonSession {
 	}
 
 	// ---- The extension-UI round-trip's client half (Item 5) ----
-	/** Answer a parked daemon-side dialog. Throws on a non-2xx so the caller can surface the failure. */
+	/** Answer a parked daemon-side dialog — fire-and-forget, matching coding-agent's `send`. */
 	async respondUi(id: string, answer: Record<string, unknown>): Promise<void> {
-		const response = await fetch(`${this.base}/ui-response`, {
+		await fetch(`${this.base}/ui-response`, {
 			method: "POST",
 			headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
 			body: JSON.stringify({ type: "extension_ui_response", id, ...answer }),
 		});
-		if (!response.ok) {
-			throw new Error(`Failed to deliver extension UI response (HTTP ${response.status}).`);
-		}
 	}
 }
 

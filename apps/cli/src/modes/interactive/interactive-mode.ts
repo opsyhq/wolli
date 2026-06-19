@@ -271,7 +271,7 @@ export class InteractiveMode {
 		this.subscribeToHost();
 		// The extension runner lives server-side now, so its UI requests arrive over the wire:
 		// route the daemon's extension_ui_request stream to the client dialogs (Slice 4 / Item 5).
-		this.session.onUiRequest = (req) => this.dispatchUiRequest(req);
+		this.session.onUiRequest = (req) => void this.dispatchUiRequest(req);
 		this.setupExtensionShortcuts();
 		this.removeInputListener = this.ui.addInputListener((data) => this.handleGlobalInput(data));
 
@@ -1235,36 +1235,32 @@ export class InteractiveMode {
 	 * the user's answer is POSTed back via `this.session.respondUi`, resolving the parked daemon-side
 	 * promise. The five fire-and-forget methods apply to this client's TUI with no response.
 	 */
-	private dispatchUiRequest(req: ExtensionUIRequest): void {
+	private async dispatchUiRequest(req: ExtensionUIRequest): Promise<void> {
 		switch (req.method) {
 			// —— Awaited dialogs: show locally, answer the parked daemon promise ——
-			case "select":
-				void this.answerUiDialog(
-					req.id,
-					this.showExtensionSelector(req.title, req.options, { timeout: req.timeout }),
-					(value) => (value === undefined ? { cancelled: true } : { value }),
-				);
+			case "select": {
+				const value = await this.showExtensionSelector(req.title, req.options, { timeout: req.timeout });
+				void this.session.respondUi(req.id, value === undefined ? { cancelled: true } : { value });
 				return;
-			case "confirm":
+			}
+			case "confirm": {
 				// Drive the selector directly (not showExtensionConfirm) so cancel stays distinct from "No".
-				void this.answerUiDialog(
-					req.id,
-					this.showExtensionSelector(`${req.title}\n${req.message}`, ["Yes", "No"], { timeout: req.timeout }),
-					(value) => (value === undefined ? { cancelled: true } : { confirmed: value === "Yes" }),
-				);
+				const value = await this.showExtensionSelector(`${req.title}\n${req.message}`, ["Yes", "No"], {
+					timeout: req.timeout,
+				});
+				void this.session.respondUi(req.id, value === undefined ? { cancelled: true } : { confirmed: value === "Yes" });
 				return;
-			case "input":
-				void this.answerUiDialog(
-					req.id,
-					this.showExtensionInput(req.title, req.placeholder, { timeout: req.timeout }),
-					(value) => (value === undefined ? { cancelled: true } : { value }),
-				);
+			}
+			case "input": {
+				const value = await this.showExtensionInput(req.title, req.placeholder, { timeout: req.timeout });
+				void this.session.respondUi(req.id, value === undefined ? { cancelled: true } : { value });
 				return;
-			case "editor":
-				void this.answerUiDialog(req.id, this.showExtensionEditor(req.title, req.prefill), (value) =>
-					value === undefined ? { cancelled: true } : { value },
-				);
+			}
+			case "editor": {
+				const value = await this.showExtensionEditor(req.title, req.prefill);
+				void this.session.respondUi(req.id, value === undefined ? { cancelled: true } : { value });
 				return;
+			}
 
 			// —— Fire-and-forget: apply to this client's TUI, no response ——
 			case "notify":
@@ -1282,24 +1278,6 @@ export class InteractiveMode {
 			case "setEditorText":
 				this.editor.setText(req.text);
 				return;
-		}
-	}
-
-	/**
-	 * Await a local dialog, map its outcome to an `ExtensionUIResponse` body, and POST it back.
-	 * Best-effort: a failed POST is swallowed (the dialog already closed client-side, and the
-	 * daemon releases the parked promise via `cancelAllPending` if this client drops).
-	 */
-	private async answerUiDialog<T>(
-		id: string,
-		dialog: Promise<T>,
-		toAnswer: (value: T) => Record<string, unknown>,
-	): Promise<void> {
-		try {
-			const value = await dialog;
-			await this.session.respondUi(id, toAnswer(value));
-		} catch {
-			// Best-effort delivery; nothing actionable to surface in the TUI.
 		}
 	}
 
