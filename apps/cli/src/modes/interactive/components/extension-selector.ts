@@ -5,10 +5,8 @@
  */
 
 import { Container, getKeybindings, Spacer, Text, type TUI } from "@opsyhq/tui";
-import { theme } from "../theme/theme.ts";
+import { DynamicBorder, keyHint, rawKeyHint, theme } from "@opsyhq/steward";
 import { CountdownTimer } from "./countdown-timer.ts";
-import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
 export interface ExtensionSelectorOptions {
 	tui?: TUI;

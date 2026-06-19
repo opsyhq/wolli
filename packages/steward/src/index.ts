@@ -143,7 +143,7 @@ export {
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
 export type { ToolRenderContext } from "./core/extensions/types.ts";
-export { FooterDataProvider, type ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
+export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 export {
 	type IntegrationAccountRecord,
@@ -173,10 +173,12 @@ export {
 	loadIntegrations,
 } from "./core/integrations/index.ts";
 export {
+	KEYBINDINGS,
 	type Keybinding,
 	type KeybindingsConfig,
-	KeybindingsManager,
+	type KeybindingsManager,
 	type KeyId,
+	migrateKeybindingsConfig,
 } from "./core/keybindings.ts";
 export {
 	loadMemory,
@@ -302,8 +304,6 @@ export type {
 // interactive TUI lives in apps/cli); DynamicBorder and the keyHint/keyText helpers are also part
 // of the extension SDK surface.
 export { DynamicBorder } from "./modes/interactive/components/dynamic-border.ts";
-export { ExtensionInputComponent } from "./modes/interactive/components/extension-input.ts";
-export { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 export {
 	keyDisplayText,
 	keyHint,
@@ -326,7 +326,9 @@ export {
 	theme,
 } from "./modes/interactive/theme/theme.ts";
 export { stripAnsi } from "./utils/ansi.ts";
+export { applyExifOrientation } from "./utils/exif-orientation.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
-export { convertToPng } from "./utils/image-convert.ts";
+export { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "./utils/fs-watch.ts";
 export { formatPathRelativeToCwdOrAbsolute, resolvePath } from "./utils/paths.ts";
+export { loadPhoton, type PhotonImageType } from "./utils/photon.ts";
 export { ensureTool } from "./utils/tools-manager.ts";
