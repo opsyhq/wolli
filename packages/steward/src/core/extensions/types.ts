@@ -44,7 +44,7 @@ import type {
 	TUI,
 } from "@opsyhq/tui";
 import type { Static, TSchema } from "typebox";
-import type { Theme } from "../../modes/interactive/theme/theme.ts";
+import type { Theme } from "../../theme/theme.ts";
 import type { BashResult } from "../bash-executor.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";

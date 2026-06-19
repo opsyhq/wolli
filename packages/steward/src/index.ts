@@ -303,13 +303,13 @@ export type {
 // Shared UI components + keybinding-hint helpers imported by the @opsyhq/cli daemon client (the
 // interactive TUI lives in apps/cli); DynamicBorder and the keyHint/keyText helpers are also part
 // of the extension SDK surface.
-export { DynamicBorder } from "./modes/interactive/components/dynamic-border.ts";
+export { DynamicBorder } from "./components/dynamic-border.ts";
 export {
 	keyDisplayText,
 	keyHint,
 	keyText,
 	rawKeyHint,
-} from "./modes/interactive/components/keybinding-hints.ts";
+} from "./components/keybinding-hints.ts";
 export {
 	getAvailableThemesWithPaths,
 	getEditorTheme,
@@ -324,7 +324,7 @@ export {
 	setThemeInstance,
 	Theme,
 	theme,
-} from "./modes/interactive/theme/theme.ts";
+} from "./theme/theme.ts";
 export { stripAnsi } from "./utils/ansi.ts";
 export { applyExifOrientation } from "./utils/exif-orientation.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";

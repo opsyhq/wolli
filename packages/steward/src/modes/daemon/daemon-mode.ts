@@ -33,7 +33,7 @@ import type { DefaultPluginManager } from "../../core/plugin-manager.ts";
 import { getServiceManager } from "../../core/service/service-manager.ts";
 import type { SessionHost } from "../../core/session-host.ts";
 import { getCwdRelativePath, resolvePath } from "../../utils/paths.ts";
-import { type Theme, theme } from "../interactive/theme/theme.ts";
+import { type Theme, theme } from "../../theme/theme.ts";
 import {
 	type DaemonCommand,
 	type DaemonCommandType,

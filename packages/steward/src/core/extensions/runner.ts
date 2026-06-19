@@ -4,7 +4,7 @@
 
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@opsyhq/agent";
-import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
+import { type Theme, theme } from "../../theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
