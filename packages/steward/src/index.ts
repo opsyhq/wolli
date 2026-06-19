@@ -282,7 +282,13 @@ export { resolveReadPathAsync, resolveToCwd } from "./core/tools/path-utils.ts";
 export { createReadTool, type ReadToolDetails, type ReadToolInput } from "./core/tools/read.ts";
 export { createWriteTool, type WriteToolInput } from "./core/tools/write.ts";
 export { main, type RunDaemonOptions, runDaemon } from "./main.ts";
-export type { DaemonCommand, DaemonResponse, DaemonSessionState } from "./modes/daemon/daemon-types.ts";
+export type {
+	DaemonCommand,
+	DaemonResponse,
+	DaemonSessionState,
+	ExtensionUIRequest,
+	ExtensionUIResponse,
+} from "./modes/daemon/daemon-types.ts";
 // UI components for extensions + the @opsyhq/cli daemon client (the interactive TUI lives in
 // apps/cli; these are the shared pieces it imports — kept here because the engine's startup/
 // onboarding flow and extension runner still depend on them).

@@ -23,6 +23,7 @@ import {
 	type DaemonSessionState,
 	type ExtensionCommandContext,
 	type ExtensionShortcut,
+	type ExtensionUIRequest,
 	getServiceManager,
 	type KeyId,
 	loadDaemonConfig,
@@ -55,14 +56,6 @@ function deferred<T>(): Deferred<T> {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** A UI request as it arrives over the wire (the daemon-side bridge lands in Slice 4 / Item 5). */
-export interface DaemonUiRequest {
-	type: "extension_ui_request";
-	id: string;
-	method: string;
-	[key: string]: unknown;
-}
-
 export class DaemonSession {
 	private snap!: DaemonSessionState;
 	private queue: { steer: AgentMessage[]; followUp: AgentMessage[] } = { steer: [], followUp: [] };
@@ -72,8 +65,8 @@ export class DaemonSession {
 	private readonly handlers = new Set<(e: AgentHarnessEvent) => void>();
 	private abortController?: AbortController;
 
-	/** The extension-UI request stream's client half (Item 5). Wired by `InteractiveMode`. */
-	onUiRequest?: (req: DaemonUiRequest) => void;
+	/** The extension-UI request stream's client half. Wired by `InteractiveMode`. */
+	onUiRequest?: (req: ExtensionUIRequest) => void;
 
 	// Not readonly: `reconnect()` re-points the transport at a different daemon (the deploy handoff).
 	private base: string;
@@ -181,7 +174,7 @@ export class DaemonSession {
 		this.routeEvent(JSON.parse(data));
 	}
 
-	private routeEvent(evt: AgentHarnessEvent | DaemonUiRequest): void {
+	private routeEvent(evt: AgentHarnessEvent | ExtensionUIRequest): void {
 		switch (evt.type) {
 			case "extension_ui_request":
 				// Not an AgentHarnessEvent — hand to the UI bridge and do NOT forward to handlers.
@@ -350,7 +343,7 @@ export class DaemonSession {
 
 	// ---- Extension surface, narrowed so no runner object leaks into the TUI ----
 	// Extension shortcuts / message renderers / user-bash interception ride the extension runner,
-	// which lives server-side. Slice 4 (Item 5) wires the round-trip; for now they are inert.
+	// which lives server-side, so they are inert here.
 	getShortcuts(): Map<KeyId, ExtensionShortcut> {
 		return new Map();
 	}
@@ -364,16 +357,17 @@ export class DaemonSession {
 	}
 
 	/**
-	 * Context for an extension shortcut handler. Unreachable in Slice 1 — `getShortcuts()` returns an
-	 * empty map, so no handler is ever invoked — and fails loud rather than fabricating a context.
+	 * Context for an extension shortcut handler. Unreachable — `getShortcuts()` returns an empty
+	 * map, so no handler is ever invoked — and fails loud rather than fabricating a context.
 	 */
 	createShortcutContext(): ExtensionCommandContext {
-		throw new Error("Extension shortcuts are not wired until the extension-UI round-trip (Slice 4).");
+		throw new Error("Extension shortcuts are not wired over the daemon.");
 	}
 
-	// ---- The extension-UI round-trip's client half (Item 5) ----
-	respondUi(id: string, answer: Record<string, unknown>): Promise<Response> {
-		return fetch(`${this.base}/ui-response`, {
+	// ---- The extension-UI round-trip's client half ----
+	/** Answer a parked daemon-side dialog (fire-and-forget). */
+	async respondUi(id: string, answer: Record<string, unknown>): Promise<void> {
+		await fetch(`${this.base}/ui-response`, {
 			method: "POST",
 			headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
 			body: JSON.stringify({ type: "extension_ui_response", id, ...answer }),
