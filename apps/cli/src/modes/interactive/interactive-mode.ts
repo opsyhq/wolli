@@ -269,8 +269,8 @@ export class InteractiveMode {
 		this.setupAutocompleteProvider();
 		void this.initAutocompleteFd();
 		this.subscribeToHost();
-		// The extension runner lives server-side now, so its UI requests arrive over the wire:
-		// route the daemon's extension_ui_request stream to the client dialogs (Slice 4 / Item 5).
+		// The extension runner lives server-side, so its UI requests arrive over the wire: route
+		// the daemon's extension_ui_request stream to the client dialogs.
 		this.session.onUiRequest = (req) => void this.dispatchUiRequest(req);
 		this.setupExtensionShortcuts();
 		this.removeInputListener = this.ui.addInputListener((data) => this.handleGlobalInput(data));
@@ -667,7 +667,7 @@ export class InteractiveMode {
 			return false;
 		}
 		this.subscribeToHost();
-		// Re-snapshot extension shortcuts (inert until the extension-UI round-trip lands, Slice 4).
+		// Re-snapshot extension shortcuts (inert — shortcuts aren't wired over the daemon).
 		this.setupExtensionShortcuts();
 
 		// Reset transient per-session UI state.
@@ -1202,7 +1202,7 @@ export class InteractiveMode {
 
 	/**
 	 * Snapshot the extension keyboard shortcuts; handleGlobalInput matches against them. The
-	 * runner is server-side, so the shortcut descriptors ride the snapshot — inert until Slice 4.
+	 * runner is server-side and shortcuts aren't wired over the daemon, so this stays empty.
 	 */
 	private setupExtensionShortcuts(): void {
 		this.extensionShortcuts = this.session.getShortcuts();
@@ -1230,10 +1230,10 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Client half of the extension-UI round-trip (Item 5): a daemon `extension_ui_request` arrives
-	 * over SSE. The four awaited dialogs (`select`/`confirm`/`input`/`editor`) are shown locally and
-	 * the user's answer is POSTed back via `this.session.respondUi`, resolving the parked daemon-side
-	 * promise. The five fire-and-forget methods apply to this client's TUI with no response.
+	 * Client half of the extension-UI round-trip: a daemon `extension_ui_request` arrives over SSE.
+	 * The four awaited dialogs (`select`/`confirm`/`input`/`editor`) are shown locally and the user's
+	 * answer is POSTed back via `this.session.respondUi`, resolving the parked daemon-side promise.
+	 * The five fire-and-forget methods apply to this client's TUI with no response.
 	 */
 	private async dispatchUiRequest(req: ExtensionUIRequest): Promise<void> {
 		switch (req.method) {

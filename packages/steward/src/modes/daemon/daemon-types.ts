@@ -78,10 +78,8 @@ export type DaemonResponse =
  * An extension-UI request, pushed to attach clients as an SSE frame (NOT an `AgentHarnessEvent`
  * — it bypasses the curated forwarded set and the replay ring). The four awaited dialogs
  * (`select`/`confirm`/`input`/`editor`) park a promise keyed by `id`; the client answers via
- * `POST /ui-response`. The five fire-and-forget methods carry no `id` correlation.
- *
- * Ported from pi `rpc-types.ts:213-248`, normalized so all nine `method` literals are camelCase
- * (pi's `set_editor_text` becomes `setEditorText`).
+ * `POST /ui-response`. The five fire-and-forget methods carry no `id` correlation. All nine
+ * `method` literals are camelCase.
  */
 export type ExtensionUIRequest =
 	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }

@@ -1,15 +1,11 @@
 /**
  * The daemon's extension-UI context — the server half of the extension-UI round-trip.
  *
- * A near-verbatim port of pi rpc-mode's parked-promise machinery + `createExtensionUIContext`
- * (`coding-agent/src/modes/rpc/rpc-mode.ts:78-310`). Two seams change for the daemon:
- *   - the transport: pi writes `serializeJsonLine(obj)` to stdout; the daemon pushes `obj` as
- *     an SSE frame via the injected `output` sink (`pushFrame` in daemon-mode.ts);
- *   - the `theme` family: pi returns the live TUI theme; the daemon returns the same data-only
- *     / inert values as `noOpUIContext` (theme rendering is a client concern).
- *
- * The serializable-vs-stub split is dictated by serializability (a function/Component can't cross
- * JSON), not host capability, so it ports unchanged even though steward's client has a full TUI.
+ * The four awaited dialogs (select/confirm/input/editor) park a promise keyed by request id and
+ * push the request over the SSE stream via the injected `output` sink; the client answers through
+ * `POST /ui-response`. The fire-and-forget methods just emit. The `theme` family is data-only /
+ * inert — theme rendering is a client concern. Methods whose payload can't cross JSON (component
+ * factories, custom renderers, terminal input) are stubbed.
  */
 
 import { randomUUID } from "node:crypto";
@@ -45,7 +41,7 @@ export function createDaemonUIContext(output: (request: ExtensionUIRequest) => v
 		{ resolve: (response: ExtensionUIResponse) => void; reject: (error: Error) => void }
 	>();
 
-	/** Park a promise for an awaited dialog with signal/timeout support (pi `rpc-mode.ts:90-130`). */
+	/** Park a promise for an awaited dialog, with optional signal/timeout cancellation. */
 	function createDialogPromise<T>(
 		opts: ExtensionUIDialogOptions | undefined,
 		defaultValue: T,
@@ -223,7 +219,7 @@ export function createDaemonUIContext(output: (request: ExtensionUIRequest) => v
 			return undefined;
 		},
 
-		// —— theme family: data-only / inert, matching noOpUIContext (keeps theme rendering client-side) ——
+		// —— theme family: data-only / inert (theme rendering is a client concern) ——
 		get theme() {
 			return theme;
 		},
@@ -249,7 +245,7 @@ export function createDaemonUIContext(output: (request: ExtensionUIRequest) => v
 		},
 	};
 
-	/** Look up the parked promise for the response's `id`, delete it, resolve (pi `rpc-mode.ts:721-735`). */
+	/** Look up the parked promise for the response's `id`, delete it, and resolve it. */
 	const resolveUiResponse = (response: ExtensionUIResponse): void => {
 		const pending = pendingExtensionRequests.get(response.id);
 		if (pending) {

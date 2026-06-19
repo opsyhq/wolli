@@ -257,7 +257,7 @@ export async function runDaemonMode(host: SessionHost, options: { port: number; 
 				await host.newSession({ reason: "new" });
 				return { cancelled: false };
 			},
-			// Tree navigation is not a daemon concern — report cancelled, matching the client stubs.
+			// Tree navigation is not a daemon concern — report cancelled.
 			fork: async () => ({ cancelled: true }),
 			navigateTree: async () => ({ cancelled: true }),
 			switchSession: async () => ({ cancelled: true }),
