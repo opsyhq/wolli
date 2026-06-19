@@ -6,7 +6,6 @@
  */
 
 export { serializeConversation } from "@opsyhq/agent";
-export { type Args, parseArgs, printHelp } from "./cli/args.ts";
 // Shared UI components + keybinding-hint helpers imported by the @opsyhq/cli daemon client (the
 // interactive TUI lives in apps/cli); DynamicBorder and the keyHint/keyText helpers are also part
 // of the extension SDK surface.
@@ -310,7 +309,6 @@ export type {
 	ExtensionUIResponse,
 	OnboardServiceResult,
 } from "./daemon/types.ts";
-export { main } from "./main.ts";
 export {
 	getAvailableThemesWithPaths,
 	getEditorTheme,

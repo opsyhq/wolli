@@ -6,13 +6,14 @@
  * needed) — the CLI never builds a `SessionHost`. `new`/`list`/`delete` are local commands; the
  * agent-scoped `<name> plugins ...` subcommand routes its mutating arms to the daemon (the single
  * writer); the hidden `daemon` subcommand runs the engine's `runDaemon` in-process (the
- * long-running server). Only `--help`/`--version` route through the engine `main`.
+ * long-running server). `--help`/`--version` and the no-command usage are handled locally here.
  *
  * `plugins` is a reserved second positional: an inline chat message whose first word is `plugins`
  * is no longer deliverable (messages not starting with `plugins` are unaffected).
  */
 
-import { agentExists, APP_NAME, main as engineMain, parseArgs, runDaemon } from "@opsyhq/steward";
+import { agentExists, APP_NAME, runDaemon, VERSION } from "@opsyhq/steward";
+import { parseArgs, printHelp } from "./args.ts";
 import { runDelete } from "./commands/delete.ts";
 import { runList } from "./commands/list.ts";
 import { runNew } from "./commands/new.ts";
@@ -31,9 +32,21 @@ export async function main(argv: string[]): Promise<number> {
 	// (with `args.help`) before the global --help/--version intercept hands off to the engine.
 	if (sub === "plugins") return runPlugins(command, args.positionals.slice(2), args.help);
 
-	if (args.help || args.version || !command) return engineMain(argv);
+	if (args.help) {
+		printHelp();
+		return 0;
+	}
+	if (args.version) {
+		console.log(`${APP_NAME} ${VERSION}`);
+		return 0;
+	}
 
 	for (const diagnostic of args.diagnostics) process.stderr.write(`${diagnostic.message}\n`);
+
+	if (!command) {
+		printHelp();
+		return 1;
+	}
 
 	if (command === "new") return runNew(args.positionals.slice(1), args.model);
 	if (command === "list") return runList();
