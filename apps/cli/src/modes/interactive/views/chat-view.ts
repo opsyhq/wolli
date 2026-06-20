@@ -145,6 +145,7 @@ export class ChatView extends Container implements AppView {
 	private readonly pendingMessagesContainer: Container;
 	private readonly statusContainer: Container;
 	private readonly editorContainer: Container;
+	private readonly statusContainerBelow: Container;
 	private readonly keybindings: KeybindingsManager;
 	// The active input editor. Defaults to `defaultEditor` and is swapped when an extension
 	// supplies one via `ctx.ui.setEditorComponent` (restored to the default on undefined).
@@ -231,6 +232,7 @@ export class ChatView extends Container implements AppView {
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.editorContainer = new Container();
+		this.statusContainerBelow = new Container();
 		this.headerContainer = new Container();
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
@@ -296,6 +298,7 @@ export class ChatView extends Container implements AppView {
 		this.addChild(this.widgetContainerAbove);
 		this.addChild(this.statusContainer);
 		this.addChild(this.editorContainer);
+		this.addChild(this.statusContainerBelow);
 		this.addChild(this.widgetContainerBelow);
 		this.addChild(this.footerContainer);
 		this.editorContainer.addChild(this.editor);
@@ -2044,14 +2047,13 @@ export class ChatView extends Container implements AppView {
 			return;
 		}
 		this.lastBackArrowTime = now;
-		// Hint, auto-dismissed once the window lapses (no-op if the status line was repurposed).
-		this.statusContainer.clear();
+		this.statusContainerBelow.clear();
 		const hint = new Text(theme.fg("dim", "Press ← again for the dashboard."), 1, 0);
-		this.statusContainer.addChild(hint);
+		this.statusContainerBelow.addChild(hint);
 		this.ui.requestRender();
 		setTimeout(() => {
-			if (this.statusContainer.children.length === 1 && this.statusContainer.children[0] === hint) {
-				this.statusContainer.clear();
+			if (this.statusContainerBelow.children.length === 1 && this.statusContainerBelow.children[0] === hint) {
+				this.statusContainerBelow.clear();
 				this.ui.requestRender();
 			}
 		}, BACK_ARROW_WINDOW_MS);
@@ -2079,14 +2081,13 @@ export class ChatView extends Container implements AppView {
 		}
 		this.lastSigintTime = now;
 		this.editor.setText("");
-		// Hint, auto-dismissed once the window lapses (no-op if the status line was repurposed).
-		this.statusContainer.clear();
+		this.statusContainerBelow.clear();
 		const hint = new Text(theme.fg("dim", "Press Ctrl+C again to exit."), 1, 0);
-		this.statusContainer.addChild(hint);
+		this.statusContainerBelow.addChild(hint);
 		this.ui.requestRender();
 		setTimeout(() => {
-			if (this.statusContainer.children.length === 1 && this.statusContainer.children[0] === hint) {
-				this.statusContainer.clear();
+			if (this.statusContainerBelow.children.length === 1 && this.statusContainerBelow.children[0] === hint) {
+				this.statusContainerBelow.clear();
 				this.ui.requestRender();
 			}
 		}, CTRL_C_EXIT_WINDOW_MS);
