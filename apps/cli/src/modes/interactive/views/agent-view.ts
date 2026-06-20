@@ -1,25 +1,25 @@
 /**
  * Agent detail page: a scaffold from `agent.config` with placeholder sections. Never opens a daemon.
  *
- * The config never changes while mounted, so the scaffold is built once in `onMount`; only the bottom
- * `actionContainer` toggles between the key hints and the delete confirm, repainted differentially.
+ * The config never changes while mounted, so the scaffold is built once in `onMount`. Pressing `d`
+ * opens a type-the-name delete confirm as a centered modal via `tui.showOverlay`, which captures focus
+ * while it's up.
  */
 
 import { type Agent, isDeployed, theme } from "@opsyhq/steward";
-import { type Component, Container, matchesKey, Spacer, Text } from "@opsyhq/tui";
+import { type Component, Container, matchesKey, type OverlayHandle, type OverlayOptions, Spacer, Text } from "@opsyhq/tui";
 import type { AppView, ViewContext } from "../app.ts";
 import { DeleteConfirm } from "./components/delete-confirm.ts";
 
 const PLACEHOLDER_SECTIONS = ["Tools", "Integrations", "Runtime"];
 
-type Mode = "view" | "deleting";
+/** Centered modal sizing for the delete confirm overlay. */
+const MODAL_OPTIONS: OverlayOptions = { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" };
 
 export class AgentView extends Container implements AppView {
 	private ctx!: ViewContext;
 	private readonly agent: Agent;
-	private readonly actionContainer = new Container();
-	private mode: Mode = "view";
-	private deleteConfirm?: DeleteConfirm;
+	private overlay?: OverlayHandle;
 
 	constructor(agent: Agent) {
 		super();
@@ -50,27 +50,13 @@ export class AgentView extends Container implements AppView {
 			this.addChild(new Spacer(1));
 		}
 
-		this.addChild(this.actionContainer);
-		this.renderAction();
-	}
-
-	/** Swap the bottom region between the key hints and the delete confirm. */
-	private renderAction(): void {
-		this.actionContainer.clear();
-		if (this.mode === "deleting" && this.deleteConfirm) {
-			this.actionContainer.addChild(this.deleteConfirm);
-			return;
-		}
-		this.actionContainer.addChild(new Text(theme.fg("dim", "enter/→ chat · d delete · esc/← back"), 1, 0));
+		this.addChild(new Text(theme.fg("dim", "enter/→ chat · d delete · esc/← back"), 1, 0));
 	}
 
 	handleInput(data: string): void {
+		// While the modal is up it owns focus, so this only runs in the browse state.
 		if (matchesKey(data, "ctrl+c")) {
 			this.ctx.quit();
-			return;
-		}
-		if (this.mode === "deleting") {
-			this.deleteConfirm?.handleInput(data);
 			return;
 		}
 		if (matchesKey(data, "enter") || matchesKey(data, "right")) {
@@ -78,20 +64,7 @@ export class AgentView extends Container implements AppView {
 			return;
 		}
 		if (data === "d") {
-			this.mode = "deleting";
-			this.deleteConfirm = new DeleteConfirm(this.agent, {
-				onCancel: () => {
-					this.mode = "view";
-					this.deleteConfirm = undefined;
-					this.renderAction();
-					this.ctx.tui.requestRender();
-				},
-				// The agent is gone — fall back to the dashboard, which re-lists from disk.
-				onDeleted: () => this.ctx.home(),
-				requestRender: () => this.ctx.tui.requestRender(),
-			});
-			this.renderAction();
-			this.ctx.tui.requestRender();
+			this.openDelete();
 			return;
 		}
 		if (matchesKey(data, "escape") || matchesKey(data, "left")) {
@@ -99,9 +72,32 @@ export class AgentView extends Container implements AppView {
 		}
 	}
 
+	private openDelete(): void {
+		const confirm = new DeleteConfirm(this.agent, {
+			onCancel: () => this.closeOverlay(),
+			// The agent is gone — fall back to the dashboard, which re-lists from disk.
+			onDeleted: () => {
+				this.closeOverlay();
+				this.ctx.home();
+			},
+			onQuit: () => this.ctx.quit(),
+		});
+		this.overlay = this.ctx.tui.showOverlay(confirm, MODAL_OPTIONS);
+	}
+
+	/** Tear down the active modal and hand focus back to the detail page (hide() repaints). */
+	private closeOverlay(): void {
+		this.overlay?.hide();
+		this.overlay = undefined;
+	}
+
 	focusTarget(): Component {
 		return this;
 	}
 
-	onUnmount(): void {}
+	onUnmount(): void {
+		// Defensive: never let the modal survive a view swap (onDeleted navigates home).
+		this.overlay?.hide();
+		this.overlay = undefined;
+	}
 }
