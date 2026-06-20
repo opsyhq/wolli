@@ -20,16 +20,21 @@ import type {
 	ExtensionShortcut,
 	MessageRenderer,
 	SlashCommandInfo,
+	ToolInfo,
 	UserBashEvent,
 	UserBashEventResult,
 } from "./core/extensions/index.ts";
 import type { KeyId } from "./core/keybindings.ts";
+import type { ConfiguredPlugin } from "./core/plugin-manager.ts";
 import { getServiceManager } from "./core/service/service-manager.ts";
+import type { Skill } from "./core/skills.ts";
 import type {
+	ContextInfo,
 	DaemonCommand,
 	DaemonResponse,
 	DaemonSessionState,
 	ExtensionUIRequest,
+	IntegrationInfo,
 	OnboardServiceResult,
 } from "./types.ts";
 
@@ -308,6 +313,28 @@ export class AgentSession {
 	async getEntries(): Promise<SessionTreeEntry[]> {
 		const { entries } = await this.send<{ entries: SessionTreeEntry[] }>({ type: "get_entries" });
 		return entries;
+	}
+
+	// ---- Granular capability reads — the agent detail page round-trips these once on open ----
+	/** Tools the agent has (info view) plus the names of the currently-active ones. */
+	async listTools(): Promise<{ tools: ToolInfo[]; activeToolNames: string[] }> {
+		return this.send<{ tools: ToolInfo[]; activeToolNames: string[] }>({ type: "get_tool_info" });
+	}
+
+	async listIntegrations(): Promise<IntegrationInfo[]> {
+		return (await this.send<{ integrations: IntegrationInfo[] }>({ type: "get_integration_info" })).integrations;
+	}
+
+	async listSkills(): Promise<Skill[]> {
+		return (await this.send<{ skills: Skill[] }>({ type: "get_skills" })).skills;
+	}
+
+	async listPlugins(): Promise<ConfiguredPlugin[]> {
+		return (await this.send<{ plugins: ConfiguredPlugin[] }>({ type: "get_plugins" })).plugins;
+	}
+
+	async listContexts(): Promise<ContextInfo[]> {
+		return (await this.send<{ contexts: ContextInfo[] }>({ type: "get_context_info" })).contexts;
 	}
 
 	/** Per-turn read — the flattened transcript round-trips (only `.messages` is consumed client-side). */

@@ -1,23 +1,28 @@
-/** Agent detail page: a read-only scaffold from agent.config. Never opens a daemon. */
+/**
+ * Agent detail page: the config-based header (name/status/purpose/model) plus live
+ * capability sections — tools, integrations, skills, plugins, contexts — read from the
+ * agent's daemon. Opening the page now opens a daemon (same cost the chat route pays); it
+ * degrades gracefully to just the header when the daemon is unreachable.
+ */
 
-import { type Agent, isDeployed, theme } from "@opsyhq/steward";
+import { type Agent, type AgentSession, isDeployed, theme } from "@opsyhq/steward";
 import { type Component, Container, matchesKey, type OverlayHandle, Spacer, Text } from "@opsyhq/tui";
 import type { AppView, ViewContext } from "../app.ts";
 import { DeleteConfirm } from "./components/delete-confirm.ts";
 
-const PLACEHOLDER_SECTIONS = ["Tools", "Integrations", "Runtime"];
-
 export class AgentView extends Container implements AppView {
 	private ctx!: ViewContext;
 	private readonly agent: Agent;
+	private readonly session?: AgentSession;
 	private overlay?: OverlayHandle;
 
-	constructor(agent: Agent) {
+	constructor(agent: Agent, session?: AgentSession) {
 		super();
 		this.agent = agent;
+		this.session = session;
 	}
 
-	onMount(ctx: ViewContext): void {
+	async onMount(ctx: ViewContext): Promise<void> {
 		this.ctx = ctx;
 		const config = this.agent.config;
 
@@ -35,13 +40,62 @@ export class AgentView extends Container implements AppView {
 		this.addChild(new Text(theme.fg("dim", `Model: ${config.model ?? "default"}`), 1, 0));
 		this.addChild(new Spacer(1));
 
-		for (const label of PLACEHOLDER_SECTIONS) {
-			this.addChild(new Text(theme.bold(label), 1, 0));
-			this.addChild(new Text(theme.fg("dim", "(placeholder — populated later)"), 1, 0));
-			this.addChild(new Spacer(1));
+		// Live capability sections are rendered only when the daemon answered. No session (open
+		// failed) or a failed fetch shows just the config header above.
+		if (this.session) {
+			try {
+				const [toolInfo, integrations, skills, plugins, contexts] = await Promise.all([
+					this.session.listTools(),
+					this.session.listIntegrations(),
+					this.session.listSkills(),
+					this.session.listPlugins(),
+					this.session.listContexts(),
+				]);
+				const activeTools = new Set(toolInfo.activeToolNames);
+				this.addSection(
+					"Tools",
+					toolInfo.tools.map(
+						(t) => `${activeTools.has(t.name) ? theme.fg("success", "●") : theme.fg("dim", "○")} ${t.name}`,
+					),
+				);
+				this.addSection(
+					"Integrations",
+					integrations.map(
+						(i) =>
+							`${i.service} ${i.configured ? theme.fg("success", "configured") : theme.fg("dim", "not set up")} ${theme.fg("dim", `${i.actions.length} actions · ${i.events.length} events`)}`,
+					),
+				);
+				this.addSection(
+					"Skills",
+					skills.map((s) => `${s.name} ${theme.fg("dim", s.description)}`),
+				);
+				this.addSection(
+					"Plugins",
+					plugins.map((p) => p.source),
+				);
+				this.addSection(
+					"Contexts",
+					contexts.map((c) => `${c.name} ${theme.fg("dim", `${c.chars} chars`)}`),
+				);
+			} catch {
+				// Session unreachable mid-fetch -> render no capability sections.
+			}
 		}
 
 		this.addChild(new Text(theme.fg("dim", "enter/→ chat · d delete · esc/← back"), 1, 0));
+	}
+
+	/** A bold-labeled section: one line per entry, or a dim "none" when empty; trailing spacer. */
+	private addSection(label: string, lines: string[]): void {
+		this.addChild(new Text(theme.bold(label), 1, 0));
+		if (lines.length === 0) {
+			this.addChild(new Text(theme.fg("dim", "none"), 1, 0));
+		} else {
+			for (const line of lines) {
+				this.addChild(new Text(line, 1, 0));
+			}
+		}
+		this.addChild(new Spacer(1));
 	}
 
 	handleInput(data: string): void {

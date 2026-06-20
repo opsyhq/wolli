@@ -52,6 +52,13 @@ export type DaemonCommand =
 	// Read-only views the TUI client needs that map 1:1 onto existing host methods.
 	| { id?: string; type: "get_entries" }
 	| { id?: string; type: "get_resource_summary" }
+	// Granular capability reads the agent detail page consumes, assembled from in-process
+	// getters. Full-object reads keep the plain noun; trimmed info views take an `_info` verb.
+	| { id?: string; type: "get_tool_info" }
+	| { id?: string; type: "get_integration_info" }
+	| { id?: string; type: "get_skills" }
+	| { id?: string; type: "get_plugins" }
+	| { id?: string; type: "get_context_info" }
 	// Session-mutation helpers the TUI client drives (birth opener seed; resumed-message append).
 	| { id?: string; type: "seed_assistant_message"; text: string }
 	| { id?: string; type: "append_message"; message: AgentMessage }
@@ -87,6 +94,30 @@ export interface OnboardServiceResult {
 export type DaemonResponse =
 	| { id?: string; type: "response"; command: DaemonCommandType; success: true; data?: unknown }
 	| { id?: string; type: "response"; command: string; success: false; error: string };
+
+// ============================================================================
+// Capability reads (granular read commands for the agent detail page)
+// ============================================================================
+//
+// Skills/plugins return their full domain types (`Skill` / `ConfiguredPlugin`). Tools return
+// the existing `ToolInfo` view (the full `AgentTool` carries an `execute` fn that can't cross
+// the wire) plus the active selection. Integrations and contexts have no serializable full
+// type to return, so these two `*Info` shapes are the curated view — hence the `*_info` verbs.
+
+/** One integration service, with whether an account is configured and its action/event names. */
+export interface IntegrationInfo {
+	service: string;
+	configured: boolean;
+	actions: string[];
+	events: string[];
+}
+
+/** One context document the agent reads: curated memory or a project context file. */
+export interface ContextInfo {
+	name: string;
+	kind: "memory" | "project";
+	chars: number;
+}
 
 // ============================================================================
 // Extension UI (the round-trip the daemon-side extension runner drives)

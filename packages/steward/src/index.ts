@@ -311,11 +311,13 @@ export {
 	theme,
 } from "./theme/theme.ts";
 export type {
+	ContextInfo,
 	DaemonCommand,
 	DaemonResponse,
 	DaemonSessionState,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
+	IntegrationInfo,
 	OnboardServiceResult,
 } from "./types.ts";
 export { stripAnsi } from "./utils/ansi.ts";

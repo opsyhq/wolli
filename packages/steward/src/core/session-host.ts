@@ -42,8 +42,10 @@ import {
 } from "@opsyhq/agent";
 import type { NodeExecutionEnv } from "@opsyhq/agent/node";
 import { getAgentDir, getAgentIntegrationsPath } from "../config.ts";
+import type { ContextInfo, IntegrationInfo } from "../types.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { type AgentConfig, isDeployed, loadAgentConfig } from "./agent-config.ts";
+import { createAgentPluginManager } from "./agent-plugin-manager.ts";
 import type { AuthStorage } from "./auth-storage.ts";
 import type { ResourceDiagnostic, ResourceSummary } from "./diagnostics.ts";
 import { type ExtensionErrorListener, ExtensionRunner, emitSessionShutdownEvent } from "./extensions/runner.ts";
@@ -64,8 +66,9 @@ import { IntegrationRunner } from "./integrations/runner.ts";
 import { loadMemory } from "./memory.ts";
 import { type CustomMessage, createCustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
+import type { ConfiguredPlugin } from "./plugin-manager.ts";
 import { type PromptTemplate, parseCommandArgs } from "./prompt-templates.ts";
-import { DefaultResourceLoader } from "./resource-loader.ts";
+import { DefaultResourceLoader, loadProjectContextFiles } from "./resource-loader.ts";
 import { createAgentSession } from "./sdk.ts";
 import { openAgentSession } from "./session.ts";
 import { SessionManager } from "./session-manager.ts";
@@ -447,6 +450,85 @@ export class SessionHost {
 			commands: runner.getRegisteredCommands().length,
 			diagnostics,
 		};
+	}
+
+	/**
+	 * Granular capability lists for the agent detail page — assembled from the same
+	 * in-process getters the resource summary counts. Each maps onto one read command on
+	 * the daemon wire. Skills/plugins return their full domain types; tools/integrations/
+	 * contexts return curated info views (the `*_info` verbs).
+	 */
+	getToolInfos(): ToolInfo[] {
+		// NB: duplicates the getAllTools action's mapping (session-host bindExtensionCore) for
+		// now — kept separate deliberately rather than extracting a shared helper.
+		const runner = this.extensionRunner;
+		const registered = new Map(runner.getAllRegisteredTools().map((rt) => [rt.definition.name, rt]));
+		return this.harness.getTools().map((tool) => {
+			const rt = registered.get(tool.name);
+			if (rt) {
+				return {
+					name: rt.definition.name,
+					description: rt.definition.description,
+					parameters: rt.definition.parameters,
+					promptGuidelines: rt.definition.promptGuidelines,
+					sourceInfo: rt.sourceInfo,
+				};
+			}
+			return {
+				name: tool.name,
+				description: tool.description,
+				parameters: tool.parameters,
+				promptGuidelines: undefined,
+				sourceInfo: createSyntheticSourceInfo(`<builtin:${tool.name}>`, { source: "builtin" }),
+			};
+		});
+	}
+
+	/** Names of the currently-active tools, so the detail page can mark which are enabled. */
+	getActiveToolNames(): string[] {
+		return this.harness.getActiveTools().map((tool) => tool.name);
+	}
+
+	getIntegrationInfos(): IntegrationInfo[] {
+		const capabilities = new Map(
+			(this._integrationRunner?.getServiceCapabilities() ?? []).map((cap) => [cap.service, cap]),
+		);
+		return (this._integrationRunner?.getServices() ?? []).map((service) => {
+			const cap = capabilities.get(service);
+			return {
+				service,
+				configured: this.integrationAccounts.listAccounts(service).length > 0,
+				actions: cap?.actions ?? [],
+				events: cap?.events ?? [],
+			};
+		});
+	}
+
+	getSkills(): Skill[] {
+		return this._skills;
+	}
+
+	getPlugins(): ConfiguredPlugin[] {
+		return createAgentPluginManager(this.config.name).pluginManager.listConfiguredPlugins();
+	}
+
+	getContextInfos(): ContextInfo[] {
+		const { soul, memory, user } = loadMemory(this.config.name);
+		const contexts: ContextInfo[] = [
+			{ name: "SOUL.md", kind: "memory", chars: soul.length },
+			{ name: "MEMORY.md", kind: "memory", chars: memory.length },
+			{ name: "USER.md", kind: "memory", chars: user.length },
+		];
+		// The daemon's own prompt omits project context files (`noContextFiles: true`), so read
+		// them standalone here for display — this does not change prompt construction.
+		const projectFiles = loadProjectContextFiles({
+			cwd: this.getCwd(),
+			agentDir: getAgentDir(this.config.name),
+		});
+		for (const file of projectFiles) {
+			contexts.push({ name: basename(file.path), kind: "project", chars: file.content.length });
+		}
+		return contexts;
 	}
 
 	/** Build the first session. */

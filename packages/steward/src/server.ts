@@ -241,6 +241,16 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 			return ok(id, "get_entries", { entries: host.getEntries() });
 		case "get_resource_summary":
 			return ok(id, "get_resource_summary", host.getResourceSummary());
+		case "get_tool_info":
+			return ok(id, "get_tool_info", { tools: host.getToolInfos(), activeToolNames: host.getActiveToolNames() });
+		case "get_integration_info":
+			return ok(id, "get_integration_info", { integrations: host.getIntegrationInfos() });
+		case "get_skills":
+			return ok(id, "get_skills", { skills: host.getSkills() });
+		case "get_plugins":
+			return ok(id, "get_plugins", { plugins: host.getPlugins() });
+		case "get_context_info":
+			return ok(id, "get_context_info", { contexts: host.getContextInfos() });
 
 		// Session-mutation helpers
 		case "seed_assistant_message":

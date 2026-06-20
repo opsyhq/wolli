@@ -88,6 +88,15 @@ export class IntegrationRunner {
 		return Array.from(this.registeredIntegrations.keys());
 	}
 
+	/** Per-service action + event name lists, for capability display. */
+	getServiceCapabilities(): Array<{ service: string; actions: string[]; events: string[] }> {
+		return Array.from(this.registeredIntegrations.values()).map((def) => ({
+			service: def.service,
+			actions: Object.keys(def.config.actions ?? {}),
+			events: Object.keys(def.config.events ?? {}),
+		}));
+	}
+
 	private defaultServiceName(integrationPath: string): string {
 		if (integrationPath.startsWith("<") && integrationPath.endsWith(">")) {
 			return integrationPath.slice(1, -1).split(":")[0] || "integration";

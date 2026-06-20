@@ -4,7 +4,7 @@
  * page, `quit()` (Ctrl+C) exits. Global init and the sole `tui.start()`/`stop()` live here.
  */
 
-import { initTheme, type Steward } from "@opsyhq/steward";
+import { type AgentSession, initTheme, type Steward } from "@opsyhq/steward";
 import { type Component, Container, ProcessTerminal, setKeybindings, TUI } from "@opsyhq/tui";
 import { KeybindingsManager } from "../../keybindings-manager.ts";
 import { AgentView } from "./views/agent-view.ts";
@@ -85,8 +85,16 @@ export class App {
 				await this.show(new DashboardView());
 				return;
 			case "agent": {
-				const agent = this.steward.get(route.name);
-				await this.show(agent ? new AgentView(agent) : new DashboardView());
+				// Crash on the impossible "agent dir vanished" case rather than silently redirecting.
+				const agent = this.steward.get(route.name)!;
+				let session: AgentSession | undefined;
+				try {
+					session = await agent.open();
+				} catch {
+					// Daemon unreachable — still show the page, just without the capability sections.
+					session = undefined;
+				}
+				await this.show(new AgentView(agent, session));
 				return;
 			}
 			case "chat": {
