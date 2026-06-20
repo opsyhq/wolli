@@ -81,9 +81,9 @@ describe("onboardIntegration", () => {
 	});
 
 	it("persists a raw literal value on success", async () => {
-		// A raw secret (no `$`/`!` prefix) is a literal: it survives resolveAccount's
-		// resolve+schema check unchanged. This is how Telegram onboarding stores the
-		// pasted BotFather token directly, not as a reference.
+		// A raw secret (no `$`/`!` prefix) is a literal: it survives the resolve+schema
+		// check unchanged. This is how Telegram onboarding stores the pasted BotFather
+		// token directly, not as a reference.
 		const integration = await makeIntegration(async () => ({ token: "raw-literal-token" }));
 		const accounts = IntegrationAccountStorage.inMemory({});
 
@@ -98,8 +98,8 @@ describe("onboardIntegration", () => {
 		expect(accounts.get("fakesvc", "default")).toEqual({ token: "raw-literal-token" });
 	});
 
-	it("rolls back a record that fails validation", async () => {
-		// token: 123 is not a string → resolveAccount's schema check throws → removed.
+	it("does not persist a record that fails validation", async () => {
+		// token: 123 is not a string → schema check fails before persist → never stored.
 		const integration = await makeIntegration(async () => ({ token: 123 }));
 		const accounts = IntegrationAccountStorage.inMemory({});
 

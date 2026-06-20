@@ -167,7 +167,7 @@ export async function emitProjectTrustEvent(
 				return { result: handlerResult, errors };
 			} catch (error) {
 				errors.push({
-					extensionPath: ext.path,
+					path: ext.path,
 					event: event.type,
 					error: error instanceof Error ? error.message : String(error),
 					stack: error instanceof Error ? error.stack : undefined,
@@ -302,7 +302,7 @@ export class ExtensionRunner {
 				}
 			} catch (err) {
 				this.emitError({
-					extensionPath,
+					path: extensionPath,
 					event: "register_provider",
 					error: err instanceof Error ? err.message : String(err),
 					stack: err instanceof Error ? err.stack : undefined,
@@ -657,7 +657,7 @@ export class ExtensionRunner {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
-						extensionPath: ext.path,
+						path: ext.path,
 						event: event.type,
 						error: message,
 						stack,
@@ -686,7 +686,7 @@ export class ExtensionRunner {
 
 					if (handlerResult.message.role !== currentMessage.role) {
 						this.emitError({
-							extensionPath: ext.path,
+							path: ext.path,
 							event: "message_end",
 							error: "message_end handlers must return a message with the same role",
 						});
@@ -699,7 +699,7 @@ export class ExtensionRunner {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
-						extensionPath: ext.path,
+						path: ext.path,
 						event: "message_end",
 						error: message,
 						stack,
@@ -741,7 +741,7 @@ export class ExtensionRunner {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
-						extensionPath: ext.path,
+						path: ext.path,
 						event: "tool_result",
 						error: message,
 						stack,
@@ -801,7 +801,7 @@ export class ExtensionRunner {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
-						extensionPath: ext.path,
+						path: ext.path,
 						event: "user_bash",
 						error: message,
 						stack,
@@ -833,7 +833,7 @@ export class ExtensionRunner {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
-						extensionPath: ext.path,
+						path: ext.path,
 						event: "context",
 						error: message,
 						stack,
@@ -867,7 +867,7 @@ export class ExtensionRunner {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
-						extensionPath: ext.path,
+						path: ext.path,
 						event: "before_provider_request",
 						error: message,
 						stack,
@@ -926,7 +926,7 @@ export class ExtensionRunner {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
-						extensionPath: ext.path,
+						path: ext.path,
 						event: "before_agent_start",
 						error: message,
 						stack,
@@ -981,7 +981,7 @@ export class ExtensionRunner {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
-						extensionPath: ext.path,
+						path: ext.path,
 						event: "resources_discover",
 						error: message,
 						stack,
@@ -1022,7 +1022,7 @@ export class ExtensionRunner {
 					}
 				} catch (err) {
 					this.emitError({
-						extensionPath: ext.path,
+						path: ext.path,
 						event: "input",
 						error: err instanceof Error ? err.message : String(err),
 						stack: err instanceof Error ? err.stack : undefined,

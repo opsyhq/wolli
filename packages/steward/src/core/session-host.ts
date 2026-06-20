@@ -267,6 +267,8 @@ export class SessionHost {
 	private _interactiveBindings?: InteractiveContextBindings;
 	/** Teardown for the current runner's error listener, dropped before re-binding. */
 	private _extensionErrorUnsubscriber?: () => void;
+	/** Teardown for the integration runner's error listener, dropped before re-binding. */
+	private _integrationErrorUnsubscriber?: () => void;
 	/**
 	 * Re-subscribe hook fired after every harness swap (`build()`/`newSession()`) and at the
 	 * end of `reload()`. A headless wrapper (the daemon) registers it to re-point its event
@@ -345,6 +347,11 @@ export class SessionHost {
 		runner.bindCommandContext(bindings.commandContextActions);
 		this._extensionErrorUnsubscriber?.();
 		this._extensionErrorUnsubscriber = bindings.onError ? runner.onError(bindings.onError) : undefined;
+
+		this._integrationErrorUnsubscriber?.();
+		this._integrationErrorUnsubscriber = bindings.onError
+			? this._integrationRunner?.onError(bindings.onError)
+			: undefined;
 	}
 
 	/**
@@ -785,7 +792,7 @@ export class SessionHost {
 			return true;
 		} catch (err) {
 			this.extensionRunner.emitError({
-				extensionPath: `command:${commandName}`,
+				path: `command:${commandName}`,
 				event: "command",
 				error: err instanceof Error ? err.message : String(err),
 			});
@@ -967,7 +974,7 @@ export class SessionHost {
 		// Surface load errors through the runner's error channel (no listeners yet at
 		// build time → silent: the host mode attaches a listener later).
 		for (const { path, error } of errors) {
-			runner.emitError({ extensionPath: path, event: "load", error });
+			runner.emitError({ path, event: "load", error });
 		}
 
 		// Let extensions contribute additional skill/prompt paths before the prompt is
@@ -1103,7 +1110,7 @@ export class SessionHost {
 			sendMessage: (message, options) => {
 				this.sendCustomMessage(message, options).catch((err) =>
 					runner.emitError({
-						extensionPath: "<runtime>",
+						path: "<runtime>",
 						event: "send_message",
 						error: err instanceof Error ? err.message : String(err),
 					}),
@@ -1112,7 +1119,7 @@ export class SessionHost {
 			sendUserMessage: (content, options) => {
 				this.sendUserMessage(content, options).catch((err) =>
 					runner.emitError({
-						extensionPath: "<runtime>",
+						path: "<runtime>",
 						event: "send_user_message",
 						error: err instanceof Error ? err.message : String(err),
 					}),

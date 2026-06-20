@@ -4,19 +4,18 @@
  * Each account record holds whatever one configured account needs — credentials
  * and plain config alike (e.g. heartbeat's `{ intervalMs }`). The on-disk shape is
  * nested `Record<service, Record<accountId, AccountRecord>>` (integrations are
- * multi-account), and `resolveAccount` resolves + schema-validates a record on read.
- * The store lives at `~/.steward/agents/<name>/integrations.json`, is process-scoped,
- * and must survive `/reload` so per-account state isn't lost.
+ * multi-account). The store lives at `~/.steward/agents/<name>/integrations.json`,
+ * is process-scoped, and must survive `/reload` so per-account state isn't lost.
+ *
+ * Pure persistence: stores and returns RAW records; the runner resolves + validates
+ * them into `ctx.account`.
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import lockfile from "proper-lockfile";
-import type { TSchema } from "typebox";
-import { Compile } from "typebox/compile";
 import { getAgentIntegrationsPath } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
-import { resolveConfigValue } from "./resolve-config-value.ts";
 
 /** One configured account: an open bag of string/literal fields. */
 export type IntegrationAccountRecord = Record<string, unknown>;
@@ -245,53 +244,5 @@ export class IntegrationAccountStorage {
 		const drained = [...this.errors];
 		this.errors = [];
 		return drained;
-	}
-
-	/**
-	 * Read a stored account record, resolve its string fields, and validate it.
-	 *
-	 * Each STRING field is run through `resolveConfigValue` (literal/`$ENV`/`${ENV}`/
-	 * `!command`); non-string fields pass through untouched, and a field that resolves
-	 * to `undefined` is dropped (so a `schema` check then fails cleanly, mirroring
-	 * `resolveHeaders`). The result becomes `ctx.account`.
-	 *
-	 * Validation is owned here (the cold path) rather than in the runner's `bindCore`:
-	 * the runner pre-compiles only the hot-path event/action validators.
-	 */
-	resolveAccount(service: string, accountId: string, schema?: TSchema): IntegrationAccountRecord {
-		const record = this.get(service, accountId);
-		if (!record) {
-			const configured = this.listAccounts(service);
-			throw new Error(
-				`account '${accountId}' not configured for '${service}'${
-					configured.length > 0 ? ` (configured: ${configured.join(", ")})` : ""
-				}`,
-			);
-		}
-
-		const resolved: IntegrationAccountRecord = {};
-		for (const [key, value] of Object.entries(record)) {
-			if (typeof value === "string") {
-				const resolvedValue = resolveConfigValue(value);
-				if (resolvedValue !== undefined) {
-					resolved[key] = resolvedValue;
-				}
-				continue;
-			}
-			resolved[key] = value;
-		}
-
-		if (schema) {
-			const validator = Compile(schema);
-			if (!validator.Check(resolved)) {
-				const detail = validator
-					.Errors(resolved)
-					.map((error) => `${error.instancePath || "root"}: ${error.message}`)
-					.join("; ");
-				throw new Error(`Invalid account '${accountId}' for '${service}'${detail ? `: ${detail}` : ""}`);
-			}
-		}
-
-		return resolved;
 	}
 }

@@ -1,8 +1,8 @@
 /**
  * Integration onboarding — the persist/validate logic, decoupled from the TUI.
  *
- * `onboardIntegration` drives one integration's `onboard(ctx)`, persists the returned
- * record, and validates it by reusing the runner's `resolveAccount` path. It is
+ * `onboardIntegration` drives one integration's `onboard(ctx)`, validates the returned
+ * record against the service's `account` schema, and persists it only if valid. It is
  * UI-agnostic (the `ui` it forwards is whatever the caller built), so it is unit-testable
  * with a stub UI surface + an in-memory account store. The paired extension (the mapping
  * half of a dual-half package) is resolved in place by the package manager — no copy. The
@@ -10,8 +10,9 @@
  * agent's live account store and its wire-backed UI context.
  */
 
+import { Compile } from "typebox/compile";
 import type { IntegrationAccountRecord, IntegrationAccountStorage } from "../integration-account-storage.ts";
-import { resolveConfigValueUncached } from "../resolve-config-value.ts";
+import { resolveConfigValue, resolveConfigValueUncached } from "../resolve-config-value.ts";
 import type { Integration, IntegrationOnboardUI } from "./types.ts";
 
 export interface OnboardIntegrationParams {
@@ -64,15 +65,29 @@ export async function onboardIntegration(params: OnboardIntegrationParams): Prom
 		return { status: "cancelled" };
 	}
 
-	// Validate by reusing the runner's path: set, then resolveAccount (resolves `$ENV`
-	// and schema-checks). On failure, roll back the stored record.
-	accounts.set(service, "default", record);
-	try {
-		accounts.resolveAccount(service, "default", config.account);
-	} catch (err) {
-		accounts.remove(service, "default");
-		return { status: "error", message: err instanceof Error ? err.message : String(err) };
+	// Validate before persisting: resolve string fields, then schema-check. Only a valid record is stored.
+	if (config.account) {
+		const validator = Compile(config.account);
+		const resolved: IntegrationAccountRecord = {};
+		for (const [key, value] of Object.entries(record)) {
+			if (typeof value === "string") {
+				const resolvedValue = resolveConfigValue(value);
+				if (resolvedValue !== undefined) {
+					resolved[key] = resolvedValue;
+				}
+				continue;
+			}
+			resolved[key] = value;
+		}
+		if (!validator.Check(resolved)) {
+			const detail = validator
+				.Errors(resolved)
+				.map((e) => `${e.instancePath || "root"}: ${e.message}`)
+				.join("; ");
+			return { status: "error", message: `invalid account for '${service}'${detail ? `: ${detail}` : ""}` };
+		}
 	}
+	accounts.set(service, "default", record);
 
 	// The paired extension (the mapping half of a dual-half package) is resolved in place
 	// by the package manager from the same install — nothing to copy.

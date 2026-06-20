@@ -129,12 +129,10 @@ export interface LoadIntegrationsResult {
 	runtime: IntegrationRuntime;
 }
 
-/** An error surfaced by an integration's producer or dispatch, tagged with `service`/`account`/`event` when known. */
+/** Same shape as `ExtensionError` so integration errors ride the extension error sink unchanged. */
 export interface IntegrationError {
-	integrationPath: string;
-	service?: string;
-	account?: string;
-	event?: string;
+	path: string;
+	event: string;
 	error: string;
 	stack?: string;
 }

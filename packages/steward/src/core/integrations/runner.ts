@@ -1,16 +1,11 @@
 /**
- * Integration runner — mirror of `ExtensionRunner`. Owns producer lifecycle
- * (`run(ctx)` start/stop) and dispatch (events out to listeners, actions in).
- *
- * Lifecycle differs deliberately from extensions: producers hold exclusive live
- * connections (e.g. Telegram's 409-on-double-poll), so on reload the host stops the
- * previous runner BEFORE starting the new one (extensions, being pure dispatch, swap
- * new-before-old). The account store is process-scoped and never torn down here.
+ * Integration runner - runs integration producers and dispatches their events and actions.
  */
 
 import * as path from "node:path";
 import { Compile } from "typebox/compile";
-import type { IntegrationAccountStorage } from "../integration-account-storage.ts";
+import type { IntegrationAccountRecord, IntegrationAccountStorage } from "../integration-account-storage.ts";
+import { resolveConfigValue } from "../resolve-config-value.ts";
 import type {
 	Integration,
 	IntegrationActionContext,
@@ -24,27 +19,26 @@ import type {
 
 type Validator = ReturnType<typeof Compile>;
 
-/** A registered integration definition with its pre-compiled validators. */
-interface RegisteredDef {
+/** A registered integration with its pre-compiled validators. */
+interface RegisteredIntegration {
 	service: string;
 	integrationPath: string;
 	config: IntegrationConfig;
-	/** `Compile`d per `events[event]` at `bindCore` (hot path). */
+	/** Compiled account schema; absent when the integration has none. */
+	accountValidator?: Validator;
+	/** Compiled event-payload validators, keyed by event name. */
 	eventValidators: Map<string, Validator>;
-	/** `Compile`d per `actions[name].parameters` at `bindCore` (hot path). */
+	/** Compiled action-parameter validators, keyed by action name. */
 	actionValidators: Map<string, Validator>;
 }
 
-/**
- * A live `(service, account)` entry. Two-phase: `getIntegration().on()` creates an
- * entry holding ONLY `listeners`; `start()` fills the producer fields in place.
- */
-interface LiveEntry {
+/** A live (service, account): `on()` attaches listeners; `start()` fills in the running producer. */
+interface LiveIntegrationAccount {
 	listeners: Map<string, Set<(data: unknown) => void | Promise<void>>>;
 	controller?: AbortController;
 	disposer?: () => void;
 	done?: Promise<void>;
-	/** Per-(service, account) client cache (unused in v1). */
+	/** Per-account client cache (unused). */
 	client?: unknown;
 }
 
@@ -54,10 +48,10 @@ export class IntegrationRunner {
 	private runtime: IntegrationRuntime;
 	private cwd: string;
 	private accountStorage: IntegrationAccountStorage;
-	/** service → registered definition (first registration per service wins). */
-	private definitions: Map<string, RegisteredDef> = new Map();
-	/** `${service} ${accountId}` → live entry. */
-	private live: Map<string, LiveEntry> = new Map();
+	/** service → registered integration (first registration wins). */
+	private registeredIntegrations: Map<string, RegisteredIntegration> = new Map();
+	/** key (`service accountId`) → live account. */
+	private liveAccounts: Map<string, LiveIntegrationAccount> = new Map();
 	private errorListeners: Set<IntegrationErrorListener> = new Set();
 
 	constructor(
@@ -72,8 +66,8 @@ export class IntegrationRunner {
 
 		for (const integration of integrations) {
 			for (const [service, config] of integration.definitions) {
-				if (this.definitions.has(service)) continue; // first registration wins
-				this.definitions.set(service, {
+				if (this.registeredIntegrations.has(service)) continue; // first registration wins
+				this.registeredIntegrations.set(service, {
 					service,
 					integrationPath: integration.path,
 					config,
@@ -84,14 +78,14 @@ export class IntegrationRunner {
 		}
 	}
 
-	/** The runtime cwd (exec/client seam). */
+	/** The runtime cwd. */
 	getCwd(): string {
 		return this.cwd;
 	}
 
-	/** Service ids that have a registered definition. */
+	/** Registered service ids. */
 	getServices(): string[] {
-		return Array.from(this.definitions.keys());
+		return Array.from(this.registeredIntegrations.keys());
 	}
 
 	private defaultServiceName(integrationPath: string): string {
@@ -101,7 +95,10 @@ export class IntegrationRunner {
 		return path.basename(integrationPath, path.extname(integrationPath));
 	}
 
-	private compileDef(def: RegisteredDef): void {
+	private compileIntegration(def: RegisteredIntegration): void {
+		if (def.config.account) {
+			def.accountValidator = Compile(def.config.account);
+		}
 		if (def.config.events) {
 			for (const [event, schema] of Object.entries(def.config.events)) {
 				def.eventValidators.set(event, Compile(schema));
@@ -114,36 +111,28 @@ export class IntegrationRunner {
 		}
 	}
 
-	/**
-	 * Pre-compile the hot-path validators and rebind the runtime's registration
-	 * methods for immediate post-bind effect. Does NOT start producers (see `start`).
-	 *
-	 * Account-schema validation is owned by the account store's `resolveAccount`
-	 * (cold path), so `bindCore` compiles only the event/action validators.
-	 */
+	/** Compile validators and bind runtime registration. Does not start producers (see `start`). */
 	bindCore(): void {
-		for (const def of this.definitions.values()) {
-			this.compileDef(def);
+		for (const def of this.registeredIntegrations.values()) {
+			this.compileIntegration(def);
 		}
 
-		// From here, registration takes effect immediately. NOTE: producers for
-		// dynamically-registered integrations are not auto-started in v1 (seam — `start()`
-		// runs once during host build).
+		// After bind, register/unregister take effect immediately (producers are not auto-started).
 		this.runtime.registerIntegration = (config, integrationPath = "<unknown>") => {
 			const service = config.name ?? this.defaultServiceName(integrationPath);
-			if (this.definitions.has(service)) return;
-			const def: RegisteredDef = {
+			if (this.registeredIntegrations.has(service)) return;
+			const def: RegisteredIntegration = {
 				service,
 				integrationPath,
 				config,
 				eventValidators: new Map(),
 				actionValidators: new Map(),
 			};
-			this.compileDef(def);
-			this.definitions.set(service, def);
+			this.compileIntegration(def);
+			this.registeredIntegrations.set(service, def);
 		};
 		this.runtime.unregisterIntegration = (name) => {
-			this.definitions.delete(name);
+			this.registeredIntegrations.delete(name);
 		};
 	}
 
@@ -151,44 +140,72 @@ export class IntegrationRunner {
 		return `${service} ${account}`;
 	}
 
-	private ensureEntry(key: string): LiveEntry {
-		let entry = this.live.get(key);
+	private ensureEntry(key: string): LiveIntegrationAccount {
+		let entry = this.liveAccounts.get(key);
 		if (!entry) {
 			entry = { listeners: new Map() };
-			this.live.set(key, entry);
+			this.liveAccounts.set(key, entry);
 		}
 		return entry;
 	}
 
 	/**
-	 * Start configured producers. Per registered definition with a `run`, for each
-	 * configured account: skip if a producer is already attached (`entry?.done !==
-	 * undefined` — producer-liveness, NOT mere map presence, since `.on()` creates
-	 * listener-only entries beforehand). `run(ctx)` is invoked NON-BLOCKING: its
-	 * return promise is captured as `done`; a returned function becomes the `disposer`.
+	 * Resolve and validate the account for `(service, account)` — the value handed to
+	 * `ctx.account`. Throws if it is not configured or fails validation.
 	 */
+	private getAccount(def: RegisteredIntegration, account: string): IntegrationAccountRecord {
+		const record = this.accountStorage.get(def.service, account);
+		if (!record) {
+			const configured = this.accountStorage.listAccounts(def.service);
+			throw new Error(
+				`account '${account}' not configured for '${def.service}'${
+					configured.length > 0 ? ` (configured: ${configured.join(", ")})` : ""
+				}`,
+			);
+		}
+
+		const resolved: IntegrationAccountRecord = {};
+		for (const [key, value] of Object.entries(record)) {
+			if (typeof value === "string") {
+				const resolvedValue = resolveConfigValue(value);
+				if (resolvedValue !== undefined) {
+					resolved[key] = resolvedValue;
+				}
+				continue;
+			}
+			resolved[key] = value;
+		}
+
+		if (def.accountValidator && !def.accountValidator.Check(resolved)) {
+			const detail = def.accountValidator
+				.Errors(resolved)
+				.map((e) => `${e.instancePath || "root"}: ${e.message}`)
+				.join("; ");
+			throw new Error(`invalid account '${account}' for '${def.service}'${detail ? `: ${detail}` : ""}`);
+		}
+
+		return resolved;
+	}
+
+	/** Start each configured producer once, skipping any already running. `run(ctx)` is non-blocking. */
 	async start(): Promise<void> {
-		for (const def of this.definitions.values()) {
+		for (const def of this.registeredIntegrations.values()) {
 			const run = def.config.run;
 			if (!run) continue;
 			const service = def.service;
 
 			for (const accountId of this.accountStorage.listAccounts(service)) {
 				const key = this.liveKey(service, accountId);
-				const existing = this.live.get(key);
+				const existing = this.liveAccounts.get(key);
 				if (existing?.done !== undefined) continue; // producer already attached
 
 				let account: unknown;
 				try {
-					account = this.accountStorage.resolveAccount(service, accountId, def.config.account);
+					account = this.getAccount(def, accountId);
 				} catch (err) {
-					this.emitError({
-						integrationPath: def.integrationPath,
-						service,
-						account: accountId,
-						error: err instanceof Error ? err.message : String(err),
-						stack: err instanceof Error ? err.stack : undefined,
-					});
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({ path: def.integrationPath, event: "start", error: message, stack });
 					continue;
 				}
 
@@ -200,13 +217,11 @@ export class IntegrationRunner {
 					account,
 					signal: controller.signal,
 					emit: (event, data) => {
-						void this.emitFrom(service, accountId, event, data);
+						void this.emitIntegrationEvent(service, accountId, event, data);
 					},
 				};
 
-				// Non-blocking: capture run()'s promise as `done` (a long-running producer
-				// never resolves it, which is fine — start() does not await). A sync return is
-				// wrapped so a synchronous throw is also routed to the error channel.
+				// Non-blocking: capture the run promise as `done`; a returned function becomes the disposer.
 				entry.done = Promise.resolve()
 					.then(() => run(ctx))
 					.then((disposer) => {
@@ -215,12 +230,13 @@ export class IntegrationRunner {
 						}
 					})
 					.catch((err) => {
+						const message = err instanceof Error ? err.message : String(err);
+						const stack = err instanceof Error ? err.stack : undefined;
 						this.emitError({
-							integrationPath: def.integrationPath,
-							service,
-							account: accountId,
-							error: err instanceof Error ? err.message : String(err),
-							stack: err instanceof Error ? err.stack : undefined,
+							path: def.integrationPath,
+							event: "start",
+							error: `integration '${service}' account '${accountId}': ${message}`,
+							stack,
 						});
 					});
 			}
@@ -228,19 +244,14 @@ export class IntegrationRunner {
 	}
 
 	/**
-	 * Fan an emitted event out to the live listeners for `(service, account, event)`.
-	 * Validates against the pre-compiled checker (unknown event or bad payload →
-	 * emitError + drop; NEVER throws into the producer). A known event with zero live
-	 * listeners is silently dropped (v1 — see Risk 7 in the plan). Listeners run
-	 * sequentially with per-listener try/catch (backpressure).
+	 * Validate a producer-emitted event and fan it out to listeners for `(service, account)`.
+	 * Bad events go to `emitError` and are dropped, never thrown back into the producer.
 	 */
-	private async emitFrom(service: string, account: string, event: string, data: unknown): Promise<void> {
-		const def = this.definitions.get(service);
+	private async emitIntegrationEvent(service: string, account: string, event: string, data: unknown): Promise<void> {
+		const def = this.registeredIntegrations.get(service);
 		if (!def) {
 			this.emitError({
-				integrationPath: "<unknown>",
-				service,
-				account,
+				path: "<unknown>",
 				event,
 				error: `emit from unknown integration '${service}'`,
 			});
@@ -250,9 +261,7 @@ export class IntegrationRunner {
 		const validator = def.eventValidators.get(event);
 		if (!validator) {
 			this.emitError({
-				integrationPath: def.integrationPath,
-				service,
-				account,
+				path: def.integrationPath,
 				event,
 				error: `unknown event '${event}' for integration '${service}'`,
 			});
@@ -265,16 +274,14 @@ export class IntegrationRunner {
 				.map((e) => `${e.instancePath || "root"}: ${e.message}`)
 				.join("; ");
 			this.emitError({
-				integrationPath: def.integrationPath,
-				service,
-				account,
+				path: def.integrationPath,
 				event,
-				error: `invalid '${event}' payload${detail ? `: ${detail}` : ""}`,
+				error: `invalid '${event}' payload for integration '${service}'${detail ? `: ${detail}` : ""}`,
 			});
 			return;
 		}
 
-		const entry = this.live.get(this.liveKey(service, account));
+		const entry = this.liveAccounts.get(this.liveKey(service, account));
 		const listeners = entry?.listeners.get(event);
 		if (!listeners || listeners.size === 0) return;
 
@@ -282,26 +289,24 @@ export class IntegrationRunner {
 			try {
 				await listener(data);
 			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				const stack = err instanceof Error ? err.stack : undefined;
 				this.emitError({
-					integrationPath: def.integrationPath,
-					service,
-					account,
+					path: def.integrationPath,
 					event,
-					error: err instanceof Error ? err.message : String(err),
-					stack: err instanceof Error ? err.stack : undefined,
+					error: `listener for '${event}' on integration '${service}' failed: ${message}`,
+					stack,
 				});
 			}
 		}
 	}
 
 	/**
-	 * Get a handle bound to `(service, account)`. Throws a clear error when the service
-	 * is unknown or the account is not configured. `on()` attaches a listener (so
-	 * subscriptions made before `start()` don't miss early events); `call()` validates
-	 * params and runs the action.
+	 * Handle bound to `(service, account)`. Throws if the service is unknown or the account
+	 * is not configured. `on()` attaches a listener; `call()` validates params and runs the action.
 	 */
 	getIntegration(service: string, account = "default"): IntegrationHandle {
-		const def = this.definitions.get(service);
+		const def = this.registeredIntegrations.get(service);
 		if (!def) {
 			throw new Error(`integration '${service}' not found`);
 		}
@@ -336,7 +341,7 @@ export class IntegrationRunner {
 	}
 
 	private async callAction(
-		def: RegisteredDef,
+		def: RegisteredIntegration,
 		service: string,
 		account: string,
 		action: string,
@@ -347,7 +352,7 @@ export class IntegrationRunner {
 			throw new Error(`unknown action '${action}' for integration '${service}'`);
 		}
 
-		// Validator is precompiled at bindCore; compile on demand if called pre-bind.
+		// Precompiled at bindCore; compile on demand if called before bind.
 		const validator = def.actionValidators.get(action) ?? Compile(actionDef.parameters);
 		const args = params ?? {};
 		if (!validator.Check(args)) {
@@ -358,10 +363,9 @@ export class IntegrationRunner {
 			throw new Error(`invalid params for action '${action}'${detail ? `: ${detail}` : ""}`);
 		}
 
-		const resolvedAccount = this.accountStorage.resolveAccount(service, account, def.config.account);
-		// Reuse the live producer's controller when present; otherwise a per-call controller
-		// (and a per-call client — no shared rate-limit bucket; acceptable v1).
-		const entry = this.live.get(this.liveKey(service, account));
+		const resolvedAccount = this.getAccount(def, account);
+		// Reuse the live producer's controller when present, else a per-call one.
+		const entry = this.liveAccounts.get(this.liveKey(service, account));
 		const controller = entry?.controller ?? new AbortController();
 		const ctx: IntegrationActionContext = { account: resolvedAccount, signal: controller.signal };
 		return actionDef.execute(args, ctx);
@@ -391,22 +395,24 @@ export class IntegrationRunner {
 	}
 
 	/**
-	 * Stop every live producer: abort its signal, call its disposer (try/catch), then
-	 * await `done` against a grace timeout. Listener sets are kept so a subsequent
-	 * `start()` re-attaches; the account store is left intact.
+	 * Stop every live producer: abort, dispose, await `done` up to a grace timeout.
+	 * Listener sets are kept so a later `start()` re-attaches; the account store is left intact.
 	 */
 	async stop(): Promise<void> {
-		for (const entry of this.live.values()) {
+		for (const entry of this.liveAccounts.values()) {
 			if (entry.controller === undefined && entry.done === undefined) continue; // listener-only
 
 			entry.controller?.abort();
 			try {
 				entry.disposer?.();
 			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				const stack = err instanceof Error ? err.stack : undefined;
 				this.emitError({
-					integrationPath: "<unknown>",
-					error: err instanceof Error ? err.message : String(err),
-					stack: err instanceof Error ? err.stack : undefined,
+					path: "<unknown>",
+					event: "stop",
+					error: message,
+					stack,
 				});
 			}
 			if (entry.done) {

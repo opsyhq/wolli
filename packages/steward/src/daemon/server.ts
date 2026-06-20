@@ -694,6 +694,8 @@ export async function runDaemonMode(
 	host.bindInteractiveContext({
 		uiContext,
 		mode: "rpc",
+		// Surface runner errors (extension + integration) to clients as error notifies.
+		onError: (e) => uiContext.notify(`${e.path}: ${e.error}`, "error"),
 		commandContextActions: {
 			waitForIdle: () => host.harness.waitForIdle(),
 			newSession: async () => {

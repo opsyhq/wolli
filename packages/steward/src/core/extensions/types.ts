@@ -1629,7 +1629,7 @@ export interface LoadExtensionsResult {
 // ============================================================================
 
 export interface ExtensionError {
-	extensionPath: string;
+	path: string;
 	event: string;
 	error: string;
 	stack?: string;

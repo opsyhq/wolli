@@ -126,7 +126,7 @@ describe("integration runner", () => {
 
 		const badPayloadError = errors.find((e) => e.event === "tick" && /invalid 'tick' payload/.test(e.error));
 		expect(badPayloadError).toBeDefined();
-		expect(badPayloadError?.service).toBe("heartbeat");
+		expect(badPayloadError?.error).toContain("heartbeat");
 		// The bogus tick never reached the listener (no string seq landed in `ticks`).
 		expect(ticks.some((t) => (t.seq as unknown) === "x")).toBe(false);
 		// Real ticks may still have arrived in the meantime, but none was the bad one.
