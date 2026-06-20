@@ -16,12 +16,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { type ServerType, serve } from "@hono/node-server";
-import type { AgentHarness, AgentHarnessEvent, ThinkingLevel } from "@opsyhq/agent";
+import type { AgentHarness, AgentHarnessEvent } from "@opsyhq/agent";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
 import { APP_NAME, ENV_DAEMON_TOKEN, getAgentDir, VERSION } from "./config.ts";
-import { type AgentConfig, agentExists, deployAgent, isDeployed, loadAgentConfig } from "./core/agent-config.ts";
+import { agentExists, deployAgent, loadAgentConfig } from "./core/agent-config.ts";
 import { createAgentPluginManager } from "./core/agent-plugin-manager.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { loadDaemonConfig, saveDaemonConfig } from "./core/daemon-config.ts";
@@ -296,14 +296,10 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 
 /**
  * Resolve model/auth once and construct the `SessionHost` — the front half of the daemon runner.
- * Returns the unstarted `host` plus the `config` it was built from (the caller needs `config` for
- * the `fresh` decision), or an `{ error }` for the model/auth failures that should print to stderr
- * and exit 1.
+ * Returns the unstarted `host`, or an `{ error }` for the model/auth failures that should print to
+ * stderr and exit 1.
  */
-function createAgentSessionHost(
-	name: string,
-	opts: { provider?: string; model?: string; thinking?: ThinkingLevel },
-): { host: SessionHost; config: AgentConfig } | { error: string } {
+function createAgentSessionHost(name: string): { host: SessionHost } | { error: string } {
 	const config = loadAgentConfig(name);
 
 	const authStorage = AuthStorage.create();
@@ -311,11 +307,9 @@ function createAgentSessionHost(
 	const integrationAccounts = IntegrationAccountStorage.create(name);
 	const modelRegistry = ModelRegistry.create(authStorage);
 
-	// Model precedence: --model flag → agent.json → shared default → built-in.
+	// Model precedence: agent.json → shared default → built-in.
 	const resolved = resolveCliModel({
-		cliProvider: opts.provider,
-		cliModel: opts.model ?? config.model ?? sharedDefaultModel() ?? DEFAULT_MODEL,
-		cliThinking: opts.thinking,
+		cliModel: config.model ?? sharedDefaultModel() ?? DEFAULT_MODEL,
 		modelRegistry,
 	});
 	if (resolved.warning) {
@@ -334,19 +328,14 @@ function createAgentSessionHost(
 		return { error: `No credentials found for provider "${model.provider}". Log in with the steward CLI.` };
 	}
 
-	const thinkingLevel = opts.thinking ?? resolved.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+	const thinkingLevel = resolved.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
 	const host = new SessionHost({ name, model, thinkingLevel, authStorage, integrationAccounts });
-	return { host, config };
+	return { host };
 }
 
 export interface RunDaemonOptions {
 	/** Manual bind-port override for this run (debugging); 0/absent → OS-assigned ephemeral. */
 	port?: number;
-	/** Start a fresh session — honored only once deployed (a forming agent stays in its birth session). */
-	fresh?: boolean;
-	provider?: string;
-	model?: string;
-	thinking?: ThinkingLevel;
 }
 
 /**
@@ -362,16 +351,14 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
 		return 1;
 	}
 
-	const built = createAgentSessionHost(name, opts);
+	const built = createAgentSessionHost(name);
 	if ("error" in built) {
 		process.stderr.write(`${built.error}\n`);
 		return 1;
 	}
-	const { host, config } = built;
+	const { host } = built;
 
-	// A forming agent stays in its single birth session; `fresh` only takes effect once deployed.
-	const fresh = isDeployed(config) ? Boolean(opts.fresh) : false;
-	await host.start({ fresh });
+	await host.start();
 
 	// Every daemon binds an OS-assigned ephemeral port and writes it back to the temp config, where
 	// clients discover it — no port is reserved up front. This is also what lets deploy stand up the

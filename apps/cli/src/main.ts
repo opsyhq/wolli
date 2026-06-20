@@ -50,7 +50,7 @@ export async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 
-	if (command === "new") return runNew(args.positionals.slice(1), args.model);
+	if (command === "new") return runNew(args.positionals.slice(1));
 	if (command === "list") return runList();
 	if (command === "delete") return runDelete(args.positionals.slice(1));
 
@@ -62,13 +62,7 @@ export async function main(argv: string[]): Promise<number> {
 			process.stderr.write(`Usage: ${APP_NAME} daemon <name> [--port <n>]\n`);
 			return 1;
 		}
-		return runDaemon(name, {
-			port: args.port,
-			fresh: args.new,
-			provider: args.provider,
-			model: args.model,
-			thinking: args.thinking,
-		});
+		return runDaemon(name, { port: args.port });
 	}
 
 	const agent = steward.get(command);

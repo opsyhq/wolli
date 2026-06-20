@@ -14,7 +14,7 @@ import { App } from "../modes/interactive/app.ts";
 // A newly born agent opens the chat itself, asking its human what it is for.
 const BIRTH_OPENER = "What is my purpose?";
 
-export async function runNew(positionals: string[], model?: string): Promise<number> {
+export async function runNew(positionals: string[]): Promise<number> {
 	const steward = new Steward();
 	const name = positionals[0];
 	if (!name || positionals.length > 1) {
@@ -28,7 +28,7 @@ export async function runNew(positionals: string[], model?: string): Promise<num
 
 	// `create` throws on an invalid name; cli.ts's top-level handler prints the message and exits 1
 	// (identical to a local catch), and `agent.open()` already bubbles there — so no local try/catch.
-	const agent = steward.create(name, { model });
+	const agent = steward.create(name);
 	process.stdout.write(`Created agent "${agent.config.name}".\n`);
 
 	// Drop into the birth chat (seeded with the opener). App opens the daemon session for the route.
