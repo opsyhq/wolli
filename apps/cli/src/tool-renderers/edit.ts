@@ -7,7 +7,7 @@ import {
 	type Theme,
 } from "@opsyhq/steward";
 import { Box, Container, Spacer, Text } from "@opsyhq/tui";
-import { renderDiff } from "../modes/interactive/components/diff.ts";
+import { renderDiff } from "../modes/interactive/views/components/diff.ts";
 import { renderToolPath, str } from "./render-utils.ts";
 import type { ToolRenderer } from "./index.ts";
 

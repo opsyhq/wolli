@@ -19,6 +19,9 @@ export interface EditorComponent extends Component {
 	/** Set the text content */
 	setText(text: string): void;
 
+	/** Whether the cursor is at the very start (line 0, col 0). Lets a host repurpose left-arrow there. */
+	isCursorAtStart?(): boolean;
+
 	/** Handle raw terminal input (key presses, paste sequences, etc.) */
 	handleInput(data: string): void;
 

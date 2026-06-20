@@ -19,18 +19,14 @@ import {
 	CombinedAutocompleteProvider,
 	type Component,
 	Container,
-	Editor,
 	type EditorComponent,
-	getKeybindings,
 	Loader,
 	type MarkdownTheme,
 	matchesKey,
 	type OverlayHandle,
 	type OverlayOptions,
-	ProcessTerminal,
 	type SlashCommand,
 	Spacer,
-	setKeybindings,
 	Text,
 	TruncatedText,
 	TUI,
@@ -54,7 +50,6 @@ import {
 	getEditorTheme,
 	getMarkdownTheme,
 	getThemeByName,
-	initTheme,
 	isDeployed,
 	keyDisplayText,
 	type KeyId,
@@ -71,9 +66,11 @@ import {
 	type TruncationResult,
 	type WorkingIndicatorOptions,
 } from "@opsyhq/steward";
-import { FooterDataProvider } from "../../footer-data-provider.ts";
-import { KeybindingsManager } from "../../keybindings-manager.ts";
+import { FooterDataProvider } from "../../../footer-data-provider.ts";
+import { KeybindingsManager } from "../../../keybindings-manager.ts";
+import type { AppView, ViewContext } from "../app.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
+import { CustomEditor } from "./components/custom-editor.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
@@ -87,6 +84,9 @@ import { UserMessageComponent } from "./components/user-message.ts";
 
 /** Window (ms) within which a second Ctrl+C quits instead of clearing the editor. */
 const CTRL_C_EXIT_WINDOW_MS = 500;
+
+/** Window (ms) within which a second left-arrow (at the start of the input) navigates back. */
+const BACK_ARROW_WINDOW_MS = 2000;
 
 /** Default streaming loader message, restored when an extension clears its override. */
 const DEFAULT_WORKING_MESSAGE = "Working...";
@@ -112,7 +112,7 @@ const DEPLOY_INSTRUCTION =
  * an *assistant* turn with no model round-trip. The text is decided at the top
  * (`main.ts`), not here.
  */
-export interface InteractiveModeOptions {
+export interface ChatViewOptions {
 	/**
 	 * Seed an assistant message into the session on startup and render it, with no
 	 * model turn. `main.ts` sets it to the birth opener for a freshly created agent.
@@ -133,10 +133,12 @@ function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
-export class InteractiveMode {
+export class ChatView extends Container implements AppView {
 	private readonly session: AgentSession;
-	private readonly options: InteractiveModeOptions;
-	private readonly ui: TUI;
+	private readonly options: ChatViewOptions;
+	// The TUI, view context, editor, and loader are owned by `App` and wired in `onMount`.
+	private ui!: TUI;
+	private ctx!: ViewContext;
 	private readonly chatContainer: Container;
 	// Dim "Steering:/Follow-up:" lines for messages queued while a turn is streaming,
 	// rendered between the chat log and the status line.
@@ -146,9 +148,9 @@ export class InteractiveMode {
 	private readonly keybindings: KeybindingsManager;
 	// The active input editor. Defaults to `defaultEditor` and is swapped when an extension
 	// supplies one via `ctx.ui.setEditorComponent` (restored to the default on undefined).
-	private editor: EditorComponent;
-	private readonly defaultEditor: Editor;
-	private readonly loader: Loader;
+	private editor!: EditorComponent;
+	private defaultEditor!: CustomEditor;
+	private loader!: Loader;
 	private readonly markdownTheme: MarkdownTheme;
 	// Extension UI chrome. The header/footer containers hold extension-supplied components
 	// (empty otherwise — steward has no built-in header/footer rows); the widget containers
@@ -167,8 +169,8 @@ export class InteractiveMode {
 	private readonly extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
 	private customFooter?: Component & { dispose?(): void };
 	private customHeader?: Component & { dispose?(): void };
-	// Extension keyboard shortcuts, matched in handleGlobalInput; terminal-input listeners,
-	// tracked so reload can drop them; the custom editor factory and last composed provider.
+	// Extension keyboard shortcuts, matched by the editor's onExtensionShortcut hook; terminal-input
+	// listeners, tracked so reload can drop them; the custom editor factory and last composed provider.
 	private extensionShortcuts = new Map<KeyId, ExtensionShortcut>();
 	private readonly extensionTerminalInputUnsubscribers = new Set<() => void>();
 	private editorComponentFactory?: EditorFactory;
@@ -184,11 +186,10 @@ export class InteractiveMode {
 	private lastStatusSpacer?: Spacer;
 
 	private unsubscribe?: () => void;
-	private removeInputListener?: () => void;
-	private resolveExit?: () => void;
 	private busy = false;
 	private streamingComponent?: AssistantMessageComponent;
 	private lastSigintTime = 0;
+	private lastBackArrowTime = 0;
 	private stopped = false;
 	// Live tool components keyed by toolCallId. A component is created when its tool
 	// call first appears (streaming args or execution start), updated as output
@@ -220,15 +221,12 @@ export class InteractiveMode {
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
 	private fdPath: string | undefined;
 
-	constructor(session: AgentSession, options: InteractiveModeOptions = {}) {
+	constructor(session: AgentSession, options: ChatViewOptions = {}, keybindings: KeybindingsManager) {
+		super();
 		this.session = session;
 		this.options = options;
-		// The theme proxy and keybinding hints used by the tool renderers throw
-		// unless initialized first; do it before any styling runs.
-		initTheme();
-		this.keybindings = KeybindingsManager.create();
-		setKeybindings(this.keybindings);
-		this.ui = new TUI(new ProcessTerminal());
+		// `App` owns the TUI and global init; the keybindings handle is threaded in for extensions.
+		this.keybindings = keybindings;
 		this.chatContainer = new Container();
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
@@ -239,7 +237,17 @@ export class InteractiveMode {
 		this.footerContainer = new Container();
 		this.footerDataProvider = new FooterDataProvider(this.session.getCwd());
 		this.markdownTheme = getMarkdownTheme();
-		this.defaultEditor = new Editor(this.ui, getEditorTheme(), { paddingX: 1 });
+	}
+
+	/**
+	 * Mount the chat onto `App`'s terminal: build the editor + loader, wire the session/extension
+	 * plumbing, mount the region containers, then paint the transcript and seed the opener. `App` owns
+	 * `tui.start()` and focus.
+	 */
+	async onMount(ctx: ViewContext): Promise<void> {
+		this.ui = ctx.tui;
+		this.ctx = ctx;
+		this.defaultEditor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, { paddingX: 1 });
 		this.editor = this.defaultEditor;
 		this.loader = new Loader(
 			this.ui,
@@ -249,9 +257,16 @@ export class InteractiveMode {
 		);
 		// The Loader starts its animation timer on construction; halt it until busy.
 		this.loader.stop();
-	}
 
-	async run(): Promise<void> {
+		// App keybindings dispatch from the editor (the release-filtered focused path), not a raw input
+		// listener. On defaultEditor so a swapped-in extension editor inherits them.
+		this.defaultEditor.onAction("app.clear", () => void this.handleCtrlC());
+		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
+		this.defaultEditor.onAction("app.message.followUp", () => void this.handleFollowUp());
+		this.defaultEditor.onAction("app.message.dequeue", () => void this.handleDequeue());
+		this.defaultEditor.onLeftAtStart = () => this.handleBackArrow();
+		this.defaultEditor.onExtensionShortcut = (data) => this.handleExtensionShortcut(data);
+
 		this.editor.onSubmit = (text) => {
 			void this.handleSubmit(text);
 		};
@@ -273,23 +288,20 @@ export class InteractiveMode {
 		// the daemon's extension_ui_request stream to the client dialogs.
 		this.session.onUiRequest = (req) => void this.dispatchUiRequest(req);
 		this.setupExtensionShortcuts();
-		this.removeInputListener = this.ui.addInputListener((data) => this.handleGlobalInput(data));
 
-		this.ui.addChild(this.headerContainer);
-		this.ui.addChild(this.chatContainer);
-		this.ui.addChild(this.pendingMessagesContainer);
-		this.ui.addChild(this.widgetContainerAbove);
-		this.ui.addChild(this.statusContainer);
-		this.ui.addChild(this.editorContainer);
-		this.ui.addChild(this.widgetContainerBelow);
-		this.ui.addChild(this.footerContainer);
+		// Mount the region containers onto this view (itself a Container on `App`'s root).
+		this.addChild(this.headerContainer);
+		this.addChild(this.chatContainer);
+		this.addChild(this.pendingMessagesContainer);
+		this.addChild(this.widgetContainerAbove);
+		this.addChild(this.statusContainer);
+		this.addChild(this.editorContainer);
+		this.addChild(this.widgetContainerBelow);
+		this.addChild(this.footerContainer);
 		this.editorContainer.addChild(this.editor);
 
 		this.appendHeader();
 		this.showResourceSummary();
-
-		this.ui.setFocus(this.editor);
-		this.ui.start();
 
 		// Paint the resumed transcript (the persisted opener + any prior turns). On
 		// birth the session is empty, so this renders nothing and the seed below paints
@@ -297,7 +309,7 @@ export class InteractiveMode {
 		await this.renderInitialMessages();
 
 		// Seed an assistant opener instead of running a user turn: a newly born agent
-		// opens the chat itself. Fire-and-forget — run() returns the exit promise.
+		// opens the chat itself. Fire-and-forget.
 		// Gated on `!hasMessageEntries` so the seed is strictly idempotent: if a `message`
 		// entry already exists (resume, or a `new` run against a populated session) the
 		// opener was already rendered by `renderInitialMessages` and is not re-seeded.
@@ -305,10 +317,10 @@ export class InteractiveMode {
 		if (this.options.initialAssistantMessage && !hasMessageEntries) {
 			void this.seedInitialAssistantMessage(this.options.initialAssistantMessage);
 		}
+	}
 
-		await new Promise<void>((resolve) => {
-			this.resolveExit = resolve;
-		});
+	focusTarget(): Component {
+		return this.editor;
 	}
 
 	/**
@@ -437,14 +449,13 @@ export class InteractiveMode {
 		});
 	}
 
-	stop(): void {
+	/** Tear down on nav-away: stop the loader, drop the subscription, close the session (daemon lives). */
+	onUnmount(): void {
 		if (this.stopped) return;
 		this.stopped = true;
 		this.loader.stop();
 		this.unsubscribe?.();
-		this.removeInputListener?.();
-		this.ui.stop();
-		this.resolveExit?.();
+		this.session.close();
 	}
 
 	private appendHeader(): void {
@@ -526,11 +537,10 @@ export class InteractiveMode {
 			await this.handleReloadCommand();
 			return;
 		}
-		// `/quit` — exit. `stop()` triggers graceful shutdown (resolveExit + main.cleanup
-		// own the rest).
+		// `/quit` — exit steward (same as Ctrl+C).
 		if (trimmed === "/quit") {
 			this.editor.setText("");
-			this.stop();
+			this.ctx.quit();
 			return;
 		}
 
@@ -913,6 +923,16 @@ export class InteractiveMode {
 			if (newEditor.setAutocompleteProvider && this.autocompleteProvider) {
 				newEditor.setAutocompleteProvider(this.autocompleteProvider);
 			}
+			// If the swapped-in editor extends CustomEditor, copy the app actions/hooks onto it.
+			// Duck-typed because `instanceof` is unreliable across module boundaries.
+			const candidate = newEditor as unknown as Record<string, unknown>;
+			if (candidate.actionHandlers instanceof Map) {
+				candidate.onLeftAtStart ??= () => this.defaultEditor.onLeftAtStart?.();
+				candidate.onExtensionShortcut ??= (data: string) => this.defaultEditor.onExtensionShortcut?.(data);
+				for (const [action, handler] of this.defaultEditor.actionHandlers) {
+					(candidate.actionHandlers as Map<string, () => void>).set(action, handler);
+				}
+			}
 			this.editor = newEditor;
 		} else {
 			this.defaultEditor.setText(currentText);
@@ -1201,7 +1221,7 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Snapshot the extension keyboard shortcuts; handleGlobalInput matches against them. The
+	 * Snapshot the extension keyboard shortcuts; handleExtensionShortcut matches against them. The
 	 * runner is server-side and shortcuts aren't wired over the daemon, so this stays empty.
 	 */
 	private setupExtensionShortcuts(): void {
@@ -2002,48 +2022,39 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private handleGlobalInput(data: string): { consume?: boolean } | undefined {
-		if (matchesKey(data, "ctrl+c")) {
-			void this.handleCtrlC();
-			return { consume: true };
-		}
-		// The `Editor` has no `onAction`, so resolve the configured key here against the
-		// global keybindings (seeded with `app.tools.expand` by `KeybindingsManager`).
-		if (getKeybindings().matches(data, "app.tools.expand")) {
-			this.toggleToolOutputExpansion();
-			return { consume: true };
-		}
-		// Queue the editor text as a follow-up (alt+enter) or restore all queued messages to
-		// the editor (alt+up). Resolved here because the Editor has no `onAction`; skipped
-		// while a dialog owns the editor (it consumes its own keys).
-		if (!this.extensionSelector && !this.extensionInput && !this.extensionEditor) {
-			if (getKeybindings().matches(data, "app.message.followUp")) {
-				void this.handleFollowUp();
-				return { consume: true };
-			}
-			if (getKeybindings().matches(data, "app.message.dequeue")) {
-				void this.handleDequeue();
-				return { consume: true };
+	/** Match a key against the extension shortcuts (wired to the editor's `onExtensionShortcut`). */
+	private handleExtensionShortcut(data: string): boolean {
+		for (const [shortcut, registered] of this.extensionShortcuts) {
+			if (matchesKey(data, shortcut)) {
+				Promise.resolve(registered.handler(this.session.createShortcutContext())).catch((err) => {
+					this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
+				});
+				return true;
 			}
 		}
-		// Extension-registered shortcuts. Skipped while a dialog owns the editor (it has
-		// focus and consumes its own keys), matching the editor-focused dispatch elsewhere.
-		if (
-			this.extensionShortcuts.size > 0 &&
-			!this.extensionSelector &&
-			!this.extensionInput &&
-			!this.extensionEditor
-		) {
-			for (const [shortcut, registered] of this.extensionShortcuts) {
-				if (matchesKey(data, shortcut)) {
-					Promise.resolve(registered.handler(this.session.createShortcutContext())).catch((err) => {
-						this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
-					});
-					return { consume: true };
-				}
-			}
+		return false;
+	}
+
+	/** Left-arrow at the input start: two-press (hint, then navigate) back to the dashboard. */
+	private handleBackArrow(): void {
+		const now = Date.now();
+		if (now - this.lastBackArrowTime < BACK_ARROW_WINDOW_MS) {
+			this.lastBackArrowTime = 0;
+			this.ctx.home();
+			return;
 		}
-		return undefined;
+		this.lastBackArrowTime = now;
+		// Hint, auto-dismissed once the window lapses (no-op if the status line was repurposed).
+		this.statusContainer.clear();
+		const hint = new Text(theme.fg("dim", "Press ← again for the dashboard."), 1, 0);
+		this.statusContainer.addChild(hint);
+		this.ui.requestRender();
+		setTimeout(() => {
+			if (this.statusContainer.children.length === 1 && this.statusContainer.children[0] === hint) {
+				this.statusContainer.clear();
+				this.ui.requestRender();
+			}
+		}, BACK_ARROW_WINDOW_MS);
 	}
 
 	private async handleCtrlC(): Promise<void> {
@@ -2063,13 +2074,21 @@ export class InteractiveMode {
 		}
 		const now = Date.now();
 		if (now - this.lastSigintTime < CTRL_C_EXIT_WINDOW_MS) {
-			this.stop();
+			this.ctx.quit();
 			return;
 		}
 		this.lastSigintTime = now;
 		this.editor.setText("");
+		// Hint, auto-dismissed once the window lapses (no-op if the status line was repurposed).
 		this.statusContainer.clear();
-		this.statusContainer.addChild(new Text(theme.fg("dim", "Press Ctrl+C again to exit."), 1, 0));
+		const hint = new Text(theme.fg("dim", "Press Ctrl+C again to exit."), 1, 0);
+		this.statusContainer.addChild(hint);
 		this.ui.requestRender();
+		setTimeout(() => {
+			if (this.statusContainer.children.length === 1 && this.statusContainer.children[0] === hint) {
+				this.statusContainer.clear();
+				this.ui.requestRender();
+			}
+		}, CTRL_C_EXIT_WINDOW_MS);
 	}
 }

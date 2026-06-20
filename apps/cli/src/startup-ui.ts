@@ -7,8 +7,8 @@
 import { ProcessTerminal, setKeybindings, TUI } from "@opsyhq/tui";
 import { initTheme, type SettingsManager } from "@opsyhq/steward";
 import { KeybindingsManager } from "./keybindings-manager.ts";
-import { ExtensionInputComponent } from "./modes/interactive/components/extension-input.ts";
-import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
+import { ExtensionInputComponent } from "./modes/interactive/views/components/extension-input.ts";
+import { ExtensionSelectorComponent } from "./modes/interactive/views/components/extension-selector.ts";
 
 function createStartupTui(settingsManager: SettingsManager): TUI {
 	initTheme(settingsManager.getTheme());

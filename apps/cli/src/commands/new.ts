@@ -9,7 +9,7 @@
  */
 
 import { APP_NAME, Steward } from "@opsyhq/steward";
-import { InteractiveMode } from "../modes/interactive/interactive-mode.ts";
+import { App } from "../modes/interactive/app.ts";
 
 // A newly born agent opens the chat itself, asking its human what it is for.
 const BIRTH_OPENER = "What is my purpose?";
@@ -31,7 +31,8 @@ export async function runNew(positionals: string[], model?: string): Promise<num
 	const agent = steward.create(name, { model });
 	process.stdout.write(`Created agent "${agent.config.name}".\n`);
 
-	const session = await agent.open();
-	await new InteractiveMode(session, { initialAssistantMessage: BIRTH_OPENER }).run();
+	// Drop into the birth chat (seeded with the opener). App opens the daemon session for the route.
+	const app = new App(steward);
+	await app.start({ to: "chat", name: agent.name, initialAssistantMessage: BIRTH_OPENER });
 	return 0;
 }

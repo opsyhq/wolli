@@ -7,7 +7,7 @@ import {
 	type ToolRenderResultOptions,
 } from "@opsyhq/steward";
 import { Container, Text, truncateToWidth } from "@opsyhq/tui";
-import { truncateToVisualLines } from "../modes/interactive/components/visual-truncate.ts";
+import { truncateToVisualLines } from "../modes/interactive/views/components/visual-truncate.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import type { ToolRenderer } from "./index.ts";
 

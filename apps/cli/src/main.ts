@@ -18,7 +18,7 @@ import { runDelete } from "./commands/delete.ts";
 import { runList } from "./commands/list.ts";
 import { runNew } from "./commands/new.ts";
 import { runPlugins } from "./commands/plugins.ts";
-import { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
+import { App } from "./modes/interactive/app.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
 
 export async function main(argv: string[]): Promise<number> {
@@ -43,9 +43,11 @@ export async function main(argv: string[]): Promise<number> {
 
 	for (const diagnostic of args.diagnostics) process.stderr.write(`${diagnostic.message}\n`);
 
+	// Bare `steward` opens the dashboard.
 	if (!command) {
-		printHelp();
-		return 1;
+		const app = new App(steward);
+		await app.start({ to: "dashboard" });
+		return 0;
 	}
 
 	if (command === "new") return runNew(args.positionals.slice(1), args.model);
@@ -81,6 +83,8 @@ export async function main(argv: string[]): Promise<number> {
 		}
 		return runPrintMode(await agent.open(), message);
 	}
-	await new InteractiveMode(await agent.open()).run();
+	// Deep-link straight to the chat page.
+	const app = new App(steward);
+	await app.start({ to: "chat", name: command });
 	return 0;
 }

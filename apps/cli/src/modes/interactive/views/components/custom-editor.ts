@@ -1,20 +1,21 @@
-import { Editor, type EditorOptions, type EditorTheme, type TUI } from "@opsyhq/tui";
+import { Editor, type EditorOptions, type EditorTheme, matchesKey, type TUI } from "@opsyhq/tui";
 import type { AppKeybinding, KeybindingsManager } from "@opsyhq/steward";
 
 /**
- * Base editor that resolves app-level keybindings, for extensions that supply a custom
- * editor via `ctx.ui.setEditorComponent`. Extend it and override `handleInput`, calling
- * `super.handleInput(data)` for keys you don't handle.
+ * Editor that dispatches app keybindings from its own `handleInput`, i.e. on the focused-component
+ * path the TUI already release-filters (so a key fires once per physical press, unlike a raw input
+ * listener). Also the base for extension editors via `ctx.ui.setEditorComponent`.
  */
 export class CustomEditor extends Editor {
 	private keybindings: KeybindingsManager;
 	public actionHandlers: Map<AppKeybinding, () => void> = new Map();
 
-	// Special handlers that can be dynamically replaced
 	public onEscape?: () => void;
 	public onCtrlD?: () => void;
 	public onPasteImage?: () => void;
-	/** Handler for extension-registered shortcuts. Returns true if handled. */
+	/** Left-arrow at the very start of the input (e.g. navigate back). */
+	public onLeftAtStart?: () => void;
+	/** Extension-registered shortcuts; returns true if handled. */
 	public onExtensionShortcut?: (data: string) => boolean;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: EditorOptions) {
@@ -31,12 +32,12 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
-		if (this.keybindings.matches(data, "app.clipboard.pasteImage")) {
-			this.onPasteImage?.();
+		// Intercept paste-image only when a handler is registered (the default key is Ctrl+V).
+		if (this.onPasteImage && this.keybindings.matches(data, "app.clipboard.pasteImage")) {
+			this.onPasteImage();
 			return;
 		}
 
-		// Escape/interrupt — only when autocomplete is not capturing it.
 		if (this.keybindings.matches(data, "app.interrupt")) {
 			if (!this.isShowingAutocomplete()) {
 				const handler = this.onEscape ?? this.actionHandlers.get("app.interrupt");
@@ -45,19 +46,22 @@ export class CustomEditor extends Editor {
 					return;
 				}
 			}
-			// Let the parent handle escape for autocomplete cancellation.
-			super.handleInput(data);
+			super.handleInput(data); // escape cancels autocomplete
 			return;
 		}
 
-		// Exit (Ctrl+D) only when the editor is empty.
-		if (this.keybindings.matches(data, "app.exit")) {
-			if (this.getText().length === 0) {
-				const handler = this.onCtrlD ?? this.actionHandlers.get("app.exit");
-				if (handler) handler();
+		if (this.keybindings.matches(data, "app.exit") && this.getText().length === 0) {
+			const handler = this.onCtrlD ?? this.actionHandlers.get("app.exit");
+			if (handler) {
+				handler();
 				return;
 			}
-			// Fall through to editor handling for delete-char-forward when not empty.
+		}
+
+		// Left-arrow only navigates at the buffer start; elsewhere it falls through to move the cursor.
+		if (this.onLeftAtStart && matchesKey(data, "left") && this.isCursorAtStart() && !this.isShowingAutocomplete()) {
+			this.onLeftAtStart();
+			return;
 		}
 
 		for (const [action, handler] of this.actionHandlers) {

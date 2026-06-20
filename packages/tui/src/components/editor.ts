@@ -988,6 +988,10 @@ export class Editor implements Component, Focusable {
 		return { line: this.state.cursorLine, col: this.state.cursorCol };
 	}
 
+	isCursorAtStart(): boolean {
+		return this.state.cursorLine === 0 && this.state.cursorCol === 0;
+	}
+
 	setText(text: string): void {
 		this.cancelAutocomplete();
 		this.lastAction = null;
