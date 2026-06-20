@@ -1,12 +1,4 @@
-/**
- * Dashboard page: a `SelectList` of agents (`steward.list()`, no daemon). Press `n` to create one (then
- * drop into its birth chat), or `d` to delete the highlighted one after a type-the-name confirm. Both
- * flows open as centered modals via `tui.showOverlay`, which captures focus while they're up.
- *
- * Layout is a fixed skeleton built once in `onMount`: a stable `listContainer` (rebuilt only when the
- * agent set changes) and a static `actionContainer` of key hints. State changes mutate one region and
- * lean on the TUI's differential render — no whole-view clear, no forced repaint.
- */
+/** Dashboard: a SelectList of agents; `n` creates one, `d` deletes the highlighted one (both as modals). */
 
 import { type Agent, getSelectListTheme, theme } from "@opsyhq/steward";
 import {
@@ -17,7 +9,6 @@ import {
 	Input,
 	matchesKey,
 	type OverlayHandle,
-	type OverlayOptions,
 	type SelectItem,
 	SelectList,
 	Spacer,
@@ -25,12 +16,6 @@ import {
 } from "@opsyhq/tui";
 import { type AppView, BIRTH_OPENER, type ViewContext } from "../app.ts";
 import { DeleteConfirm } from "./components/delete-confirm.ts";
-
-/** Centered modal sizing, shared by the create and delete overlays. */
-const MODAL_OPTIONS: OverlayOptions = { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" };
-
-/** Raised-surface background so a modal reads as a layer above the page. */
-const panelBg = (t: string): string => theme.bg("selectedBg", t);
 
 export class DashboardView extends Container implements AppView {
 	private ctx!: ViewContext;
@@ -50,7 +35,6 @@ export class DashboardView extends Container implements AppView {
 		this.renderAction();
 	}
 
-	/** Rebuild the agent list. Runs once on mount, then only when the set changes (after a delete). */
 	private renderList(): void {
 		this.listContainer.clear();
 		const items: SelectItem[] = this.ctx.steward.list().map((agent) => ({
@@ -68,7 +52,6 @@ export class DashboardView extends Container implements AppView {
 		this.listContainer.addChild(this.list);
 	}
 
-	/** Static key hints; the list-dependent actions only show when there's a selectable list. */
 	private renderAction(): void {
 		this.actionContainer.clear();
 		const browseKeys = this.list ? "enter chat · tab/→ details · d delete · " : "";
@@ -76,7 +59,6 @@ export class DashboardView extends Container implements AppView {
 	}
 
 	handleInput(data: string): void {
-		// While a modal is up it owns focus, so this only runs in the browse state.
 		if (matchesKey(data, "ctrl+c")) {
 			this.ctx.quit();
 			return;
@@ -105,38 +87,31 @@ export class DashboardView extends Container implements AppView {
 		const create = new CreateAgent({
 			create: (name) => this.ctx.steward.create(name),
 			onCreated: (agent) => {
-				this.closeOverlay();
+				this.overlay?.hide();
 				void this.ctx.navigate({ to: "chat", name: agent.name, initialAssistantMessage: BIRTH_OPENER });
 			},
-			onCancel: () => this.closeOverlay(),
+			onCancel: () => this.overlay?.hide(),
 			onQuit: () => this.ctx.quit(),
 		});
-		this.overlay = this.ctx.tui.showOverlay(create, MODAL_OPTIONS);
+		this.overlay = this.ctx.tui.showOverlay(create, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
 	}
 
 	private openDelete(): void {
 		const selected = this.list?.getSelectedItem();
-		if (!selected) return; // Empty list / no selection: nothing to delete.
+		if (!selected) return;
 		const agent = this.ctx.steward.get(selected.value);
 		if (!agent) return;
 
 		const confirm = new DeleteConfirm(agent, {
-			onCancel: () => this.closeOverlay(),
+			onCancel: () => this.overlay?.hide(),
 			onDeleted: () => {
-				// The deleted agent drops out of the list — that's the confirmation.
 				this.renderList();
 				this.renderAction();
-				this.closeOverlay();
+				this.overlay?.hide();
 			},
 			onQuit: () => this.ctx.quit(),
 		});
-		this.overlay = this.ctx.tui.showOverlay(confirm, MODAL_OPTIONS);
-	}
-
-	/** Tear down the active modal and hand focus back to the dashboard (hide() repaints). */
-	private closeOverlay(): void {
-		this.overlay?.hide();
-		this.overlay = undefined;
+		this.overlay = this.ctx.tui.showOverlay(confirm, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
 	}
 
 	focusTarget(): Component {
@@ -144,33 +119,23 @@ export class DashboardView extends Container implements AppView {
 	}
 
 	onUnmount(): void {
-		// Defensive: never let a modal survive a view swap (navigation happens mid-flow).
 		this.overlay?.hide();
-		this.overlay = undefined;
 	}
 }
 
 interface CreateAgentCallbacks {
-	/** Create the agent (validates the name, rejects collisions); may throw. */
 	create: (name: string) => Agent;
-	/** The agent exists now; the host navigates into its birth chat. */
 	onCreated: (agent: Agent) => void;
-	/** Esc: abandon creation, return to the dashboard unchanged. */
 	onCancel: () => void;
-	/** Ctrl+C inside the modal still quits the whole shell. */
 	onQuit: () => void;
 }
 
-/**
- * New-agent modal. Dashboard-only, so it lives here rather than in its own component file. Shown as a
- * centered overlay (captures focus); takes a name, creates via `create`, and surfaces validation/IO
- * errors inline while keeping the modal open. Mirrors `DeleteConfirm`'s shape by hand — no shared base.
- */
+// New-agent modal; dashboard-only, so it lives here rather than in its own file.
 class CreateAgent implements Component, Focusable {
 	private readonly callbacks: CreateAgentCallbacks;
 	private readonly input = new Input();
 	private readonly status = new Text("", 1, 0);
-	private readonly box = new Box(2, 1, panelBg);
+	private readonly box = new Box(2, 1, (t) => theme.bg("selectedBg", t));
 
 	constructor(callbacks: CreateAgentCallbacks) {
 		this.callbacks = callbacks;
@@ -182,7 +147,6 @@ class CreateAgent implements Component, Focusable {
 		this.box.addChild(new Text(theme.fg("dim", "enter create · esc cancel"), 1, 0));
 	}
 
-	/** Focusable: the overlay owns focus, so mirror it onto the inner input for its cursor. */
 	get focused(): boolean {
 		return this.input.focused;
 	}
@@ -208,9 +172,7 @@ class CreateAgent implements Component, Focusable {
 
 	private submit(): void {
 		const name = this.input.getValue().trim();
-		if (name.length === 0) return; // Enter on a blank field: no-op, not an error.
-		// create() validates the name and rejects collisions; catch surfaces that (and IO errors) inline
-		// without crashing the synchronous input dispatch.
+		if (name.length === 0) return;
 		try {
 			this.callbacks.onCreated(this.callbacks.create(name));
 		} catch (error) {

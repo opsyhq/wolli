@@ -1,20 +1,11 @@
-/**
- * Agent detail page: a scaffold from `agent.config` with placeholder sections. Never opens a daemon.
- *
- * The config never changes while mounted, so the scaffold is built once in `onMount`. Pressing `d`
- * opens a type-the-name delete confirm as a centered modal via `tui.showOverlay`, which captures focus
- * while it's up.
- */
+/** Agent detail page: a read-only scaffold from agent.config. Never opens a daemon. */
 
 import { type Agent, isDeployed, theme } from "@opsyhq/steward";
-import { type Component, Container, matchesKey, type OverlayHandle, type OverlayOptions, Spacer, Text } from "@opsyhq/tui";
+import { type Component, Container, matchesKey, type OverlayHandle, Spacer, Text } from "@opsyhq/tui";
 import type { AppView, ViewContext } from "../app.ts";
 import { DeleteConfirm } from "./components/delete-confirm.ts";
 
 const PLACEHOLDER_SECTIONS = ["Tools", "Integrations", "Runtime"];
-
-/** Centered modal sizing for the delete confirm overlay. */
-const MODAL_OPTIONS: OverlayOptions = { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" };
 
 export class AgentView extends Container implements AppView {
 	private ctx!: ViewContext;
@@ -54,7 +45,6 @@ export class AgentView extends Container implements AppView {
 	}
 
 	handleInput(data: string): void {
-		// While the modal is up it owns focus, so this only runs in the browse state.
 		if (matchesKey(data, "ctrl+c")) {
 			this.ctx.quit();
 			return;
@@ -74,21 +64,14 @@ export class AgentView extends Container implements AppView {
 
 	private openDelete(): void {
 		const confirm = new DeleteConfirm(this.agent, {
-			onCancel: () => this.closeOverlay(),
-			// The agent is gone — fall back to the dashboard, which re-lists from disk.
+			onCancel: () => this.overlay?.hide(),
 			onDeleted: () => {
-				this.closeOverlay();
+				this.overlay?.hide();
 				this.ctx.home();
 			},
 			onQuit: () => this.ctx.quit(),
 		});
-		this.overlay = this.ctx.tui.showOverlay(confirm, MODAL_OPTIONS);
-	}
-
-	/** Tear down the active modal and hand focus back to the detail page (hide() repaints). */
-	private closeOverlay(): void {
-		this.overlay?.hide();
-		this.overlay = undefined;
+		this.overlay = this.ctx.tui.showOverlay(confirm, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
 	}
 
 	focusTarget(): Component {
@@ -96,8 +79,6 @@ export class AgentView extends Container implements AppView {
 	}
 
 	onUnmount(): void {
-		// Defensive: never let the modal survive a view swap (onDeleted navigates home).
 		this.overlay?.hide();
-		this.overlay = undefined;
 	}
 }
