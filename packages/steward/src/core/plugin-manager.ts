@@ -872,8 +872,7 @@ export class DefaultPluginManager implements PluginManager {
 				return;
 			}
 			if (parsed.type === "local") {
-				// Normalize raw input to the agent-relative recorded form (the string persisted to
-				// settings) so the store key here matches the one resolution derives.
+				// Record the agent-relative form so the store key matches what resolution derives.
 				await this.installLocal({ type: "local", path: this.normalizePluginSourceForSettings(source) }, "user");
 				return;
 			}
@@ -1101,8 +1100,7 @@ export class DefaultPluginManager implements PluginManager {
 			const metadata: PathMetadata = { source: sourceStr, scope, origin: "package" };
 
 			const installMissing = async (): Promise<boolean> => {
-				// Only npm/git need the network; a local copy is a filesystem operation, so it
-				// self-heals even in offline mode.
+				// Local is a filesystem copy — only npm/git are gated by offline mode.
 				if (parsed.type !== "local" && isOfflineModeEnabled()) {
 					return false;
 				}
@@ -1120,8 +1118,7 @@ export class DefaultPluginManager implements PluginManager {
 			if (parsed.type === "local") {
 				const installedPath = this.getLocalInstallPath(parsed, scope);
 				if (!existsSync(installedPath)) {
-					// Self-heal: copy the origin into the store on first resolve. Skip quietly
-					// if the origin is gone and no copy exists yet (resolution stays resilient).
+					// Self-heal on first resolve; skip quietly if the origin is gone (stay resilient).
 					const origin = this.resolvePathFromBase(parsed.path, this.getBaseDirForScope(scope));
 					if (!existsSync(origin)) continue;
 					const installed = await installMissing();
@@ -1732,11 +1729,9 @@ export class DefaultPluginManager implements PluginManager {
 	}
 
 	/**
-	 * Copy a local source's recorded origin into the managed store. The `local` analog of
-	 * `installGit`: `cpSync` replaces `git clone` (it handles both a single-file and a
-	 * directory origin), and a copied `package.json` triggers the same dependency install.
-	 * Deliberately NOT cloud-sync-ignored (unlike npm via `ensureNpmProject`): the copy is the
-	 * only copy and must travel with the agent home.
+	 * Copy a local source into the managed store — the `local` analog of `installGit`, with
+	 * `cpSync` for `git clone`. Not cloud-sync-ignored (unlike npm): the copy is the only copy
+	 * and must travel with the agent home.
 	 */
 	private async installLocal(source: LocalSource, scope: SourceScope): Promise<void> {
 		const origin = this.resolvePathFromBase(source.path, this.getBaseDirForScope(scope));
@@ -1817,13 +1812,8 @@ export class DefaultPluginManager implements PluginManager {
 	}
 
 	/**
-	 * Resolve the managed store path for a local source. Mirrors `getGitInstallPath`: the git
-	 * analog keys the store on the intrinsic `host/path`; here we key on a slug of the resolved
-	 * absolute origin. Keying on the absolute origin (not the literal source string) keeps the
-	 * key stable across every form the same origin arrives in — the stored agent-relative path
-	 * (resolution / `listConfiguredPlugins`), an absolute raw path (onboarding's
-	 * `pluginRootForSpec`), and the normalized form install/remove derive via
-	 * `normalizePluginSourceForSettings`.
+	 * Managed store path for a local source. Keys on the resolved absolute origin (not the raw
+	 * source string) so every form of the same origin maps to one store dir.
 	 */
 	private getLocalInstallPath(source: LocalSource, scope: SourceScope): string {
 		const installRoot = this.getLocalInstallRoot(scope);
