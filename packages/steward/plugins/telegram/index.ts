@@ -12,7 +12,7 @@
  *
  * ## Install + configure
  *
- *   steward integrations add <agent> ./examples/integrations/telegram
+ *   steward integrations add <agent> ./plugins/telegram
  *   # then paste the BotFather token into the guided prompt — that's it.
  *
  * Onboarding asks for the BotFather token directly, verifies it with a live `getMe()`,

@@ -22,9 +22,9 @@ Example extensions demonstrating:
 ### Telegram
 
 Turn a Steward agent into a Telegram chat bot. It ships as a self-contained package
-([integrations/telegram/](integrations/telegram/)) that brings its own grammY
-dependency: a transport ([index.ts](integrations/telegram/index.ts)) and a paired
-session mapping ([telegram-chat.ts](integrations/telegram/telegram-chat.ts)), using
+([../plugins/telegram/](../plugins/telegram/)) that brings its own grammY
+dependency: a transport ([index.ts](../plugins/telegram/index.ts)) and a paired
+session mapping ([telegram-chat.ts](../plugins/telegram/telegram-chat.ts)), using
 grammY long polling (no public URL or TLS).
 
 **Enable:**
@@ -36,7 +36,7 @@ grammY long polling (no public URL or TLS).
 2. Install the package into your agent (brings its own grammy via a symlink under
    `<agent>/integrations/`):
    ```sh
-   steward integrations add <name> ./examples/integrations/telegram
+   steward integrations add <name> ./plugins/telegram
    ```
 3. Run the guided setup — it walks you through BotFather, verifies the token, writes
    `integrations.json` (storing the `$ENV` reference, not the raw token), and copies the

@@ -19,7 +19,8 @@
 	"files": [
 		"dist",
 		"docs",
-		"examples"
+		"examples",
+		"plugins"
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",
