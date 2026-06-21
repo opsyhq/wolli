@@ -1102,11 +1102,12 @@ export class SessionHost {
 		// Resume restores the session's own thinking level over the agent default: a branch with a
 		// thinking_level_change entry pins to its recorded level. A fresh or untouched session follows
 		// the agent default (config.thinkingLevel), then DEFAULT_THINKING_LEVEL. Clamped to the model.
-		let resolvedThinking = config.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
-		if (!fresh && this._sessionManager.getBranch().some((e) => e.type === "thinking_level_change")) {
-			resolvedThinking = this.buildSessionContext().thinkingLevel as ThinkingLevel;
-		}
-		resolvedThinking = clampThinkingLevel(effectiveModel, resolvedThinking) as ThinkingLevel;
+		const agentThinking = config.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+		const sessionThinking =
+			!fresh && this._sessionManager.getBranch().some((e) => e.type === "thinking_level_change")
+				? (this.buildSessionContext().thinkingLevel as ThinkingLevel)
+				: agentThinking;
+		const resolvedThinking = clampThinkingLevel(effectiveModel, sessionThinking) as ThinkingLevel;
 
 		// Discover extensions, load skills/prompts, freeze the prompt, assemble tools.
 		// `reload` (fresh) discovers as a new-session reload; resume/first-start as startup.
