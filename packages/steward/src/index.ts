@@ -47,7 +47,7 @@ export {
 // Engine surface consumed by the @opsyhq/cli daemon client (Phase 2, Slice 1): the interactive
 // TUI + the built-in tool renderers were lifted into apps/cli and reach back for these helpers.
 export { executeBashWithOperations } from "./core/bash-executor.ts";
-export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
+export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, isValidThinkingLevel } from "./core/defaults.ts";
 export type { ResourceDiagnostic, ResourceSummary } from "./core/diagnostics.ts";
 // Extension system
 export type {

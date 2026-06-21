@@ -11,9 +11,16 @@
  *      served from the cached hello/get_state snapshot; per-turn reads (entries, messages) round-trip.
  */
 
-import type { Api, AssistantMessage, ImageContent, Model } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, AgentMessage, SessionContext, SessionTreeEntry } from "@opsyhq/agent";
+import {
+	type Api,
+	type AssistantMessage,
+	getSupportedThinkingLevels,
+	type ImageContent,
+	type Model,
+} from "@earendil-works/pi-ai";
+import type { AgentHarnessEvent, AgentMessage, SessionContext, SessionTreeEntry, ThinkingLevel } from "@opsyhq/agent";
 import { type DaemonConfig, loadDaemonConfig } from "./core/daemon-config.ts";
+import { THINKING_LEVELS } from "./core/defaults.ts";
 import type { ResourceSummary } from "./core/diagnostics.ts";
 import type {
 	ExtensionCommandContext,
@@ -370,6 +377,26 @@ export class AgentSession {
 	/** Persist the agent-tier scoped-model shortlist to agent.json. */
 	setEnabledModels(enabledModels: string[] | undefined): Promise<void> {
 		return this.send({ type: "set_enabled_models", enabledModels });
+	}
+
+	/** The live thinking level from the cached snapshot (kept fresh by the thinking_level_update frame). */
+	getThinkingLevel(): ThinkingLevel {
+		return this.snap.thinkingLevel;
+	}
+
+	/**
+	 * The thinking levels the current model supports (the daemon clamps internally). Falls back to
+	 * the full token set when no model is resolved, mirroring the in-process selector.
+	 */
+	getAvailableThinkingLevels(): ThinkingLevel[] {
+		const model = this.snap.model;
+		if (!model) return THINKING_LEVELS;
+		return getSupportedThinkingLevels(model) as ThinkingLevel[];
+	}
+
+	/** Switch the live thinking level; the daemon clamps it to the model and emits thinking_level_update. */
+	setThinkingLevel(level: ThinkingLevel): Promise<void> {
+		return this.send({ type: "set_thinking_level", level });
 	}
 
 	/** Per-turn read — the flattened transcript round-trips (only `.messages` is consumed client-side). */

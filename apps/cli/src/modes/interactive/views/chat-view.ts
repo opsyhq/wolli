@@ -13,7 +13,13 @@
  */
 
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import { AgentHarnessError, type AgentHarnessEvent, type AgentMessage, type SessionContext } from "@opsyhq/agent";
+import {
+	AgentHarnessError,
+	type AgentHarnessEvent,
+	type AgentMessage,
+	type SessionContext,
+	type ThinkingLevel,
+} from "@opsyhq/agent";
 import {
 	type AutocompleteProvider,
 	CombinedAutocompleteProvider,
@@ -52,6 +58,7 @@ import {
 	getMarkdownTheme,
 	getThemeByName,
 	isDeployed,
+	isValidThinkingLevel,
 	keyDisplayText,
 	type KeyId,
 	parseSkillBlock,
@@ -82,6 +89,7 @@ import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
+import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 
@@ -563,6 +571,13 @@ export class ChatView extends Container implements AppView {
 			await this.handleModelCommand(searchTerm);
 			return;
 		}
+		// `/thinking [level]` — set the thinking level (valid level applies immediately; else opens the selector).
+		if (trimmed === "/thinking" || trimmed.startsWith("/thinking ")) {
+			const level = trimmed.startsWith("/thinking ") ? trimmed.slice(10).trim() || undefined : undefined;
+			this.editor.setText("");
+			await this.handleThinkingCommand(level);
+			return;
+		}
 
 		// Handle bash command (! for normal, !! for excluded from context)
 		if (text.startsWith("!")) {
@@ -866,6 +881,60 @@ export class ChatView extends Container implements AppView {
 				initialSearchInput,
 			);
 			return { component: selector, focus: selector };
+		});
+	}
+
+	/**
+	 * `/thinking [level]` — set the thinking level. With no arg, open the selector; with a valid level,
+	 * apply it immediately; otherwise open the selector.
+	 */
+	private async handleThinkingCommand(level?: string): Promise<void> {
+		if (!level) {
+			this.showThinkingSelector();
+			return;
+		}
+
+		if (isValidThinkingLevel(level)) {
+			try {
+				await this.session.setThinkingLevel(level);
+				this.ui.requestRender();
+				this.showStatus(`Thinking level: ${level}`);
+			} catch (error) {
+				this.showError(error instanceof Error ? error.message : String(error));
+			}
+			return;
+		}
+
+		this.showThinkingSelector();
+	}
+
+	/**
+	 * Open the thinking-level selector. The current level + the model's supported levels come from the
+	 * cached snapshot (the daemon clamps internally), then are handed to the component. Selecting applies
+	 * the level.
+	 */
+	private showThinkingSelector(): void {
+		this.showSelector((done) => {
+			const selector = new ThinkingSelectorComponent(
+				this.session.getThinkingLevel(),
+				this.session.getAvailableThinkingLevels(),
+				async (level) => {
+					try {
+						await this.session.setThinkingLevel(level);
+						this.ui.requestRender();
+						done();
+						this.showStatus(`Thinking level: ${level}`);
+					} catch (error) {
+						done();
+						this.showError(error instanceof Error ? error.message : String(error));
+					}
+				},
+				() => {
+					done();
+					this.ui.requestRender();
+				},
+			);
+			return { component: selector, focus: selector.getSelectList() };
 		});
 	}
 

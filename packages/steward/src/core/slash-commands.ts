@@ -29,6 +29,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "compact", description: "Manually compact the session context" },
 	{ name: "reload", description: "Reload extensions, skills, and prompts" },
 	{ name: "model", description: "Switch the active model" },
+	{ name: "thinking", description: "Set the thinking level" },
 	{ name: "scoped-models", description: "Configure the session model shortlist" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];
