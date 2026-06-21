@@ -104,8 +104,8 @@ export function formatPathRelativeToCwdOrAbsolute(filePath: string, cwd: string)
 
 /**
  * Mark a path as ignored by cloud-sync providers (Dropbox / iCloud File Provider).
- * Managed package install dirs (`<agentDir>/npm`, `<agentDir>/git`) carry large
- * `node_modules` trees that should not be synced. Best-effort: failures are silent.
+ * The managed npm install dir (`<agentDir>/.plugins/npm`) carries large `node_modules`
+ * trees that should not be synced. Best-effort: failures are silent.
  */
 export function markPathIgnoredByCloudSync(path: string): void {
 	const attrs =

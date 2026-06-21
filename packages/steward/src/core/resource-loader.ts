@@ -134,7 +134,6 @@ export interface DefaultResourceLoaderOptions {
 	agentDir: string;
 	settingsManager?: SettingsManager;
 	eventBus?: EventBus;
-	additionalExtensionPaths?: string[];
 	additionalSkillPaths?: string[];
 	additionalPromptTemplatePaths?: string[];
 	additionalThemePaths?: string[];
@@ -172,7 +171,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private settingsManager: SettingsManager;
 	private eventBus: EventBus;
 	private pluginManager: DefaultPluginManager;
-	private additionalExtensionPaths: string[];
 	private additionalSkillPaths: string[];
 	private additionalPromptTemplatePaths: string[];
 	private additionalThemePaths: string[];
@@ -233,7 +231,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 			agentDir: this.agentDir,
 			settingsManager: this.settingsManager,
 		});
-		this.additionalExtensionPaths = options.additionalExtensionPaths ?? [];
 		this.additionalSkillPaths = options.additionalSkillPaths ?? [];
 		this.additionalPromptTemplatePaths = options.additionalPromptTemplatePaths ?? [];
 		this.additionalThemePaths = options.additionalThemePaths ?? [];
@@ -366,9 +363,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		// reload() preserves SettingsManager.projectTrusted and reloads settings for that trust state.
 		await this.settingsManager.reload();
 		const resolvedPaths = await this.pluginManager.resolve();
-		const cliExtensionPaths = await this.pluginManager.resolveExtensionSources(this.additionalExtensionPaths, {
-			temporary: true,
-		});
 		const metadataByPath = new Map<string, PathMetadata>();
 
 		this.extensionSkillSourceInfos = new Map();
@@ -409,42 +403,13 @@ export class DefaultResourceLoader implements ResourceLoader {
 			runtime: integrationsResult.runtime,
 		});
 
-		// Add CLI paths metadata
-		for (const r of cliExtensionPaths.extensions) {
-			if (!metadataByPath.has(r.path)) {
-				metadataByPath.set(r.path, { source: "cli", scope: "temporary", origin: "top-level" });
-			}
-		}
-		for (const r of cliExtensionPaths.skills) {
-			if (!metadataByPath.has(r.path)) {
-				metadataByPath.set(r.path, { source: "cli", scope: "temporary", origin: "top-level" });
-			}
-		}
-
-		const cliEnabledExtensions = getEnabledPaths(cliExtensionPaths.extensions);
-		const cliEnabledSkills = getEnabledPaths(cliExtensionPaths.skills);
-		const cliEnabledPrompts = getEnabledPaths(cliExtensionPaths.prompts);
-		const cliEnabledThemes = getEnabledPaths(cliExtensionPaths.themes);
-
-		const extensionPaths = this.noExtensions
-			? cliEnabledExtensions
-			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
+		const extensionPaths = this.noExtensions ? [] : enabledExtensions;
 
 		const extensionsResult = await this.loadFinalExtensionSet(extensionPaths, preTrustExtensions);
-		for (const p of this.additionalExtensionPaths) {
-			if (isLocalPath(p)) {
-				const resolved = this.resolveResourcePath(p);
-				if (!existsSync(resolved)) {
-					extensionsResult.errors.push({ path: resolved, error: `Extension path does not exist: ${resolved}` });
-				}
-			}
-		}
 		this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;
 		this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
 
-		const skillPaths = this.noSkills
-			? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths)
-			: this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths);
+		const skillPaths = this.mergePaths(this.noSkills ? [] : enabledSkills, this.additionalSkillPaths);
 
 		this.lastSkillPaths = skillPaths;
 		this.updateSkillsFromPaths(skillPaths, metadataByPath);
@@ -457,9 +422,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 			}
 		}
 
-		const promptPaths = this.noPromptTemplates
-			? this.mergePaths(cliEnabledPrompts, this.additionalPromptTemplatePaths)
-			: this.mergePaths([...cliEnabledPrompts, ...enabledPrompts], this.additionalPromptTemplatePaths);
+		const promptPaths = this.mergePaths(
+			this.noPromptTemplates ? [] : enabledPrompts,
+			this.additionalPromptTemplatePaths,
+		);
 
 		this.lastPromptPaths = promptPaths;
 		this.updatePromptsFromPaths(promptPaths, metadataByPath);
@@ -476,9 +442,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			}
 		}
 
-		const themePaths = this.noThemes
-			? this.mergePaths(cliEnabledThemes, this.additionalThemePaths)
-			: this.mergePaths([...cliEnabledThemes, ...enabledThemes], this.additionalThemePaths);
+		const themePaths = this.mergePaths(this.noThemes ? [] : enabledThemes, this.additionalThemePaths);
 
 		this.lastThemePaths = themePaths;
 		this.updateThemesFromPaths(themePaths, metadataByPath);
@@ -519,14 +483,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	private async loadCurrentExtensionSet(options: { includeInlineFactories: boolean }): Promise<LoadExtensionsResult> {
 		const resolvedPaths = await this.pluginManager.resolve();
-		const cliExtensionPaths = await this.pluginManager.resolveExtensionSources(this.additionalExtensionPaths, {
-			temporary: true,
-		});
 		const enabledExtensions = resolvedPaths.extensions.filter((r) => r.enabled).map((r) => r.path);
-		const cliEnabledExtensions = cliExtensionPaths.extensions.filter((r) => r.enabled).map((r) => r.path);
-		const extensionPaths = this.noExtensions
-			? cliEnabledExtensions
-			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
+		const extensionPaths = this.noExtensions ? [] : enabledExtensions;
 		const extensionsResult = await loadExtensions(
 			extensionPaths,
 			this.cwd,
