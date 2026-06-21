@@ -6,8 +6,10 @@
  * candidates.
  */
 
-import type { Api, KnownProvider, Model } from "@earendil-works/pi-ai";
+import { type Api, type KnownProvider, type Model, modelsAreEqual } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@opsyhq/agent";
+import chalk from "chalk";
+import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "./defaults.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 
@@ -218,6 +220,77 @@ export function parseModelPattern(
 		}
 		return result;
 	}
+}
+
+/**
+ * Resolve a list of model scope patterns to concrete models.
+ *
+ * For each pattern, finds all matching models and picks the best version:
+ * 1. Prefer alias (e.g., claude-sonnet-4-5) over dated versions (claude-sonnet-4-5-20250929)
+ * 2. If no alias, pick the latest dated version
+ *
+ * Supports models with colons in their IDs (e.g., OpenRouter's model:exacto).
+ * The algorithm tries to match the full pattern first, then progressively
+ * strips colon-suffixes to find a match.
+ */
+export async function resolveModelScope(patterns: string[], modelRegistry: ModelRegistry): Promise<ScopedModel[]> {
+	const availableModels = await modelRegistry.getAvailable();
+	const scopedModels: ScopedModel[] = [];
+
+	for (const pattern of patterns) {
+		// Check if pattern contains glob characters
+		if (pattern.includes("*") || pattern.includes("?") || pattern.includes("[")) {
+			// Extract optional thinking level suffix (e.g., "provider/*:high")
+			const colonIdx = pattern.lastIndexOf(":");
+			let globPattern = pattern;
+			let thinkingLevel: ThinkingLevel | undefined;
+
+			if (colonIdx !== -1) {
+				const suffix = pattern.substring(colonIdx + 1);
+				if (isValidThinkingLevel(suffix)) {
+					thinkingLevel = suffix;
+					globPattern = pattern.substring(0, colonIdx);
+				}
+			}
+
+			// Match against "provider/modelId" format OR just model ID
+			// This allows "*sonnet*" to match without requiring "anthropic/*sonnet*"
+			const matchingModels = availableModels.filter((m) => {
+				const fullId = `${m.provider}/${m.id}`;
+				return minimatch(fullId, globPattern, { nocase: true }) || minimatch(m.id, globPattern, { nocase: true });
+			});
+
+			if (matchingModels.length === 0) {
+				console.warn(chalk.yellow(`Warning: No models match pattern "${pattern}"`));
+				continue;
+			}
+
+			for (const model of matchingModels) {
+				if (!scopedModels.find((sm) => modelsAreEqual(sm.model, model))) {
+					scopedModels.push({ model, thinkingLevel });
+				}
+			}
+			continue;
+		}
+
+		const { model, thinkingLevel, warning } = parseModelPattern(pattern, availableModels);
+
+		if (warning) {
+			console.warn(chalk.yellow(`Warning: ${warning}`));
+		}
+
+		if (!model) {
+			console.warn(chalk.yellow(`Warning: No models match pattern "${pattern}"`));
+			continue;
+		}
+
+		// Avoid duplicates
+		if (!scopedModels.find((sm) => modelsAreEqual(sm.model, model))) {
+			scopedModels.push({ model, thinkingLevel });
+		}
+	}
+
+	return scopedModels;
 }
 
 export interface ResolveCliModelResult {

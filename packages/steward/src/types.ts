@@ -17,6 +17,7 @@ import type {
 } from "@opsyhq/agent";
 import type { AgentConfig } from "./core/agent-config.ts";
 import type { OnboardIntegrationResult } from "./core/integrations/onboarding.ts";
+import type { ScopedModel } from "./core/model-resolver.ts";
 
 // ============================================================================
 // Commands (POST /control body)
@@ -72,7 +73,12 @@ export type DaemonCommand =
 
 	// Model / thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
-	| { id?: string; type: "set_model"; provider: string; modelId: string };
+	| { id?: string; type: "set_model"; provider: string; modelId: string }
+	| { id?: string; type: "get_available_models" }
+	// Scoped models — `set_scoped_models` switches the session-only scope (daemon resolves the
+	// patterns against its private registry); `set_enabled_models` persists the agent-tier shortlist.
+	| { id?: string; type: "set_scoped_models"; enabledModelIds: string[] }
+	| { id?: string; type: "set_enabled_models"; enabledModels?: string[] };
 
 export type DaemonCommandType = DaemonCommand["type"];
 
@@ -157,6 +163,7 @@ export type ExtensionUIResponse =
 export interface DaemonSessionState {
 	model?: Model<Api>;
 	thinkingLevel: ThinkingLevel;
+	scopedModels: ScopedModel[];
 	isStreaming: boolean;
 	sessionId: string;
 	sessionName?: string;
@@ -173,8 +180,22 @@ export interface DaemonSessionState {
 // Events (GET /events SSE) — the curated forwarded union
 // ============================================================================
 
+/**
+ * Scoped-model scope change. Host-originated (not a harness own-event) — the daemon broadcasts
+ * it after `host.setScopedModels()` resolves, so attached clients refresh their cached scope.
+ */
+export interface ScopedModelsUpdateEvent {
+	type: "scoped_models_update";
+	scopedModels: ScopedModel[];
+}
+
 /** The harness events forwarded to attach clients. Internal own-events are dropped. */
-export type DaemonEvent = AgentEvent | QueueUpdateEvent | ModelUpdateEvent | ThinkingLevelUpdateEvent;
+export type DaemonEvent =
+	| AgentEvent
+	| QueueUpdateEvent
+	| ModelUpdateEvent
+	| ThinkingLevelUpdateEvent
+	| ScopedModelsUpdateEvent;
 
 /**
  * Runtime allowlist of forwarded event `type` strings — the broadcaster filter. Anything
@@ -197,4 +218,6 @@ export const FORWARDED_EVENT_TYPES: ReadonlySet<DaemonEvent["type"]> = new Set([
 	"queue_update",
 	"model_update",
 	"thinking_level_update",
+	// Host-originated daemon event
+	"scoped_models_update",
 ]);

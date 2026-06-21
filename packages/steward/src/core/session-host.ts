@@ -43,7 +43,7 @@ import {
 import type { NodeExecutionEnv } from "@opsyhq/agent/node";
 import { getAgentDir, getAgentIntegrationsPath } from "../config.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
-import { type AgentConfig, isDeployed, loadAgentConfig } from "./agent-config.ts";
+import { type AgentConfig, isDeployed, loadAgentConfig, saveAgentConfig } from "./agent-config.ts";
 import { createAgentPluginManager } from "./agent-plugin-manager.ts";
 import type { AuthStorage } from "./auth-storage.ts";
 import type { ResourceDiagnostic, ResourceSummary } from "./diagnostics.ts";
@@ -65,6 +65,7 @@ import { IntegrationRunner } from "./integrations/runner.ts";
 import { loadMemory } from "./memory.ts";
 import { type CustomMessage, createCustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
+import { resolveModelScope, type ScopedModel } from "./model-resolver.ts";
 import type { ConfiguredPlugin } from "./plugin-manager.ts";
 import { type PromptTemplate, parseCommandArgs } from "./prompt-templates.ts";
 import { DefaultResourceLoader, loadProjectContextFiles } from "./resource-loader.ts";
@@ -246,6 +247,18 @@ export class SessionHost {
 	private _integrationRunner?: IntegrationRunner;
 	private _sessionManager?: SessionManager;
 	private _modelRegistry?: ModelRegistry;
+	/** Session-only model shortlist, resolved against the private registry. Survives harness swaps. */
+	private _scopedModels: ScopedModel[] = [];
+	/**
+	 * Daemon-registered sink that broadcasts a `scoped_models_update` after every scope change.
+	 *
+	 * TODO: this bespoke host→daemon callback exists only because the broadcaster subscribes to the
+	 * harness, which doesn't own scoped models. Either (a) add a general host-level event emitter so
+	 * host-originated events flow like harness own-events without a per-feature handler, or (b)
+	 * redesign scoped models as a stateless daemon resolver with client-held state (drops this handler
+	 * and the `scoped_models_update` event, trading away multi-client scope sync).
+	 */
+	private _scopedModelsHandler?: (scopedModels: ScopedModel[]) => void;
 	/** Teardown fns for the current harness's event wiring (subscribe + on + onMessageEnd). */
 	private _unsubscribe: (() => void)[] = [];
 	/** The built-in tools, kept so refreshTools() can re-apply base + extension tools. */
@@ -335,6 +348,14 @@ export class SessionHost {
 	 */
 	setRebindHandler(handler: (harness: AgentHarness) => void): void {
 		this._rebindHandler = handler;
+	}
+
+	/**
+	 * Register the sink fired after every scope change, so a headless wrapper (the daemon) can
+	 * broadcast a `scoped_models_update` to attached clients. Called once by the daemon mode.
+	 */
+	setScopedModelsHandler(handler: (scopedModels: ScopedModel[]) => void): void {
+		this._scopedModelsHandler = handler;
 	}
 
 	/**
@@ -849,7 +870,40 @@ export class SessionHost {
 			throw new Error(`No configured credentials for ${provider}/${modelId}.`);
 		}
 		await this.harness.setModel(model);
+		// Persist the choice to this agent's own agent.json (`model`), the first source the startup
+		// resolution reads (`config.model ?? sharedDefaultModel() ?? DEFAULT_MODEL`), so the agent
+		// reopens on it. The shared/global default is a separate concern, set elsewhere.
+		const config = loadAgentConfig(this.options.name);
+		saveAgentConfig(this.options.name, { ...config, model: `${provider}/${modelId}` });
 		return model;
+	}
+
+	/** Auth-filtered models off the encapsulated registry — the single-pick selector's candidate list. */
+	getAvailableModels(): Model<Api>[] {
+		if (!this._modelRegistry) throw new Error("SessionHost not started.");
+		return this._modelRegistry.getAvailable();
+	}
+
+	/** The session's resolved model shortlist (empty = no scope). */
+	getScopedModels(): ScopedModel[] {
+		return this._scopedModels;
+	}
+
+	/**
+	 * Switch the session-only model scope. The patterns are resolved against the private registry
+	 * (`[]` clears the scope), then the registered sink broadcasts the resolved list to clients.
+	 */
+	async setScopedModels(enabledModelIds: string[]): Promise<void> {
+		if (!this._modelRegistry) throw new Error("SessionHost not started.");
+		this._scopedModels =
+			enabledModelIds.length > 0 ? await resolveModelScope(enabledModelIds, this._modelRegistry) : [];
+		this._scopedModelsHandler?.(this._scopedModels);
+	}
+
+	/** Persist the agent-tier scoped-model shortlist (`enabledModels`) to agent.json. */
+	setEnabledModels(enabledModels: string[] | undefined): void {
+		const config = loadAgentConfig(this.options.name);
+		saveAgentConfig(this.options.name, { ...config, enabledModels });
 	}
 
 	/**

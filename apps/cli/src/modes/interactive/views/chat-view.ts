@@ -12,7 +12,7 @@
  * Subscribe handlers must stay fast and non-throwing.
  */
 
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { AgentHarnessError, type AgentHarnessEvent, type AgentMessage, type SessionContext } from "@opsyhq/agent";
 import {
 	type AutocompleteProvider,
@@ -46,6 +46,7 @@ import {
 	type ExtensionUIDialogOptions,
 	type ExtensionUIRequest,
 	type ExtensionWidgetOptions,
+	findExactModelReferenceMatch,
 	getAvailableThemesWithPaths,
 	getEditorTheme,
 	getMarkdownTheme,
@@ -78,6 +79,8 @@ import { CustomMessageComponent } from "./components/custom-message.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
+import { ModelSelectorComponent } from "./components/model-selector.ts";
+import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
@@ -264,6 +267,7 @@ export class ChatView extends Container implements AppView {
 		// listener. On defaultEditor so a swapped-in extension editor inherits them.
 		this.defaultEditor.onAction("app.clear", () => void this.handleCtrlC());
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
+		this.defaultEditor.onAction("app.model.select", () => void this.showModelSelector());
 		this.defaultEditor.onAction("app.message.followUp", () => void this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => void this.handleDequeue());
 		this.defaultEditor.onLeftAtStart = () => this.handleBackArrow();
@@ -546,6 +550,19 @@ export class ChatView extends Container implements AppView {
 			this.ctx.quit();
 			return;
 		}
+		// `/scoped-models` — toggle/reorder the session model shortlist.
+		if (trimmed === "/scoped-models") {
+			this.editor.setText("");
+			await this.showModelsSelector();
+			return;
+		}
+		// `/model [search]` — switch the model (exact match switches immediately; else opens the selector).
+		if (trimmed === "/model" || trimmed.startsWith("/model ")) {
+			const searchTerm = trimmed.startsWith("/model ") ? trimmed.slice(7).trim() || undefined : undefined;
+			this.editor.setText("");
+			await this.handleModelCommand(searchTerm);
+			return;
+		}
 
 		// Handle bash command (! for normal, !! for excluded from context)
 		if (text.startsWith("!")) {
@@ -754,6 +771,153 @@ export class ChatView extends Container implements AppView {
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
 		}
 		this.ui.requestRender();
+	}
+
+	/**
+	 * Swap the editor for a selector in `editorContainer`, focus it (the TUI routes input there),
+	 * and restore the editor when `done` fires. De-dups the clear/addChild/setFocus idiom the model
+	 * and scoped-model panels share; teardown mirrors `hideExtensionSelector`.
+	 */
+	private showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
+		const done = () => {
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.editor);
+			this.ui.setFocus(this.editor);
+		};
+		const { component, focus } = create(done);
+		this.editorContainer.clear();
+		this.editorContainer.addChild(component);
+		this.ui.setFocus(focus);
+		this.ui.requestRender();
+	}
+
+	/**
+	 * `/model [search]` — switch the model. With no arg, open the selector; with an exact match,
+	 * switch immediately; otherwise open the selector seeded with the search term.
+	 */
+	private async handleModelCommand(searchTerm?: string): Promise<void> {
+		if (!searchTerm) {
+			await this.showModelSelector();
+			return;
+		}
+
+		const model = await this.findExactModelMatch(searchTerm);
+		if (model) {
+			try {
+				await this.session.setModel(model.provider, model.id);
+				this.ui.requestRender();
+				this.updateEditorBorderColor();
+				this.showStatus(`Model: ${model.id}`);
+			} catch (error) {
+				this.showError(error instanceof Error ? error.message : String(error));
+			}
+			return;
+		}
+
+		await this.showModelSelector(searchTerm);
+	}
+
+	private async findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined> {
+		const models = await this.getModelCandidates();
+		return findExactModelReferenceMatch(searchTerm, models);
+	}
+
+	private async getModelCandidates(): Promise<Model<Api>[]> {
+		const scopedModels = this.session.getScopedModels();
+		if (scopedModels.length > 0) {
+			return scopedModels.map((scoped) => scoped.model);
+		}
+		try {
+			return await this.session.getAvailableModels();
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * Open the single-pick model selector. The candidate list + current scope are pre-fetched (the
+	 * daemon owns the registry), then handed to the component. Selecting switches the model.
+	 */
+	private async showModelSelector(initialSearchInput?: string): Promise<void> {
+		const available = await this.session.getAvailableModels();
+		const scopedModels = this.session.getScopedModels();
+		this.showSelector((done) => {
+			const selector = new ModelSelectorComponent(
+				this.ui,
+				this.session.getModel(),
+				available,
+				scopedModels,
+				async (model) => {
+					try {
+						await this.session.setModel(model.provider, model.id);
+						this.ui.requestRender();
+						this.updateEditorBorderColor();
+						done();
+						this.showStatus(`Model: ${model.id}`);
+					} catch (error) {
+						done();
+						this.showError(error instanceof Error ? error.message : String(error));
+					}
+				},
+				() => {
+					done();
+					this.ui.requestRender();
+				},
+				initialSearchInput,
+			);
+			return { component: selector, focus: selector };
+		});
+	}
+
+	/**
+	 * `/scoped-models` — toggle/reorder the session model shortlist. `onChange` switches the
+	 * session-only scope (the daemon resolves the ids); `onPersist` (Ctrl+S) writes the agent-tier
+	 * `enabledModels` to agent.json. All-enabled / none-enabled collapses to "no scope".
+	 */
+	private async showModelsSelector(): Promise<void> {
+		const allModels = await this.session.getAvailableModels();
+		if (allModels.length === 0) {
+			this.showStatus("No models available");
+			return;
+		}
+
+		const sessionScopedModels = this.session.getScopedModels();
+		const currentEnabledIds: string[] | null =
+			sessionScopedModels.length > 0
+				? sessionScopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`)
+				: null;
+
+		const updateSessionModels = async (enabledIds: string[] | null) => {
+			if (enabledIds && enabledIds.length > 0 && enabledIds.length < allModels.length) {
+				await this.session.setScopedModels(enabledIds);
+			} else {
+				// All enabled or none enabled = no filter
+				await this.session.setScopedModels([]);
+			}
+			this.ui.requestRender();
+		};
+
+		this.showSelector((done) => {
+			const selector = new ScopedModelsSelectorComponent(
+				{ allModels, enabledModelIds: currentEnabledIds },
+				{
+					onChange: async (enabledIds) => {
+						await updateSessionModels(enabledIds);
+					},
+					onPersist: (enabledIds) => {
+						const newPatterns =
+							enabledIds === null || enabledIds.length === allModels.length ? undefined : enabledIds;
+						void this.session.setEnabledModels(newPatterns ? [...newPatterns] : undefined);
+						this.showStatus("Model selection saved to settings");
+					},
+					onCancel: () => {
+						done();
+						this.ui.requestRender();
+					},
+				},
+			);
+			return { component: selector, focus: selector };
+		});
 	}
 
 	/**

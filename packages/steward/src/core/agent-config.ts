@@ -28,6 +28,8 @@ export const AgentConfigSchema = Type.Object({
 	purpose: Type.String(),
 	createdAt: Type.String(),
 	model: Type.Optional(Type.String()),
+	/** Scoped-model patterns (same format as the `--models` CLI flag) — the agent-tier shortlist. */
+	enabledModels: Type.Optional(Type.Array(Type.String())),
 	/**
 	 * The single human-held latch. `null` (or absent) means the agent is still in
 	 * its birth phase — it maintains its own files but may not act unattended. An

@@ -41,7 +41,7 @@ import { resolveCliModel } from "./core/model-resolver.ts";
 import type { DefaultPluginManager } from "./core/plugin-manager.ts";
 import { getServiceManager } from "./core/service/service-manager.ts";
 import { SessionHost } from "./core/session-host.ts";
-import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
+import { getDefaultModel, getDefaultProvider, getEnabledModels } from "./core/settings.ts";
 import { type Theme, theme } from "./theme/theme.ts";
 import {
 	type DaemonCommand,
@@ -53,6 +53,7 @@ import {
 	type ExtensionUIResponse,
 	FORWARDED_EVENT_TYPES,
 	type OnboardServiceResult,
+	type ScopedModelsUpdateEvent,
 } from "./types.ts";
 import { getCwdRelativePath, resolvePath } from "./utils/paths.ts";
 
@@ -90,6 +91,7 @@ function snapshot(host: SessionHost): DaemonSessionState {
 	return {
 		model: harness.getModel(),
 		thinkingLevel: harness.getThinkingLevel(),
+		scopedModels: host.getScopedModels(),
 		isStreaming: !harness.isIdle,
 		sessionId: host.getSessionId(),
 		sessionName: host.getSessionName(),
@@ -229,6 +231,14 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 			return ok(id, "set_thinking_level");
 		case "set_model":
 			return ok(id, "set_model", await host.setModelById(cmd.provider, cmd.modelId));
+		case "get_available_models":
+			return ok(id, "get_available_models", { models: host.getAvailableModels() });
+		case "set_scoped_models":
+			await host.setScopedModels(cmd.enabledModelIds);
+			return ok(id, "set_scoped_models");
+		case "set_enabled_models":
+			host.setEnabledModels(cmd.enabledModels);
+			return ok(id, "set_enabled_models");
 
 		// State
 		case "get_state":
@@ -373,6 +383,14 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
 
 	await host.start();
 
+	// Seed the session scope by the same read-through chain as the model: agent.json → shared
+	// global. A new agent with no own enabledModels transparently inherits the global shortlist.
+	// Resolved here (post-start) because the scope resolves against the host's live registry.
+	const enabledModelIds = host.config.enabledModels ?? getEnabledModels();
+	if (enabledModelIds && enabledModelIds.length > 0) {
+		await host.setScopedModels(enabledModelIds);
+	}
+
 	// Every daemon binds an OS-assigned ephemeral port and writes it back to the temp config, where
 	// clients discover it — no port is reserved up front. This is also what lets deploy stand up the
 	// supervised daemon alongside the still-serving birth daemon: two ephemeral binds never collide.
@@ -433,7 +451,7 @@ export async function runDaemonMode(
 	let seq = 0;
 	const ring: { id: number; frame: string }[] = [];
 
-	const broadcast = async (event: AgentHarnessEvent): Promise<void> => {
+	const broadcast = async (event: AgentHarnessEvent | ScopedModelsUpdateEvent): Promise<void> => {
 		// Curation: forward only the allowlisted AgentEvent + queue/model/thinking updates;
 		// drop the internal own-events (save_point, settled, abort, session_*, tools_update, …).
 		if (!FORWARDED_EVENT_TYPES.has(event.type as DaemonEvent["type"])) return;
@@ -473,6 +491,9 @@ export async function runDaemonMode(
 	resubscribe(host.harness);
 	// Re-fire after every harness swap (build/newSession) and after reload.
 	host.setRebindHandler(resubscribe);
+	// Scoped-model scope changes are host-originated (not harness own-events), so bridge them
+	// onto the same broadcaster the harness events ride.
+	host.setScopedModelsHandler((scopedModels) => void broadcast({ type: "scoped_models_update", scopedModels }));
 
 	// ---- Extension-UI bridge ----------------------------------------------
 	// Swap the runner's noOpUIContext for one whose dialogs ride the SSE stream (via `output`) and

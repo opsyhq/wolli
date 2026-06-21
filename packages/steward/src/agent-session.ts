@@ -11,7 +11,7 @@
  *      served from the cached hello/get_state snapshot; per-turn reads (entries, messages) round-trip.
  */
 
-import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, ImageContent, Model } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, AgentMessage, SessionContext, SessionTreeEntry } from "@opsyhq/agent";
 import { type DaemonConfig, loadDaemonConfig } from "./core/daemon-config.ts";
 import type { ResourceSummary } from "./core/diagnostics.ts";
@@ -25,6 +25,7 @@ import type {
 	UserBashEventResult,
 } from "./core/extensions/index.ts";
 import type { KeyId } from "./core/keybindings.ts";
+import type { ScopedModel } from "./core/model-resolver.ts";
 import type { ConfiguredPlugin } from "./core/plugin-manager.ts";
 import { getServiceManager } from "./core/service/service-manager.ts";
 import type { ContextInfo, IntegrationInfo } from "./core/session-host.ts";
@@ -35,6 +36,7 @@ import type {
 	DaemonSessionState,
 	ExtensionUIRequest,
 	OnboardServiceResult,
+	ScopedModelsUpdateEvent,
 } from "./types.ts";
 
 /** How long `Agent.open()` waits for a freshly spawned daemon to answer `/health`. */
@@ -155,7 +157,7 @@ export class AgentSession {
 		this.routeEvent(JSON.parse(data));
 	}
 
-	private routeEvent(evt: AgentHarnessEvent | ExtensionUIRequest): void {
+	private routeEvent(evt: AgentHarnessEvent | ExtensionUIRequest | ScopedModelsUpdateEvent): void {
 		switch (evt.type) {
 			case "extension_ui_request":
 				// Not an AgentHarnessEvent — hand to the UI bridge and do NOT forward to handlers.
@@ -167,6 +169,10 @@ export class AgentSession {
 			case "thinking_level_update":
 				this.snap.thinkingLevel = evt.level;
 				break;
+			case "scoped_models_update":
+				// Host-originated, not an AgentHarnessEvent — refresh the cached scope and do NOT forward.
+				this.snap.scopedModels = evt.scopedModels;
+				return;
 			case "queue_update":
 				this.queue = { steer: evt.steer, followUp: evt.followUp };
 				break;
@@ -334,6 +340,36 @@ export class AgentSession {
 
 	async listContexts(): Promise<ContextInfo[]> {
 		return (await this.send<{ contexts: ContextInfo[] }>({ type: "get_context_info" })).contexts;
+	}
+
+	/** Auth-filtered models the daemon's registry exposes — the single-pick selector's candidates. */
+	async getAvailableModels(): Promise<Model<Api>[]> {
+		return (await this.send<{ models: Model<Api>[] }>({ type: "get_available_models" })).models;
+	}
+
+	/** Switch the live model; the daemon resolves the pair, persists the default, and emits model_update. */
+	setModel(provider: string, modelId: string): Promise<Model<Api>> {
+		return this.send({ type: "set_model", provider, modelId });
+	}
+
+	/** The live model from the cached snapshot (kept fresh by the model_update frame). */
+	getModel(): Model<Api> | undefined {
+		return this.snap.model;
+	}
+
+	/** The session's model scope from the cached snapshot (kept fresh by the scoped_models_update frame). */
+	getScopedModels(): ScopedModel[] {
+		return this.snap.scopedModels;
+	}
+
+	/** Switch the session-only scope; the daemon resolves the patterns and emits scoped_models_update. */
+	setScopedModels(enabledModelIds: string[]): Promise<void> {
+		return this.send({ type: "set_scoped_models", enabledModelIds });
+	}
+
+	/** Persist the agent-tier scoped-model shortlist to agent.json. */
+	setEnabledModels(enabledModels: string[] | undefined): Promise<void> {
+		return this.send({ type: "set_enabled_models", enabledModels });
 	}
 
 	/** Per-turn read — the flattened transcript round-trips (only `.messages` is consumed client-side). */

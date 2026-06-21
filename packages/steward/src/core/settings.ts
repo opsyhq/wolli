@@ -2,7 +2,7 @@
  * Reader for the shared settings.json (~/.steward/agent/settings.json).
  *
  * A plain read of the shared settings file, no schema and no writer. Steward
- * only needs the default provider/model to seed model resolution when neither
+ * only needs the default provider/model/scope to seed resolution when neither
  * `--model` nor agent.json specifies one.
  */
 
@@ -12,6 +12,7 @@ import { getSettingsPath } from "../config.ts";
 interface SharedSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
+	enabledModels?: string[];
 }
 
 // Parsed once per process and reused so the getters are cheap field reads
@@ -39,4 +40,8 @@ export function getDefaultProvider(): string | undefined {
 
 export function getDefaultModel(): string | undefined {
 	return readSettings().defaultModel;
+}
+
+export function getEnabledModels(): string[] | undefined {
+	return readSettings().enabledModels;
 }

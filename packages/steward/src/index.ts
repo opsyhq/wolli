@@ -201,9 +201,12 @@ export { convertToLlm, createBashExecutionMessage } from "./core/messages.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
 export {
 	defaultModelPerProvider,
+	findExactModelReferenceMatch,
 	parseModelPattern,
 	type ResolveCliModelResult,
 	resolveCliModel,
+	resolveModelScope,
+	type ScopedModel,
 } from "./core/model-resolver.ts";
 // Read types the @opsyhq/cli client's local `list` arm consumes against `dist`.
 export type {

@@ -1,5 +1,6 @@
 import {
 	type AssistantMessage,
+	clampThinkingLevel,
 	type ImageContent,
 	type Model,
 	streamSimple,
@@ -908,6 +909,10 @@ export class AgentHarness<
 			}
 			this.model = model;
 			await this.emitOwn({ type: "model_update", model, previousModel, source: "set" });
+			const clamped = clampThinkingLevel(model, this.thinkingLevel);
+			if (clamped !== this.thinkingLevel) {
+				await this.setThinkingLevel(clamped);
+			}
 		} catch (error) {
 			throw normalizeHarnessError(error, "session");
 		}
