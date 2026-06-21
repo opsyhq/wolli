@@ -28,6 +28,17 @@ export const AgentConfigSchema = Type.Object({
 	purpose: Type.String(),
 	createdAt: Type.String(),
 	model: Type.Optional(Type.String()),
+	/** Agent-tier default thinking level; reloaded on each new session, restored per session on resume. */
+	thinkingLevel: Type.Optional(
+		Type.Union([
+			Type.Literal("off"),
+			Type.Literal("minimal"),
+			Type.Literal("low"),
+			Type.Literal("medium"),
+			Type.Literal("high"),
+			Type.Literal("xhigh"),
+		]),
+	),
 	/** Scoped-model patterns (same format as the `--models` CLI flag) — the agent-tier shortlist. */
 	enabledModels: Type.Optional(Type.Array(Type.String())),
 	/**

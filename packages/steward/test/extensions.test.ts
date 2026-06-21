@@ -131,7 +131,6 @@ function makeHost(): { host: SessionHost; registration: ReturnType<typeof regist
 	const host = new SessionHost({
 		name: AGENT,
 		model,
-		thinkingLevel: "off",
 		authStorage,
 		integrationAccounts: IntegrationAccountStorage.inMemory(),
 	});

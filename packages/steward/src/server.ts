@@ -226,7 +226,7 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 
 		// Model / thinking
 		case "set_thinking_level":
-			await harness.setThinkingLevel(cmd.level);
+			await host.setThinkingLevel(cmd.level);
 			return ok(id, "set_thinking_level");
 		case "set_model":
 			return ok(id, "set_model", await host.setModelById(cmd.provider, cmd.modelId));
@@ -364,8 +364,7 @@ async function createAgentSessionHost(name: string): Promise<{ host: SessionHost
 		return { error: `No credentials found for provider "${model.provider}". Log in with the steward CLI.` };
 	}
 
-	const thinkingLevel = resolved.thinkingLevel;
-	const host = new SessionHost({ name, model, thinkingLevel, authStorage, integrationAccounts });
+	const host = new SessionHost({ name, model, authStorage, integrationAccounts });
 	return { host };
 }
 

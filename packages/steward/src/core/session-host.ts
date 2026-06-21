@@ -27,15 +27,16 @@
 
 import { readFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import type {
-	Api,
-	AssistantMessage,
-	ImageContent,
-	Model,
-	OAuthLoginCallbacks,
-	OAuthProviderId,
-	OAuthSelectPrompt,
-	TextContent,
+import {
+	type Api,
+	type AssistantMessage,
+	clampThinkingLevel,
+	type ImageContent,
+	type Model,
+	type OAuthLoginCallbacks,
+	type OAuthProviderId,
+	type OAuthSelectPrompt,
+	type TextContent,
 } from "@earendil-works/pi-ai";
 import {
 	type AgentHarness,
@@ -57,6 +58,7 @@ import { openBrowser } from "../utils/open-browser.ts";
 import { type AgentConfig, isDeployed, loadAgentConfig, saveAgentConfig } from "./agent-config.ts";
 import { createAgentPluginManager } from "./agent-plugin-manager.ts";
 import type { AuthStorage } from "./auth-storage.ts";
+import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ResourceDiagnostic, ResourceSummary } from "./diagnostics.ts";
 import { type ExtensionErrorListener, ExtensionRunner, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type {
@@ -106,7 +108,6 @@ import { wrapToolDefinition } from "./tools/tool-definition-wrapper.ts";
 export interface SessionHostOptions {
 	name: string;
 	model: Model<Api>;
-	thinkingLevel: ThinkingLevel;
 	authStorage: AuthStorage;
 	/**
 	 * Per-agent integration account store. Constructed once (process-scoped) and
@@ -890,6 +891,21 @@ export class SessionHost {
 		return model;
 	}
 
+	/**
+	 * Switch the live harness's thinking level and persist it as this agent's default in agent.json
+	 * (`thinkingLevel`), so a new session reopens on it. Only writes back when the level actually
+	 * changes; the `level !== "off"` clause keeps a non-reasoning model from pinning "off" as the
+	 * default while still letting an explicit non-off pick persist.
+	 */
+	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
+		const previous = this.harness.getThinkingLevel();
+		await this.harness.setThinkingLevel(level);
+		if (level !== previous && (this.harness.getModel().reasoning || level !== "off")) {
+			const config = loadAgentConfig(this.options.name);
+			saveAgentConfig(this.options.name, { ...config, thinkingLevel: level });
+		}
+	}
+
 	/** Auth-filtered models off the encapsulated registry — the single-pick selector's candidate list. */
 	getAvailableModels(): Model<Api>[] {
 		if (!this._modelRegistry) throw new Error("SessionHost not started.");
@@ -1047,7 +1063,7 @@ export class SessionHost {
 	}
 
 	private async build(fresh: boolean): Promise<AgentHarness> {
-		const { name, model, thinkingLevel, authStorage } = this.options;
+		const { name, model, authStorage } = this.options;
 		const previousEnv = this.env;
 		const previousRunner = this._extensionRunner;
 		const previousIntegrationRunner = this._integrationRunner;
@@ -1083,6 +1099,15 @@ export class SessionHost {
 			}
 		}
 
+		// Resume restores the session's own thinking level over the agent default: a branch with a
+		// thinking_level_change entry pins to its recorded level. A fresh or untouched session follows
+		// the agent default (config.thinkingLevel), then DEFAULT_THINKING_LEVEL. Clamped to the model.
+		let resolvedThinking = config.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+		if (!fresh && this._sessionManager.getBranch().some((e) => e.type === "thinking_level_change")) {
+			resolvedThinking = this.buildSessionContext().thinkingLevel as ThinkingLevel;
+		}
+		resolvedThinking = clampThinkingLevel(effectiveModel, resolvedThinking) as ThinkingLevel;
+
 		// Discover extensions, load skills/prompts, freeze the prompt, assemble tools.
 		// `reload` (fresh) discovers as a new-session reload; resume/first-start as startup.
 		const { runner, integrationRunner, skills, promptTemplates, systemPrompt, baseTools, extensionTools } =
@@ -1101,7 +1126,7 @@ export class SessionHost {
 			session,
 			model: effectiveModel,
 			systemPrompt,
-			thinkingLevel,
+			thinkingLevel: resolvedThinking,
 			tools: [...baseTools, ...extensionTools],
 			resources: toHarnessResources(skills, promptTemplates),
 			modelRegistry,
@@ -1467,7 +1492,7 @@ export class SessionHost {
 			},
 			getThinkingLevel: () => harness.getThinkingLevel(),
 			setThinkingLevel: (level) => {
-				void harness.setThinkingLevel(level);
+				void this.setThinkingLevel(level);
 			},
 		};
 
