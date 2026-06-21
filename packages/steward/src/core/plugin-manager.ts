@@ -934,8 +934,7 @@ export class DefaultPluginManager implements PluginManager {
 			return;
 		}
 
-		// Local sources re-copy from their origin — a filesystem operation with no network,
-		// so they refresh even in offline mode (unlike npm/git, which need the network).
+		// Local re-copy is a filesystem op, so it runs even offline — unlike the npm/git fetch below.
 		for (const entry of sources) {
 			const parsed = this.parseSource(entry.source);
 			if (parsed.type !== "local") continue;
@@ -1155,12 +1154,7 @@ export class DefaultPluginManager implements PluginManager {
 		}
 	}
 
-	/**
-	 * Resolve resources from an already-copied local store path (a file or directory copy
-	 * of the recorded origin). The file/dir logic mirrors the npm/git package resolution:
-	 * a manifest/convention directory contributes its declared resources; a bare file or a
-	 * directory with no manifest is surfaced as a single extension.
-	 */
+	// Resolve resources from the copied store path; a bare file or manifest-less dir is one extension.
 	private resolveLocalStore(
 		storePath: string,
 		accumulator: ResourceAccumulator,
@@ -1728,12 +1722,8 @@ export class DefaultPluginManager implements PluginManager {
 		}
 	}
 
-	/**
-	 * Copy a local source into the managed store — the `local` analog of `installGit`, with
-	 * `cpSync` for `git clone`. Not cloud-sync-ignored (unlike npm): the copy is the only copy
-	 * and must travel with the agent home.
-	 */
 	private async installLocal(source: LocalSource, scope: SourceScope): Promise<void> {
+		// Mirrors installGit; the store is deliberately not cloud-sync-ignored (the copy must travel).
 		const origin = this.resolvePathFromBase(source.path, this.getBaseDirForScope(scope));
 		if (!existsSync(origin)) {
 			throw new Error(`Path does not exist: ${origin}`);
@@ -1749,7 +1739,6 @@ export class DefaultPluginManager implements PluginManager {
 		}
 	}
 
-	/** Re-copy a local source from its origin. Errors if the origin is gone (via installLocal). */
 	private async updateLocal(source: LocalSource, scope: SourceScope): Promise<void> {
 		const targetDir = this.getLocalInstallPath(source, scope);
 		rmSync(targetDir, { recursive: true, force: true });
@@ -1811,21 +1800,14 @@ export class DefaultPluginManager implements PluginManager {
 		return join(this.agentDir, ".plugins", "local");
 	}
 
-	/**
-	 * Managed store path for a local source. Keys on the resolved absolute origin (not the raw
-	 * source string) so every form of the same origin maps to one store dir.
-	 */
+	// Keys on the resolved absolute origin so every form of the same origin maps to one store dir.
 	private getLocalInstallPath(source: LocalSource, scope: SourceScope): string {
 		const installRoot = this.getLocalInstallRoot(scope);
 		const origin = this.resolvePathFromBase(source.path, this.getBaseDirForScope(scope));
 		return this.resolveManagedPath(installRoot, this.localSourceKey(origin));
 	}
 
-	/**
-	 * Derive a filesystem-safe, collision-resistant single-segment key from an absolute origin
-	 * path. A readable slug (the basename) aids debugging; a hash of the full path guarantees
-	 * distinct origins never collide.
-	 */
+	// Readable basename slug + a hash of the full path so distinct origins never collide.
 	private localSourceKey(absoluteOrigin: string): string {
 		const normalized = toPosixPath(absoluteOrigin).replace(/\/+$/, "") || "/";
 		const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 12);
