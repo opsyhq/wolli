@@ -21,15 +21,6 @@ const CONTAINER_SHELL = "/bin/sh";
 const SANDBOX_LABEL = `${APP_NAME}.sandbox`; // marks our containers; value is the container name
 const HASH_LABEL = `${APP_NAME}.confighash`; // image/mount/user fingerprint; mismatch => rebuild
 
-// grep/find run rg/fd inside the container, and the slim base ships neither — so the default backend
-// is this image: the base plus rg/fd, built once and reused. The tag carries the Dockerfile digest,
-// so editing the recipe yields a new tag and a rebuild.
-const SANDBOX_DOCKERFILE = `FROM ${DEFAULT_CONTAINER_IMAGE}
-RUN apt-get update && apt-get install -y --no-install-recommends ripgrep fd-find \\
- && ln -sf "$(command -v fdfind)" /usr/local/bin/fd && rm -rf /var/lib/apt/lists/*
-`;
-const SANDBOX_IMAGE = `${APP_NAME}-sandbox:${createHash("sha256").update(SANDBOX_DOCKERFILE).digest("hex").slice(0, 12)}`;
-
 export interface ContainerConfig {
 	readonly name: string;
 	readonly image: string;
@@ -68,7 +59,7 @@ function containerName(cwd: string): string {
 }
 
 export function createContainerConfig(cwd: string, options?: { image?: string }): ContainerConfig {
-	const image = options?.image ?? process.env[ENV_CONTAINER_IMAGE] ?? SANDBOX_IMAGE;
+	const image = options?.image ?? process.env[ENV_CONTAINER_IMAGE] ?? DEFAULT_CONTAINER_IMAGE;
 	// Linux: run as the host user so bind-mounted files stay host-owned; macOS maps for us.
 	const user = process.platform === "linux" ? `${process.getuid?.()}:${process.getgid?.()}` : undefined;
 	return {
@@ -85,7 +76,18 @@ export async function startContainer(config: ContainerConfig): Promise<Container
 	const existing = await findContainer(config.name);
 	if (!existing) await createContainer(config);
 	else await updateContainer(config, existing);
-	return { name: config.name, exec: execInContainer(config), ...fileOpsInContainer(config.name) };
+	return {
+		name: config.name,
+		exec: execInContainer(config),
+		readFile: readFileInContainer(config),
+		writeFile: writeFileInContainer(config),
+		mkdir: mkdirInContainer(config),
+		stat: statInContainer(config),
+		readdir: readdirInContainer(config),
+		access: accessInContainer(config),
+		exists: existsInContainer(config),
+		detectImageMimeType: detectImageMimeTypeInContainer(config),
+	};
 }
 
 /** Stop this agent's container on shutdown. It reattaches by label on the next start. */
@@ -112,7 +114,6 @@ async function findContainer(name: string): Promise<{ running: boolean; configHa
 
 /** Create a fresh container: a detached `sleep infinity` body the execs attach to (no --rm). */
 async function createContainer(config: ContainerConfig): Promise<void> {
-	if (config.image === SANDBOX_IMAGE) await ensureSandboxImage();
 	const args = ["run", "-d", "--init", "--name", config.name];
 	args.push("--label", `${SANDBOX_LABEL}=${config.name}`, "--label", `${HASH_LABEL}=${config.configHash}`);
 	// Identical-path bind mount: the agent's home stays visible host-side, so the daemon's resource
@@ -120,16 +121,7 @@ async function createContainer(config: ContainerConfig): Promise<void> {
 	args.push("-v", `${config.cwd}:${config.cwd}`, "-w", config.cwd);
 	if (config.user) args.push("--user", config.user);
 	args.push(config.image, "sleep", "infinity");
-	await docker(args);
-}
-
-/** Build the sandbox image (base + rg/fd) if it isn't already present. Cached after the first build. */
-async function ensureSandboxImage(): Promise<void> {
-	const present = await docker(["image", "inspect", SANDBOX_IMAGE]).then(
-		() => true,
-		() => false,
-	);
-	if (!present) await buildImage(SANDBOX_IMAGE, SANDBOX_DOCKERFILE);
+	await docker(args); // pulls the image if it isn't local yet
 }
 
 /** Reconcile an existing container: rebuild it if the config drifted, resume it if stopped. */
@@ -145,7 +137,7 @@ async function updateContainer(
 	}
 }
 
-/** `docker exec` into the running container — the only path that crosses into it. */
+/** `docker exec` into the running container, streaming output — the bash path. */
 function execInContainer(config: ContainerConfig): Environment["exec"] {
 	return async (command, cwd, { onData, signal, timeout, env }) => {
 		if (signal?.aborted) throw new Error("aborted");
@@ -196,6 +188,103 @@ function execInContainer(config: ContainerConfig): Environment["exec"] {
 	};
 }
 
+/** The file ops: one `docker exec` each (the capturing sibling of execInContainer), capturing the
+ *  whole result rather than streaming. Paths ride in as positional args (`sh -c '… "$1"' sh <path>`)
+ *  so the shell never re-splits them. */
+function readFileInContainer(config: ContainerConfig): Environment["readFile"] {
+	return async (path) => {
+		const { exitCode, stdout, stderr } = await captureInContainer(config.name, ["cat", "--", path]);
+		if (exitCode !== 0) throw new Error(`read failed: ${stderr.trim() || path}`);
+		return stdout;
+	};
+}
+
+function writeFileInContainer(config: ContainerConfig): Environment["writeFile"] {
+	return async (path, content) => {
+		const { exitCode, stderr } = await captureInContainer(
+			config.name,
+			["sh", "-c", 'cat > "$1"', "sh", path],
+			content,
+		);
+		if (exitCode !== 0) throw new Error(`write failed: ${stderr.trim() || path}`);
+	};
+}
+
+function mkdirInContainer(config: ContainerConfig): Environment["mkdir"] {
+	return async (path) => {
+		const { exitCode, stderr } = await captureInContainer(config.name, ["mkdir", "-p", "--", path]);
+		if (exitCode !== 0) throw new Error(`mkdir failed: ${stderr.trim() || path}`);
+	};
+}
+
+function statInContainer(config: ContainerConfig): Environment["stat"] {
+	return async (path): Promise<FileStat> => {
+		const { exitCode, stdout, stderr } = await captureInContainer(config.name, [
+			"sh",
+			"-c",
+			'stat -c "%F|%s" -- "$1"',
+			"sh",
+			path,
+		]);
+		if (exitCode !== 0) throw new Error(`stat failed: ${stderr.trim() || path}`);
+		const [kind = "", size = "0"] = stdout.toString().trim().split("|");
+		return {
+			isDirectory: () => kind === "directory",
+			isFile: () => kind.startsWith("regular"),
+			size: Number.parseInt(size, 10) || 0,
+		};
+	};
+}
+
+function readdirInContainer(config: ContainerConfig): Environment["readdir"] {
+	return async (path) => {
+		const { exitCode, stdout, stderr } = await captureInContainer(config.name, [
+			"sh",
+			"-c",
+			'ls -1A -- "$1"',
+			"sh",
+			path,
+		]);
+		if (exitCode !== 0) throw new Error(`readdir failed: ${stderr.trim() || path}`);
+		return stdout
+			.toString()
+			.split("\n")
+			.filter((entry) => entry.length > 0);
+	};
+}
+
+function accessInContainer(config: ContainerConfig): Environment["access"] {
+	return async (path, mode = constants.R_OK) => {
+		// Map the fs access mode to test(1) flags; an empty mode (F_OK) checks existence with -e.
+		const flags: string[] = [];
+		if (mode & constants.R_OK) flags.push("-r");
+		if (mode & constants.W_OK) flags.push("-w");
+		if (mode & constants.X_OK) flags.push("-x");
+		if (flags.length === 0) flags.push("-e");
+		const test = flags.map((flag) => `test ${flag} "$1"`).join(" && ");
+		const { exitCode } = await captureInContainer(config.name, ["sh", "-c", test, "sh", path]);
+		if (exitCode !== 0) throw new Error(`access denied: ${path}`);
+	};
+}
+
+function existsInContainer(config: ContainerConfig): Environment["exists"] {
+	return async (path) =>
+		(await captureInContainer(config.name, ["sh", "-c", 'test -e "$1"', "sh", path])).exitCode === 0;
+}
+
+function detectImageMimeTypeInContainer(config: ContainerConfig): NonNullable<Environment["detectImageMimeType"]> {
+	return async (path) => {
+		const { stdout } = await captureInContainer(config.name, [
+			"sh",
+			"-c",
+			'head -c 4100 -- "$1" 2>/dev/null',
+			"sh",
+			path,
+		]);
+		return detectSupportedImageMimeType(stdout);
+	};
+}
+
 /** Run the docker CLI to completion. Throws on non-zero exit; callers that tolerate it catch. */
 function docker(args: string[]): Promise<{ stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -217,35 +306,14 @@ function docker(args: string[]): Promise<{ stdout: string; stderr: string }> {
 	});
 }
 
-/** `docker build` the given Dockerfile (piped via stdin, no build context) to a tag. */
-function buildImage(tag: string, dockerfile: string): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const child = spawnProcess("docker", ["build", "-t", tag, "-"], {
-			stdio: ["pipe", "ignore", "pipe"],
-			windowsHide: true,
-		});
-		let stderr = "";
-		child.stderr?.on("data", (data: Buffer) => {
-			stderr += data.toString();
-		});
-		child.once("error", reject);
-		child.once("close", (code) =>
-			code === 0 ? resolve() : reject(new Error(`docker build failed (exit ${code}): ${stderr.trim()}`)),
-		);
-		child.stdin?.end(dockerfile);
-	});
-}
-
 interface CaptureResult {
 	exitCode: number | null;
 	stdout: Buffer;
 	stderr: string;
 }
 
-/**
- * `docker exec` for a file op: binary stdout (cat/head stream raw bytes), exit code returned rather
- * than thrown so callers map it to fs-style errors, and `input` (when set) piped to stdin.
- */
+/** `docker exec` for a file op: binary stdout (cat/head stream raw bytes), exit code returned rather
+ *  than thrown so callers map it to fs-style errors, and `input` (when set) piped to stdin. */
 function captureInContainer(name: string, argv: string[], input?: string | Uint8Array): Promise<CaptureResult> {
 	return new Promise((resolve, reject) => {
 		const args = input === undefined ? ["exec", name, ...argv] : ["exec", "-i", name, ...argv];
@@ -261,59 +329,4 @@ function captureInContainer(name: string, argv: string[], input?: string | Uint8
 		if (child.stdin)
 			child.stdin.end(input === undefined ? undefined : typeof input === "string" ? input : Buffer.from(input));
 	});
-}
-
-/** The `Environment` file methods, each backed by one `docker exec`. Paths ride in as positional
- *  args (`sh -c '… "$1"' sh <path>`) so the shell never re-splits them. */
-function fileOpsInContainer(name: string): Omit<Container, "name" | "exec"> {
-	const run = (argv: string[], input?: string | Uint8Array) => captureInContainer(name, argv, input);
-	return {
-		readFile: async (path) => {
-			const { exitCode, stdout, stderr } = await run(["cat", "--", path]);
-			if (exitCode !== 0) throw new Error(`read failed: ${stderr.trim() || path}`);
-			return stdout;
-		},
-		writeFile: async (path, content) => {
-			const { exitCode, stderr } = await run(["sh", "-c", 'cat > "$1"', "sh", path], content);
-			if (exitCode !== 0) throw new Error(`write failed: ${stderr.trim() || path}`);
-		},
-		mkdir: async (path) => {
-			const { exitCode, stderr } = await run(["mkdir", "-p", "--", path]);
-			if (exitCode !== 0) throw new Error(`mkdir failed: ${stderr.trim() || path}`);
-		},
-		stat: async (path): Promise<FileStat> => {
-			const { exitCode, stdout, stderr } = await run(["sh", "-c", 'stat -c "%F|%s" -- "$1"', "sh", path]);
-			if (exitCode !== 0) throw new Error(`stat failed: ${stderr.trim() || path}`);
-			const [kind = "", size = "0"] = stdout.toString().trim().split("|");
-			return {
-				isDirectory: () => kind === "directory",
-				isFile: () => kind.startsWith("regular"),
-				size: Number.parseInt(size, 10) || 0,
-			};
-		},
-		readdir: async (path) => {
-			const { exitCode, stdout, stderr } = await run(["sh", "-c", 'ls -1A -- "$1"', "sh", path]);
-			if (exitCode !== 0) throw new Error(`readdir failed: ${stderr.trim() || path}`);
-			return stdout
-				.toString()
-				.split("\n")
-				.filter((entry) => entry.length > 0);
-		},
-		access: async (path, mode = constants.R_OK) => {
-			// Map the fs access mode to test(1) flags; an empty mode (F_OK) checks existence with -e.
-			const flags: string[] = [];
-			if (mode & constants.R_OK) flags.push("-r");
-			if (mode & constants.W_OK) flags.push("-w");
-			if (mode & constants.X_OK) flags.push("-x");
-			if (flags.length === 0) flags.push("-e");
-			const test = flags.map((flag) => `test ${flag} "$1"`).join(" && ");
-			const { exitCode } = await run(["sh", "-c", test, "sh", path]);
-			if (exitCode !== 0) throw new Error(`access denied: ${path}`);
-		},
-		exists: async (path) => (await run(["sh", "-c", 'test -e "$1"', "sh", path])).exitCode === 0,
-		detectImageMimeType: async (path) => {
-			const { stdout } = await run(["sh", "-c", 'head -c 4100 -- "$1" 2>/dev/null', "sh", path]);
-			return detectSupportedImageMimeType(stdout);
-		},
-	};
 }
