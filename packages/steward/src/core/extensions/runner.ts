@@ -6,6 +6,7 @@ import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@opsyhq/agent";
 import { type Theme, theme } from "../../theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
+import type { Environment } from "../environment.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
@@ -219,6 +220,7 @@ export class ExtensionRunner {
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
+	private environment: Environment;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private isIdleFn: () => boolean = () => true;
@@ -246,6 +248,7 @@ export class ExtensionRunner {
 		cwd: string,
 		sessionManager: SessionManager,
 		modelRegistry: ModelRegistry,
+		environment: Environment,
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
@@ -253,6 +256,7 @@ export class ExtensionRunner {
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
+		this.environment = environment;
 	}
 
 	bindCore(
@@ -535,6 +539,10 @@ export class ExtensionRunner {
 			get cwd() {
 				runner.assertActive();
 				return runner.cwd;
+			},
+			get environment() {
+				runner.assertActive();
+				return runner.environment;
 			},
 			get sessionManager() {
 				runner.assertActive();

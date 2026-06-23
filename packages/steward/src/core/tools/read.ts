@@ -1,10 +1,9 @@
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@opsyhq/agent";
 import { constants } from "fs";
-import { access as fsAccess, readFile as fsReadFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { formatDimensionNote, resizeImage } from "../../utils/image-resize.ts";
-import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
+import type { Environment } from "../environment.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { resolveReadPathAsync } from "./path-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -22,30 +21,9 @@ export interface ReadToolDetails {
 	truncation?: TruncationResult;
 }
 
-/**
- * Pluggable operations for the read tool.
- * Override these to delegate file reading to remote systems (for example SSH).
- */
-export interface ReadOperations {
-	/** Read file contents as a Buffer */
-	readFile: (absolutePath: string) => Promise<Buffer>;
-	/** Check if file is readable (throw if not) */
-	access: (absolutePath: string) => Promise<void>;
-	/** Detect image MIME type, return null or undefined for non-images */
-	detectImageMimeType?: (absolutePath: string) => Promise<string | null | undefined>;
-}
-
-const defaultReadOperations: ReadOperations = {
-	readFile: (path) => fsReadFile(path),
-	access: (path) => fsAccess(path, constants.R_OK),
-	detectImageMimeType: detectSupportedImageMimeTypeFromFile,
-};
-
 export interface ReadToolOptions {
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
-	/** Custom operations for file reading. Default: local filesystem */
-	operations?: ReadOperations;
 }
 
 function getNonVisionImageNote(model: Model<Api> | undefined): string | undefined {
@@ -56,11 +34,10 @@ function getNonVisionImageNote(model: Model<Api> | undefined): string | undefine
 }
 
 export function createReadToolDefinition(
-	cwd: string,
+	env: Environment,
 	options?: ReadToolOptions,
 ): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
-	const ops = options?.operations ?? defaultReadOperations;
 	return {
 		name: "read",
 		label: "read",
@@ -90,18 +67,18 @@ export function createReadToolDefinition(
 
 					(async () => {
 						try {
-							const absolutePath = await resolveReadPathAsync(path, cwd);
+							const absolutePath = await resolveReadPathAsync(path, env.cwd);
 							if (aborted) return;
 							// Check if file exists and is readable.
-							await ops.access(absolutePath);
+							await env.access(absolutePath, constants.R_OK);
 							if (aborted) return;
-							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
+							const mimeType = env.detectImageMimeType ? await env.detectImageMimeType(absolutePath) : undefined;
 							let content: (TextContent | ImageContent)[];
 							let details: ReadToolDetails | undefined;
 							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
 							if (mimeType) {
 								// Read image as binary.
-								const buffer = await ops.readFile(absolutePath);
+								const buffer = await env.readFile(absolutePath);
 								if (autoResizeImages) {
 									// Resize image if needed before sending it back to the model.
 									const resized = await resizeImage(buffer, mimeType);
@@ -129,7 +106,7 @@ export function createReadToolDefinition(
 								}
 							} else {
 								// Read text content.
-								const buffer = await ops.readFile(absolutePath);
+								const buffer = await env.readFile(absolutePath);
 								const textContent = buffer.toString("utf-8");
 								const allLines = textContent.split("\n");
 								const totalFileLines = allLines.length;
@@ -195,6 +172,6 @@ export function createReadToolDefinition(
 	};
 }
 
-export function createReadTool(cwd: string, options?: ReadToolOptions): AgentTool<typeof readSchema> {
-	return wrapToolDefinition(createReadToolDefinition(cwd, options));
+export function createReadTool(env: Environment, options?: ReadToolOptions): AgentTool<typeof readSchema> {
+	return wrapToolDefinition(createReadToolDefinition(env, options));
 }

@@ -739,24 +739,23 @@ steward.on("tool_result", async (event, ctx) => {
 Fired when user executes `!` or `!!` commands. **Can intercept.**
 
 ```typescript
-import { createLocalBashOperations } from "@opsyhq/steward";
+import { createHostEnvironment } from "@opsyhq/steward";
 
 steward.on("user_bash", (event, ctx) => {
   // event.command - the bash command
   // event.excludeFromContext - true if !! prefix
   // event.cwd - working directory
 
-  // Option 1: Provide custom operations (e.g., SSH)
-  return { operations: remoteBashOps };
+  // Option 1: Run the command in a custom environment (e.g., a sandbox)
+  return { environment: customEnvironment };
 
-  // Option 2: Wrap Steward's built-in local bash backend
-  const local = createLocalBashOperations();
+  // Option 2: Wrap Steward's host environment to rewrite commands
+  const host = createHostEnvironment(event.cwd);
   return {
-    operations: {
-      exec(command, cwd, options) {
-        return local.exec(`source ~/.profile\n${command}`, cwd, options);
-      }
-    }
+    environment: {
+      ...host,
+      exec: (command, cwd, options) => host.exec(`source ~/.profile\n${command}`, cwd, options),
+    },
   };
 
   // Option 3: Full replacement - return result directly
@@ -1736,38 +1735,24 @@ See [examples/extensions/tool-override.ts](../examples/extensions/tool-override.
 
 **Your implementation must match the exact result shape**, including the `details` type. The UI and session logic depend on these shapes for rendering and state tracking. The built-in tool details types (`ReadToolDetails`, `BashToolDetails`, `GrepToolDetails`, `FindToolDetails`, `LsToolDetails`, etc.) are exported from `@opsyhq/steward`.
 
-### Remote Execution
+### The Environment seam
 
-Built-in tools support pluggable operations for delegating to remote systems (SSH, containers, etc.):
+Every built-in file/shell tool (`read`, `write`, `edit`, `ls`, `grep`, `find`, `bash`) consumes a single `Environment` instead of its own per-tool operations. The `Environment` decides where reads/writes/exec land — the host filesystem today, a sandbox or remote backend later. The session's environment is bound to every extension as `ctx.environment`.
 
 ```typescript
-import { createReadTool, createBashTool, type ReadOperations } from "@opsyhq/steward";
+import { createBashTool, createReadTool, type Environment } from "@opsyhq/steward";
 
-// Create tool with custom operations
-const remoteRead = createReadTool(cwd, {
-  operations: {
-    readFile: (path) => sshExec(remote, `cat ${path}`),
-    access: (path) => sshExec(remote, `test -r ${path}`).then(() => {}),
-  }
-});
-
-// Register, checking flag at execution time
-steward.registerTool({
-  ...remoteRead,
-  async execute(id, params, signal, onUpdate, _ctx) {
-    const ssh = getSshConfig();
-    if (ssh) {
-      const tool = createReadTool(cwd, { operations: createRemoteOps(ssh) });
-      return tool.execute(id, params, signal, onUpdate);
-    }
-    return localRead.execute(id, params, signal, onUpdate);
-  },
-});
+// Build a tool against a custom environment (e.g. one that wraps exec)
+const env: Environment = {
+  ...ctx.environment,
+  exec: (command, cwd, options) => ctx.environment.exec(`source ~/.profile\n${command}`, cwd, options),
+};
+const customBash = createBashTool(env);
 ```
 
-**Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
+`createHostEnvironment(cwd, { shellPath? })` builds the default unconfined host backend. An `Environment` provides `exec`, `readFile`, `writeFile`, `mkdir`, `access`, `exists`, `stat`, `readdir`, an optional `detectImageMimeType`, plus `id`/`cwd`/`resolvePath`. Override any of these (spreading `ctx.environment` for the rest) to delegate tools to a different backend.
 
-For `user_bash`, extensions can reuse Steward's local shell backend via `createLocalBashOperations()` instead of reimplementing local process spawning, shell resolution, and process-tree termination.
+For `user_bash`, return `{ environment }` from the handler to run the command in a custom environment, or reuse `createHostEnvironment()` instead of reimplementing local process spawning, shell resolution, and process-tree termination.
 
 The bash tool also supports a spawn hook to adjust the command, cwd, or env before execution:
 

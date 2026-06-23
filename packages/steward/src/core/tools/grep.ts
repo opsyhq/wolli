@@ -1,10 +1,10 @@
-import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import type { AgentTool } from "@opsyhq/agent";
 import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
 import { ensureTool } from "../../utils/tools-manager.ts";
+import type { Environment } from "../environment.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -40,32 +40,9 @@ export interface GrepToolDetails {
 	linesTruncated?: boolean;
 }
 
-/**
- * Pluggable operations for the grep tool.
- * Override these to delegate search to remote systems (for example SSH).
- */
-export interface GrepOperations {
-	/** Check if path is a directory. Throws if path does not exist. */
-	isDirectory: (absolutePath: string) => Promise<boolean> | boolean;
-	/** Read file contents for context lines */
-	readFile: (absolutePath: string) => Promise<string> | string;
-}
-
-const defaultGrepOperations: GrepOperations = {
-	isDirectory: async (p) => (await fsStat(p)).isDirectory(),
-	readFile: (p) => fsReadFile(p, "utf-8"),
-};
-
-export interface GrepToolOptions {
-	/** Custom operations for grep. Default: local filesystem plus ripgrep */
-	operations?: GrepOperations;
-}
-
 export function createGrepToolDefinition(
-	cwd: string,
-	options?: GrepToolOptions,
+	env: Environment,
 ): ToolDefinition<typeof grepSchema, GrepToolDetails | undefined> {
-	const customOps = options?.operations;
 	return {
 		name: "grep",
 		label: "grep",
@@ -116,11 +93,10 @@ export function createGrepToolDefinition(
 							return;
 						}
 
-						const searchPath = resolveToCwd(searchDir || ".", cwd);
-						const ops = customOps ?? defaultGrepOperations;
+						const searchPath = resolveToCwd(searchDir || ".", env.cwd);
 						let isDirectory: boolean;
 						try {
-							isDirectory = await ops.isDirectory(searchPath);
+							isDirectory = (await env.stat(searchPath)).isDirectory();
 						} catch {
 							settle(() => reject(new Error(`Path not found: ${searchPath}`)));
 							return;
@@ -143,7 +119,7 @@ export function createGrepToolDefinition(
 							let lines = fileCache.get(filePath);
 							if (!lines) {
 								try {
-									const content = await ops.readFile(filePath);
+									const content = (await env.readFile(filePath)).toString("utf-8");
 									lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
 								} catch {
 									lines = [];
@@ -311,6 +287,6 @@ export function createGrepToolDefinition(
 	};
 }
 
-export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentTool<typeof grepSchema> {
-	return wrapToolDefinition(createGrepToolDefinition(cwd, options));
+export function createGrepTool(env: Environment): AgentTool<typeof grepSchema> {
+	return wrapToolDefinition(createGrepToolDefinition(env));
 }

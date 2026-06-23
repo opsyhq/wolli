@@ -46,9 +46,12 @@ export {
 } from "./core/auth-storage.ts";
 // Engine surface consumed by the @opsyhq/cli daemon client (Phase 2, Slice 1): the interactive
 // TUI + the built-in tool renderers were lifted into apps/cli and reach back for these helpers.
-export { executeBashWithOperations } from "./core/bash-executor.ts";
+export { executeBash } from "./core/bash-executor.ts";
 export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, isValidThinkingLevel } from "./core/defaults.ts";
 export type { ResourceDiagnostic, ResourceSummary } from "./core/diagnostics.ts";
+// The Environment seam: the single backend every file/shell tool consumes. Extensions reach the
+// session's instance via ctx.environment; createHostEnvironment builds the unconfined host backend.
+export { createHostEnvironment, type Environment, type FileStat } from "./core/environment.ts";
 // Extension system
 export type {
 	AgentEndEvent,
@@ -282,19 +285,14 @@ export { createGrepTool, type GrepToolDetails, type GrepToolInput } from "./core
 export type { ToolName } from "./core/tools/index.ts";
 // Tool primitives for custom tools and extensions
 export {
-	type BashOperations,
-	createLocalBashOperations,
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
-	type EditOperations,
 	formatSize,
-	type ReadOperations,
 	type TruncationOptions,
 	type TruncationResult,
 	truncateHead,
 	truncateLine,
 	truncateTail,
-	type WriteOperations,
 	withFileMutationQueue,
 } from "./core/tools/index.ts";
 export { createLsTool, type LsToolDetails, type LsToolInput } from "./core/tools/ls.ts";

@@ -42,10 +42,10 @@ import {
 	type AutocompleteProviderFactory,
 	BUILTIN_SLASH_COMMANDS,
 	createBashExecutionMessage,
-	createLocalBashOperations,
+	createHostEnvironment,
 	type EditorFactory,
 	ensureTool,
-	executeBashWithOperations,
+	executeBash,
 	type ExtensionCommandContextActions,
 	type ExtensionShortcut,
 	type ExtensionUIContext,
@@ -1719,8 +1719,8 @@ export class ChatView extends Container implements AppView {
 	 * Run a user-typed shell command (`!cmd` / `!!cmd`).
 	 *
 	 * Extensions may intercept via the `user_bash` event: returning a `result` short-circuits
-	 * execution, and returning `operations` swaps the shell backend. The result is recorded
-	 * into the agent's context unless `!!` was used (`excludeFromContext`).
+	 * execution, and returning `environment` swaps the backend the command runs in. The result is
+	 * recorded into the agent's context unless `!!` was used (`excludeFromContext`).
 	 */
 	private async handleBashCommand(command: string, excludeFromContext = false): Promise<void> {
 		const eventResult = await this.session.emitUserBash({
@@ -1756,10 +1756,10 @@ export class ChatView extends Container implements AppView {
 
 		this.bashAbortController = new AbortController();
 		try {
-			const result = await executeBashWithOperations(
+			const result = await executeBash(
 				command,
 				this.session.getCwd(),
-				eventResult?.operations ?? createLocalBashOperations(),
+				eventResult?.environment ?? createHostEnvironment(this.session.getCwd()),
 				{
 					onChunk: (chunk) => {
 						if (this.bashComponent) {

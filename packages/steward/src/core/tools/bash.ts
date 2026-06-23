@@ -11,6 +11,7 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
+import type { Environment } from "../environment.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -29,36 +30,10 @@ export interface BashToolDetails {
 }
 
 /**
- * Pluggable operations for the bash tool.
- * Override these to delegate command execution to remote systems (for example SSH).
+ * Internal local shell exec helper. `createHostEnvironment` builds its `exec`
+ * from this; it is not part of the public surface.
  */
-export interface BashOperations {
-	/**
-	 * Execute a command and stream output.
-	 * @param command The command to execute
-	 * @param cwd Working directory
-	 * @param options Execution options
-	 * @returns Promise resolving to exit code (null if killed)
-	 */
-	exec: (
-		command: string,
-		cwd: string,
-		options: {
-			onData: (data: Buffer) => void;
-			signal?: AbortSignal;
-			timeout?: number;
-			env?: NodeJS.ProcessEnv;
-		},
-	) => Promise<{ exitCode: number | null }>;
-}
-
-/**
- * Create bash operations using the built-in local shell execution backend.
- *
- * This is useful for extensions that intercept user_bash and still want the
- * standard local shell behavior while wrapping or rewriting commands.
- */
-export function createLocalBashOperations(options?: { shellPath?: string }): BashOperations {
+export function createLocalBashOperations(options?: { shellPath?: string }): { exec: Environment["exec"] } {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout, env }) => {
 			const { shell, args } = getShellConfig(options?.shellPath);
@@ -134,12 +109,8 @@ function resolveSpawnContext(command: string, cwd: string, spawnHook?: BashSpawn
 }
 
 export interface BashToolOptions {
-	/** Custom operations for command execution. Default: local shell */
-	operations?: BashOperations;
 	/** Command prefix prepended to every command (for example shell setup commands) */
 	commandPrefix?: string;
-	/** Optional explicit shell path from settings */
-	shellPath?: string;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
 }
@@ -147,10 +118,9 @@ export interface BashToolOptions {
 const BASH_UPDATE_THROTTLE_MS = 100;
 
 export function createBashToolDefinition(
-	cwd: string,
+	env: Environment,
 	options?: BashToolOptions,
 ): ToolDefinition<typeof bashSchema, BashToolDetails | undefined> {
-	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
 	const commandPrefix = options?.commandPrefix;
 	const spawnHook = options?.spawnHook;
 	return {
@@ -167,7 +137,7 @@ export function createBashToolDefinition(
 			_ctx?,
 		) {
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
-			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
+			const spawnContext = resolveSpawnContext(resolvedCommand, env.cwd, spawnHook);
 			const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });
 			let updateTimer: NodeJS.Timeout | undefined;
 			let updateDirty = false;
@@ -252,7 +222,7 @@ export function createBashToolDefinition(
 			try {
 				let exitCode: number | null;
 				try {
-					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
+					const result = await env.exec(spawnContext.command, spawnContext.cwd, {
 						onData: handleData,
 						signal,
 						timeout,
@@ -285,6 +255,6 @@ export function createBashToolDefinition(
 	};
 }
 
-export function createBashTool(cwd: string, options?: BashToolOptions): AgentTool<typeof bashSchema> {
-	return wrapToolDefinition(createBashToolDefinition(cwd, options));
+export function createBashTool(env: Environment, options?: BashToolOptions): AgentTool<typeof bashSchema> {
+	return wrapToolDefinition(createBashToolDefinition(env, options));
 }

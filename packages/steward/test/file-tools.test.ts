@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAgentDir, getSoulPath } from "../src/config.ts";
 import { createAgent } from "../src/core/agent-config.ts";
+import { createHostEnvironment, type Environment } from "../src/core/environment.ts";
 import { readMemoryFile } from "../src/core/memory.ts";
 import { createEditTool } from "../src/core/tools/edit.ts";
 import { createGrepTool } from "../src/core/tools/grep.ts";
@@ -20,12 +21,14 @@ function hasTool(name: string): boolean {
 
 let home: string;
 let dir: string;
+let env: Environment;
 
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "steward-test-"));
 	process.env.STEWARD_HOME = home;
 	createAgent({ name: "scribe", purpose: "notes" });
 	dir = getAgentDir("scribe");
+	env = createHostEnvironment(dir);
 });
 
 afterEach(() => {
@@ -43,16 +46,16 @@ function firstText(result: { content: ReadonlyArray<{ type: string; text?: strin
 // cwd binding is caught.
 describe("file tools bound to the agent home", () => {
 	it("write → read round-trips SOUL.md", async () => {
-		await createWriteTool(dir).execute("c1", { path: "SOUL.md", content: "I am the scribe.\n" });
+		await createWriteTool(env).execute("c1", { path: "SOUL.md", content: "I am the scribe.\n" });
 		expect(readMemoryFile(getSoulPath("scribe"))).toContain("I am the scribe.");
 
-		const read = await createReadTool(dir).execute("c2", { path: "SOUL.md" });
+		const read = await createReadTool(env).execute("c2", { path: "SOUL.md" });
 		expect(firstText(read)).toContain("I am the scribe.");
 	});
 
 	it("edit replaces a unique block in SOUL.md", async () => {
-		await createWriteTool(dir).execute("c1", { path: "SOUL.md", content: "name: scribe\nrole: notes\n" });
-		await createEditTool(dir).execute("c2", {
+		await createWriteTool(env).execute("c1", { path: "SOUL.md", content: "name: scribe\nrole: notes\n" });
+		await createEditTool(env).execute("c2", {
 			path: "SOUL.md",
 			edits: [{ oldText: "role: notes", newText: "role: keeper of notes" }],
 		});
@@ -60,15 +63,15 @@ describe("file tools bound to the agent home", () => {
 	});
 
 	it("ls lists the agent home, including SOUL.md and workspace/", async () => {
-		const result = await createLsTool(dir).execute("c1", {});
+		const result = await createLsTool(env).execute("c1", {});
 		const text = firstText(result);
 		expect(text).toContain("SOUL.md");
 		expect(text).toContain("workspace/");
 	});
 
 	it.runIf(hasTool("rg"))("grep finds a match in the agent's files", async () => {
-		await createWriteTool(dir).execute("c1", { path: "MEMORY.md", content: "prefers metric units\n" });
-		const result = await createGrepTool(dir).execute("c2", { pattern: "metric" });
+		await createWriteTool(env).execute("c1", { path: "MEMORY.md", content: "prefers metric units\n" });
+		const result = await createGrepTool(env).execute("c2", { pattern: "metric" });
 		expect(firstText(result)).toContain("MEMORY.md");
 		expect(firstText(result)).toContain("metric");
 	});

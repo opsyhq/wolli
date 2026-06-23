@@ -1,7 +1,7 @@
 import type { AgentTool } from "@opsyhq/agent";
-import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
+import type { Environment } from "../environment.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
@@ -14,32 +14,7 @@ const writeSchema = Type.Object({
 
 export type WriteToolInput = Static<typeof writeSchema>;
 
-/**
- * Pluggable operations for the write tool.
- * Override these to delegate file writing to remote systems (for example SSH).
- */
-export interface WriteOperations {
-	/** Write content to a file */
-	writeFile: (absolutePath: string, content: string) => Promise<void>;
-	/** Create directory recursively */
-	mkdir: (dir: string) => Promise<void>;
-}
-
-const defaultWriteOperations: WriteOperations = {
-	writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
-	mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
-};
-
-export interface WriteToolOptions {
-	/** Custom operations for file writing. Default: local filesystem */
-	operations?: WriteOperations;
-}
-
-export function createWriteToolDefinition(
-	cwd: string,
-	options?: WriteToolOptions,
-): ToolDefinition<typeof writeSchema, undefined> {
-	const ops = options?.operations ?? defaultWriteOperations;
+export function createWriteToolDefinition(env: Environment): ToolDefinition<typeof writeSchema, undefined> {
 	return {
 		name: "write",
 		label: "write",
@@ -55,7 +30,7 @@ export function createWriteToolDefinition(
 			_onUpdate?,
 			_ctx?,
 		) {
-			const absolutePath = resolveToCwd(path, cwd);
+			const absolutePath = resolveToCwd(path, env.cwd);
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the
@@ -68,11 +43,11 @@ export function createWriteToolDefinition(
 
 				throwIfAborted();
 				// Create parent directories if needed.
-				await ops.mkdir(dir);
+				await env.mkdir(dir);
 				throwIfAborted();
 
 				// Write the file contents.
-				await ops.writeFile(absolutePath, content);
+				await env.writeFile(absolutePath, content);
 				throwIfAborted();
 
 				return {
@@ -84,6 +59,6 @@ export function createWriteToolDefinition(
 	};
 }
 
-export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentTool<typeof writeSchema> {
-	return wrapToolDefinition(createWriteToolDefinition(cwd, options));
+export function createWriteTool(env: Environment): AgentTool<typeof writeSchema> {
+	return wrapToolDefinition(createWriteToolDefinition(env));
 }
