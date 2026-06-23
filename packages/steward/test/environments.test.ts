@@ -246,14 +246,14 @@ describe("local write-jail", () => {
 });
 
 // Daemon-owned control state lives under the jail root but must be write-denied to the agent's own
-// file tools, so the agent can't self-approve a host escalation or self-flip the deploy latch.
+// file tools, so the agent can't self-approve a host escalation or tamper with session history.
 describe("local control-state write-deny", () => {
 	let jail: string;
 	let denyWrite: string[];
 
 	beforeEach(() => {
 		jail = mkdtempSync(join(tmpdir(), "steward-jail-"));
-		denyWrite = [join(jail, "approvals.json"), join(jail, "sessions"), join(jail, "agent.json")];
+		denyWrite = [join(jail, "approvals.json"), join(jail, "sessions")];
 	});
 
 	afterEach(() => {
@@ -265,9 +265,10 @@ describe("local control-state write-deny", () => {
 		await expect(env.writeFile(join(jail, "approvals.json"), "{}")).rejects.toThrow(/daemon-owned control state/);
 	});
 
-	it("rejects writing agent.json (deploy-latch self-flip)", async () => {
+	it("allows writing agent.json (not denied)", async () => {
 		const env = await createLocalOSEnvironment(jail, { denyWrite });
-		await expect(env.writeFile(join(jail, "agent.json"), "{}")).rejects.toThrow(/daemon-owned control state/);
+		await env.writeFile(join(jail, "agent.json"), "{}");
+		expect(await readFile(join(jail, "agent.json"), "utf-8")).toBe("{}");
 	});
 
 	it("rejects writes under the sessions dir", async () => {

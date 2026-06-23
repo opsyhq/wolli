@@ -51,13 +51,7 @@ import {
 	type ThinkingLevel,
 } from "@opsyhq/agent";
 import type { NodeExecutionEnv } from "@opsyhq/agent/node";
-import {
-	getAgentApprovalsPath,
-	getAgentConfigPath,
-	getAgentDir,
-	getAgentIntegrationsPath,
-	getSessionsDir,
-} from "../config.ts";
+import { getAgentApprovalsPath, getAgentDir, getAgentIntegrationsPath, getSessionsDir } from "../config.ts";
 import type { AuthSelectorProvider } from "../types.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { openBrowser } from "../utils/open-browser.ts";
@@ -1266,10 +1260,9 @@ export class SessionHost {
 		// backs the file tools + ctx.environment; `environments` carries the full map to bash.
 		const approvals = ApprovalStore.create(name);
 		const gate = createApprovalGate(() => runner.getUIContext(), approvals);
-		// Daemon-owned control state: write-denied to the agent's own file/shell tools on the
-		// confined target (the daemon still writes it host-side). Blocks self-approving a host
-		// escalation, self-flipping the deploy latch, or tampering with session history.
-		const controlState = [getAgentApprovalsPath(name), getSessionsDir(name), getAgentConfigPath(name)];
+		// Daemon-owned control state, write-denied to the agent's own tools on the confined target so it
+		// can't self-approve a host escalation or tamper with session history. (agent.json stays writable.)
+		const controlState = [getAgentApprovalsPath(name), getSessionsDir(name)];
 		const environments = await createEnvironments(agentDir, { gate, denyWrite: controlState });
 		const defaultEnv = environments.targets[environments.default];
 		const { extensions, errors, runtime } = loader.getExtensions();

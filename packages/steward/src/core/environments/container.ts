@@ -11,7 +11,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { basename } from "node:path";
-import chalk from "chalk";
 import { APP_NAME, DEFAULT_CONTAINER_IMAGE, ENV_CONTAINER_IMAGE } from "../../config.ts";
 import { spawnProcess, waitForChildProcess } from "../../utils/child-process.ts";
 import { detectSupportedImageMimeType } from "../../utils/mime.ts";
@@ -21,6 +20,15 @@ import type { Environment, FileStat } from "./types.ts";
 const CONTAINER_SHELL = "/bin/sh";
 const SANDBOX_LABEL = `${APP_NAME}.sandbox`; // marks our containers; value is the container name
 const HASH_LABEL = `${APP_NAME}.confighash`; // image/mount/user fingerprint; mismatch => rebuild
+
+// grep/find run rg/fd inside the container, and the slim base ships neither — so the default backend
+// is this image: the base plus rg/fd, built once and reused. The tag carries the Dockerfile digest,
+// so editing the recipe yields a new tag and a rebuild.
+const SANDBOX_DOCKERFILE = `FROM ${DEFAULT_CONTAINER_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep fd-find \\
+ && ln -sf "$(command -v fdfind)" /usr/local/bin/fd && rm -rf /var/lib/apt/lists/*
+`;
+const SANDBOX_IMAGE = `${APP_NAME}-sandbox:${createHash("sha256").update(SANDBOX_DOCKERFILE).digest("hex").slice(0, 12)}`;
 
 export interface ContainerConfig {
 	readonly name: string;
@@ -33,9 +41,8 @@ export interface ContainerConfig {
 export interface Container {
 	readonly name: string;
 	exec: Environment["exec"];
-	// The file-op surface: every read/write the agent's tools make runs inside the container via
-	// `docker exec`, so it sees the container's own FS (the bind-mounted agent home + the image),
-	// never the host outside it.
+	// Every file op runs inside the container via `docker exec`, so it sees the container's own FS
+	// (the bind-mounted agent home + the image), never the host outside it.
 	readFile: Environment["readFile"];
 	writeFile: Environment["writeFile"];
 	mkdir: Environment["mkdir"];
@@ -61,7 +68,7 @@ function containerName(cwd: string): string {
 }
 
 export function createContainerConfig(cwd: string, options?: { image?: string }): ContainerConfig {
-	const image = options?.image ?? process.env[ENV_CONTAINER_IMAGE] ?? DEFAULT_CONTAINER_IMAGE;
+	const image = options?.image ?? process.env[ENV_CONTAINER_IMAGE] ?? SANDBOX_IMAGE;
 	// Linux: run as the host user so bind-mounted files stay host-owned; macOS maps for us.
 	const user = process.platform === "linux" ? `${process.getuid?.()}:${process.getgid?.()}` : undefined;
 	return {
@@ -78,11 +85,7 @@ export async function startContainer(config: ContainerConfig): Promise<Container
 	const existing = await findContainer(config.name);
 	if (!existing) await createContainer(config);
 	else await updateContainer(config, existing);
-	// grep/find run rg/fd inside the container; ensure the slim default image has them. Runs on every
-	// start (not just create) and is idempotent, so it self-heals a container whose earlier
-	// provisioning failed (e.g. offline). A custom image is the user's responsibility (documented).
-	if (config.image === DEFAULT_CONTAINER_IMAGE) await provisionSearchTools(config.name);
-	return { name: config.name, exec: execInContainer(config), ...createContainerFileOps(config.name) };
+	return { name: config.name, exec: execInContainer(config), ...fileOpsInContainer(config.name) };
 }
 
 /** Stop this agent's container on shutdown. It reattaches by label on the next start. */
@@ -109,38 +112,24 @@ async function findContainer(name: string): Promise<{ running: boolean; configHa
 
 /** Create a fresh container: a detached `sleep infinity` body the execs attach to (no --rm). */
 async function createContainer(config: ContainerConfig): Promise<void> {
+	if (config.image === SANDBOX_IMAGE) await ensureSandboxImage();
 	const args = ["run", "-d", "--init", "--name", config.name];
 	args.push("--label", `${SANDBOX_LABEL}=${config.name}`, "--label", `${HASH_LABEL}=${config.configHash}`);
-	// Identical-path bind mount (no translation): the agent's home is its own dir, so its writes stay
-	// visible host-side for the daemon's resource loader to pick up on reload. The rest of the host FS
-	// is NOT mounted, so it stays invisible to the container.
+	// Identical-path bind mount: the agent's home stays visible host-side, so the daemon's resource
+	// loader picks up self-edits on reload. Nothing else of the host is mounted, so it stays invisible.
 	args.push("-v", `${config.cwd}:${config.cwd}`, "-w", config.cwd);
 	if (config.user) args.push("--user", config.user);
 	args.push(config.image, "sleep", "infinity");
 	await docker(args);
 }
 
-/**
- * Install ripgrep + fd into the default image (it carries neither). Skips immediately when both are
- * already present, so it is cheap to call on every start and self-heals a container provisioned
- * while offline. Runs as root via `--user 0:0` since the agent user may be unprivileged; fd ships as
- * `fdfind` on Debian, so symlink it to `fd`. Best-effort: on failure (offline, or a swapped-in
- * non-apt image) grep/find surface a clear "command not found" rather than reading the host.
- */
-async function provisionSearchTools(name: string): Promise<void> {
-	const script =
-		"command -v rg >/dev/null 2>&1 && command -v fd >/dev/null 2>&1 && exit 0; " +
-		"apt-get update -qq && apt-get install -y -qq --no-install-recommends ripgrep fd-find && " +
-		'ln -sf "$(command -v fdfind)" /usr/local/bin/fd';
-	try {
-		await docker(["exec", "--user", "0:0", name, "sh", "-c", script]);
-	} catch (error) {
-		console.error(
-			chalk.yellow(
-				`Warning: could not install rg/fd in the sandbox container; grep/find may be unavailable: ${error}`,
-			),
-		);
-	}
+/** Build the sandbox image (base + rg/fd) if it isn't already present. Cached after the first build. */
+async function ensureSandboxImage(): Promise<void> {
+	const present = await docker(["image", "inspect", SANDBOX_IMAGE]).then(
+		() => true,
+		() => false,
+	);
+	if (!present) await buildImage(SANDBOX_IMAGE, SANDBOX_DOCKERFILE);
 }
 
 /** Reconcile an existing container: rebuild it if the config drifted, resume it if stopped. */
@@ -228,19 +217,36 @@ function docker(args: string[]): Promise<{ stdout: string; stderr: string }> {
 	});
 }
 
-interface FileExecResult {
+/** `docker build` the given Dockerfile (piped via stdin, no build context) to a tag. */
+function buildImage(tag: string, dockerfile: string): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const child = spawnProcess("docker", ["build", "-t", tag, "-"], {
+			stdio: ["pipe", "ignore", "pipe"],
+			windowsHide: true,
+		});
+		let stderr = "";
+		child.stderr?.on("data", (data: Buffer) => {
+			stderr += data.toString();
+		});
+		child.once("error", reject);
+		child.once("close", (code) =>
+			code === 0 ? resolve() : reject(new Error(`docker build failed (exit ${code}): ${stderr.trim()}`)),
+		);
+		child.stdin?.end(dockerfile);
+	});
+}
+
+interface CaptureResult {
 	exitCode: number | null;
 	stdout: Buffer;
 	stderr: string;
 }
 
 /**
- * One `docker exec` for a file operation. User paths ride in as positional args (`sh -c '…' sh
- * "$1"`) to dodge shell quoting; stdout is kept binary (cat/head stream raw bytes); the exit code is
- * returned, not thrown, so callers map it to fs-style errors. `input`, when present, is piped to the
- * command's stdin (the `-i` write path).
+ * `docker exec` for a file op: binary stdout (cat/head stream raw bytes), exit code returned rather
+ * than thrown so callers map it to fs-style errors, and `input` (when set) piped to stdin.
  */
-function dockerFileExec(name: string, argv: string[], input?: string | Uint8Array): Promise<FileExecResult> {
+function captureInContainer(name: string, argv: string[], input?: string | Uint8Array): Promise<CaptureResult> {
 	return new Promise((resolve, reject) => {
 		const args = input === undefined ? ["exec", name, ...argv] : ["exec", "-i", name, ...argv];
 		const child = spawnProcess("docker", args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
@@ -257,9 +263,10 @@ function dockerFileExec(name: string, argv: string[], input?: string | Uint8Arra
 	});
 }
 
-/** The `Environment` file methods, each backed by one `docker exec` into the running container. */
-function createContainerFileOps(name: string): Omit<Container, "name" | "exec"> {
-	const run = (argv: string[], input?: string | Uint8Array) => dockerFileExec(name, argv, input);
+/** The `Environment` file methods, each backed by one `docker exec`. Paths ride in as positional
+ *  args (`sh -c '… "$1"' sh <path>`) so the shell never re-splits them. */
+function fileOpsInContainer(name: string): Omit<Container, "name" | "exec"> {
+	const run = (argv: string[], input?: string | Uint8Array) => captureInContainer(name, argv, input);
 	return {
 		readFile: async (path) => {
 			const { exitCode, stdout, stderr } = await run(["cat", "--", path]);

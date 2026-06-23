@@ -1,16 +1,10 @@
 /**
- * Container backend: every file/shell op runs inside the container via `docker exec`.
+ * Container backend: every file/shell op runs inside the container via `docker exec`. The agent home
+ * is bind-mounted at its own path and nothing else of the host is, so absolute paths resolve against
+ * the container's own FS, never the host. The container boundary is the jail — no host-side write-jail.
  *
- * The agent home is bind-mounted into the container at its own path, and nothing else of the host
- * is — so absolute paths resolve against the container's own FS (its home + the image), never the
- * host outside it. There is no host-side write-jail here: the container boundary IS the jail, and
- * the file methods physically cannot reach the host. The agent's writes still land in its home
- * (the mount), so the daemon's host-side resource loader sees them on reload.
- *
- * Control state (approvals.json / sessions/ / agent.json) lives in that mounted home and is NOT yet
- * write-protected on this backend — that lands when the home moves from a bind mount to an isolated
- * volume (it's absent from a volume, so no carve-out is needed). srt's denyWrite plane has no
- * analogue here, so deferring it is the honest state until then.
+ * Control state in the mounted home is not yet write-protected here (srt's denyWrite has no analogue);
+ * that lands when the home moves to an isolated volume.
  */
 
 import { resolveToCwd } from "../tools/path-utils.ts";

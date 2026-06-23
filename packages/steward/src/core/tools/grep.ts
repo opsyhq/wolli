@@ -31,8 +31,7 @@ const grepSchema = Type.Object({
 
 export type GrepToolInput = Static<typeof grepSchema>;
 const DEFAULT_LIMIT = 100;
-// rg has no global match cap, so bound the buffered json. The match limit keeps far fewer rows than
-// this; the cap only guards against a broad pattern over a large tree (e.g. on the open-read host).
+// rg has no global match cap, so bound the buffered json against a broad pattern over a large tree.
 const MAX_RG_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 export interface GrepToolDetails {
@@ -49,11 +48,6 @@ interface RgEvent {
 		line_number?: number;
 		lines?: { text?: string };
 	};
-}
-
-/** POSIX single-quote so a regex/path carrying shell metacharacters reaches rg verbatim. */
-function shellQuote(arg: string): string {
-	return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
 export function createGrepToolDefinition(
@@ -90,9 +84,7 @@ export function createGrepToolDefinition(
 		) {
 			if (signal?.aborted) throw new Error("Operation aborted");
 
-			// Host/local-os run rg from the host PATH, so make sure it's downloaded. The docker backend
-			// runs it inside the provisioned container instead, so skip the (otherwise unused) host download.
-			if (env.id !== "docker") await ensureTool("rg", true);
+			await ensureTool("rg", true);
 
 			const searchPath = resolveToCwd(searchDir || ".", env.cwd);
 			let isDirectory: boolean;
@@ -116,8 +108,7 @@ export function createGrepToolDefinition(
 				return path.basename(filePath);
 			};
 
-			// rg --json prints only the matched line, so context lines are read back from the file —
-			// through env.readFile, i.e. inside the container for docker.
+			// rg --json prints only the matched line; context lines are read back via env.readFile.
 			const fileCache = new Map<string, string[]>();
 			const getFileLines = async (filePath: string): Promise<string[]> => {
 				let lines = fileCache.get(filePath);
@@ -153,16 +144,15 @@ export function createGrepToolDefinition(
 				return block;
 			};
 
-			// Run rg inside the environment so it only sees what that environment can — the container's
-			// FS for docker (host invisible), the local FS otherwise. exec merges stdout + stderr, so send
-			// rg's stderr to /dev/null: an interleaved diagnostic would otherwise split a json line and
-			// drop that match. Errors still surface through the exit code.
+			// Run rg via env.exec so it only sees the environment's FS (the container for docker). exec
+			// merges stdout + stderr, so send rg's stderr to /dev/null — an interleaved diagnostic would
+			// otherwise split a json line and drop a match. Errors still surface through the exit code.
 			const rgArgs = ["--json", "--line-number", "--color=never", "--hidden"];
 			if (ignoreCase) rgArgs.push("--ignore-case");
 			if (literal) rgArgs.push("--fixed-strings");
 			if (glob) rgArgs.push("--glob", glob);
 			rgArgs.push("--", pattern, searchPath);
-			const command = `rg ${rgArgs.map(shellQuote).join(" ")} 2>/dev/null`;
+			const command = `rg ${rgArgs.map((arg) => `'${arg.replace(/'/g, "'\\''")}'`).join(" ")} 2>/dev/null`;
 
 			let raw = "";
 			let exitCode: number | null;

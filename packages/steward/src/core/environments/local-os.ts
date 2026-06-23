@@ -38,10 +38,8 @@ export async function createLocalOSEnvironment(
 		if (escapesRoot || isSymlink(absolutePath)) {
 			throw new Error(`write blocked: ${absolutePath} outside sandbox root ${cwd}`);
 		}
-		// Daemon-owned control state (approvals.json / sessions/ / agent.json) is write-denied to the
-		// agent's own tools; the daemon writes it host-side, bypassing this jail. Match the literal
-		// target (a not-yet-created approvals.json) and the nearest existing component (a symlinked
-		// dir pointing back into control state).
+		// Deny the daemon-owned control state passed in denyRoots. Match the literal target (a
+		// not-yet-created file) and the nearest existing component (a symlinked dir pointing into it).
 		const canonicalTarget = canonicalizePath(absolutePath);
 		const deniesControlState = denyRoots.some(
 			(root) =>
@@ -62,9 +60,7 @@ export async function createLocalOSEnvironment(
 			// runs under the user's shell rather than srt's default.
 			const { shell } = getShellConfig(options?.shellPath);
 			const wrapped = await sandbox.wrap(command, shell);
-			// The agent's home IS its $HOME: repoint it over the inherited env so `~`-rooted shell
-			// writes land in the jail. Only this confined target is repointed; `host` keeps the
-			// user's real $HOME (unchanged host.ts).
+			// The agent's home IS its $HOME (only on this confined target; host keeps the user's real one).
 			const env = { ...(execOptions.env ?? getShellEnv()), HOME: cwd };
 			try {
 				return await localExec(wrapped, execCwd, { ...execOptions, env });

@@ -12,11 +12,6 @@ function toPosixPath(value: string): string {
 	return value.split(path.sep).join("/");
 }
 
-/** POSIX single-quote so a glob/path carrying shell metacharacters reaches fd verbatim. */
-function shellQuote(arg: string): string {
-	return `'${arg.replace(/'/g, "'\\''")}'`;
-}
-
 const findSchema = Type.Object({
 	pattern: Type.String({
 		description: "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'",
@@ -52,9 +47,7 @@ export function createFindToolDefinition(
 		) {
 			if (signal?.aborted) throw new Error("Operation aborted");
 
-			// Host/local-os run fd from the host PATH, so make sure it's downloaded. The docker backend
-			// runs it inside the provisioned container instead, so skip the (otherwise unused) host download.
-			if (env.id !== "docker") await ensureTool("fd", true);
+			await ensureTool("fd", true);
 
 			const searchPath = resolveToCwd(searchDir || ".", env.cwd);
 			const effectiveLimit = limit ?? DEFAULT_LIMIT;
@@ -83,11 +76,10 @@ export function createFindToolDefinition(
 			}
 			args.push("--", effectivePattern, searchPath);
 
-			// Run fd inside the environment so it only sees what that environment can — the container's
-			// FS for docker (host invisible), the local FS otherwise. exec merges stdout + stderr, so send
-			// fd's stderr to /dev/null: an interleaved diagnostic would otherwise land among the paths.
-			// Errors still surface through the exit code.
-			const command = `fd ${args.map(shellQuote).join(" ")} 2>/dev/null`;
+			// Run fd via env.exec so it only sees the environment's FS (the container for docker). exec
+			// merges stdout + stderr, so send fd's stderr to /dev/null so a diagnostic can't land among
+			// the paths. Errors still surface through the exit code.
+			const command = `fd ${args.map((arg) => `'${arg.replace(/'/g, "'\\''")}'`).join(" ")} 2>/dev/null`;
 			let raw = "";
 			let exitCode: number | null;
 			try {
