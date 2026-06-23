@@ -10,7 +10,7 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { createContainerConfig, isContainerSupported, resetContainers } from "../src/core/environments/container.ts";
+import { createContainerConfig, isContainerSupported, stopContainer } from "../src/core/environments/container.ts";
 import { createDockerEnvironment } from "../src/core/environments/docker.ts";
 import { spawnProcessSync } from "../src/utils/child-process.ts";
 
@@ -20,9 +20,9 @@ describe.skipIf(!dockerAvailable)("docker exec round-trip", () => {
 	let dir: string | undefined;
 
 	afterAll(async () => {
-		await resetContainers();
 		if (dir) {
-			// rm -f (not just the resetContainers stop) so the test leaves no container behind.
+			await stopContainer(dir);
+			// rm -f (not just the stop) so the test leaves no container behind.
 			spawnProcessSync("docker", ["rm", "-f", createContainerConfig(dir).name], {
 				encoding: "utf-8",
 				stdio: "ignore",

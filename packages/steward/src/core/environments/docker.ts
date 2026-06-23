@@ -1,12 +1,7 @@
 /**
- * The container backend: docker-confined exec + write-jailed in-process fs.
- *
- * This is `local-os` with one method swapped. The agent dir is bind-mounted into the
- * container at the identical path, so `read/write/edit/ls/grep/find` stay host-side
- * (`node:fs` on the mount, write-jailed) and never enter the container — only `bash`
- * crosses in via `docker exec`, where host path == container path means no translation.
- * Workspace persistence is free: the bytes live in the host agent dir; the container is
- * disposable.
+ * Container backend: docker-confined bash + write-jailed host-side fs. local-os with one
+ * method swapped — the agent dir is bind-mounted at the identical path, so the file tools
+ * stay host-side on the mount and only bash crosses into the container.
  */
 
 import { existsSync, lstatSync } from "node:fs";
@@ -15,32 +10,25 @@ import { dirname } from "node:path";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { canonicalizePath, getCwdRelativePath } from "../../utils/paths.ts";
 import { pathExists, resolveToCwd } from "../tools/path-utils.ts";
-import { createContainer, createContainerConfig } from "./container.ts";
+import { createContainerConfig, startContainer } from "./container.ts";
 import type { Environment } from "./types.ts";
 
 export async function createDockerEnvironment(
 	cwd: string,
-	// `shellPath`/`allowWrite` mirror local-os so the selector hands every backend one opts
-	// shape; docker ignores them (the container owns its shell, the jail is cwd-only) and
-	// reads only `image`.
 	options?: { shellPath?: string; allowWrite?: string[]; image?: string },
 ): Promise<Environment> {
-	const container = await createContainer(createContainerConfig(cwd, options));
+	const container = await startContainer(createContainerConfig(cwd, options));
 	const realRoot = canonicalizePath(cwd);
 
-	// Duplicated from local-os.ts (the plan defers extraction): docker confines `bash`,
-	// but the file tools write host-side via node:fs and bypass the container entirely —
-	// without this jail the docker backend would be *less* confined than local-os.
+	// docker confines bash, but the file tools write host-side via node:fs and bypass it, so the
+	// same write-jail as local-os gates them here. Resolve symlinks on the nearest existing
+	// component (the target may not exist yet) and reject a symlink at the target itself.
 	const ensureInJail = (absolutePath: string): void => {
-		// Resolve symlinks on the nearest existing path component (the target may not exist
-		// yet) so a symlinked directory can't escape the root, and reject a symlink at the
-		// target itself — it can point outside even when its parent is in-jail.
 		let anchor = absolutePath;
 		while (!existsSync(anchor) && anchor !== dirname(anchor)) anchor = dirname(anchor);
-		const escapesRoot = getCwdRelativePath(canonicalizePath(anchor), realRoot) === undefined;
-		if (escapesRoot || isSymlink(absolutePath)) {
+		const escapes = getCwdRelativePath(canonicalizePath(anchor), realRoot) === undefined;
+		if (escapes || isSymlink(absolutePath))
 			throw new Error(`write blocked: ${absolutePath} outside sandbox root ${cwd}`);
-		}
 	};
 
 	return {
@@ -65,6 +53,7 @@ export async function createDockerEnvironment(
 	};
 }
 
+// lstatSync throws when the target doesn't exist yet (the common new-file write) — not a symlink.
 function isSymlink(path: string): boolean {
 	try {
 		return lstatSync(path).isSymbolicLink();

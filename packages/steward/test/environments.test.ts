@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_SANDBOX } from "../src/config.ts";
 import type { ApprovalGate } from "../src/core/approval/types.ts";
-import { createContainer } from "../src/core/environments/container.ts";
+import { startContainer } from "../src/core/environments/container.ts";
 import { createDockerEnvironment } from "../src/core/environments/docker.ts";
 import { createEnvironments, createGatedEnvironment } from "../src/core/environments/index.ts";
 import { createLocalOSEnvironment } from "../src/core/environments/local-os.ts";
@@ -40,12 +40,12 @@ vi.mock("../src/core/environments/sandbox.ts", () => ({
 // round-trip lives in environments-docker.test.ts (skipped where docker is unavailable).
 vi.mock("../src/core/environments/container.ts", () => ({
 	isContainerSupported: vi.fn(async () => true),
-	createContainerConfig: vi.fn((cwd: string) => ({ name: `sbx-${cwd}`, image: "img", cwd })),
-	createContainer: vi.fn(async (config: { name: string }) => ({
+	createContainerConfig: vi.fn((cwd: string) => ({ name: `sbx-${cwd}`, image: "img", cwd, configHash: "h" })),
+	startContainer: vi.fn(async (config: { name: string }) => ({
 		name: config.name,
 		exec: async () => ({ exitCode: 0 }),
 	})),
-	resetContainers: vi.fn(async () => {}),
+	stopContainer: vi.fn(async () => {}),
 }));
 
 beforeEach(() => {
@@ -135,16 +135,16 @@ describe("createEnvironments target selection", () => {
 		expect((await mkEnvs()).targets.sandbox.id).toBe("local-os");
 		delete process.env[ENV_SANDBOX];
 		expect((await mkEnvs()).targets.sandbox.id).toBe("local-os");
-		expect(createContainer).not.toHaveBeenCalled();
+		expect(startContainer).not.toHaveBeenCalled();
 	});
 
 	it("collapses to host when the docker backend fails to initialize", async () => {
 		process.env[ENV_SANDBOX] = "docker";
-		vi.mocked(createContainer).mockRejectedValueOnce(new Error("docker init boom"));
+		vi.mocked(startContainer).mockRejectedValueOnce(new Error("docker init boom"));
 		const envs = await mkEnvs();
 		expect(envs.default).toBe("host");
 		expect(Object.keys(envs.targets)).toEqual(["host"]);
-		expect(createContainer).toHaveBeenCalled();
+		expect(startContainer).toHaveBeenCalled();
 	});
 });
 

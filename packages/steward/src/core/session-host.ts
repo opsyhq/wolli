@@ -62,7 +62,7 @@ import { ApprovalStore } from "./approval/approval-storage.ts";
 import type { AuthStorage } from "./auth-storage.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ResourceDiagnostic, ResourceSummary } from "./diagnostics.ts";
-import { createEnvironments, resetContainers, resetSandbox } from "./environments/index.ts";
+import { createEnvironments, resetSandbox, stopContainer } from "./environments/index.ts";
 import { type ExtensionErrorListener, ExtensionRunner, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type {
 	ContextUsage,
@@ -1767,9 +1767,9 @@ export class SessionHost {
 		await this._integrationRunner?.stop();
 		await this.env?.cleanup();
 		this.env = undefined;
-		// Tear down the process-global srt singleton (proxy servers + OS profile) and stop
-		// any docker sandbox containers. Both are no-ops when their backend never ran.
+		// Tear down the process-global srt singleton (proxy servers + OS profile) and stop this
+		// agent's docker sandbox container. Both are no-ops when their backend never ran.
 		await resetSandbox();
-		await resetContainers();
+		await stopContainer(getAgentDir(this.options.name));
 	}
 }

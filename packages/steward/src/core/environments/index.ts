@@ -9,18 +9,12 @@ import { createLocalOSEnvironment } from "./local-os.ts";
 import { isSandboxSupported } from "./sandbox.ts";
 import type { AgentEnvironments, Environment } from "./types.ts";
 
-export { resetContainers } from "./container.ts";
+export { stopContainer } from "./container.ts";
 export { createDockerEnvironment } from "./docker.ts";
 export { createHostEnvironment } from "./host.ts";
 export { createLocalOSEnvironment } from "./local-os.ts";
 export { resetSandbox } from "./sandbox.ts";
 export type { AgentEnvironments, Environment, FileStat } from "./types.ts";
-
-/** Log a sandbox-init failure and fall back to host. The catch handler both backends share. */
-function warnFallback(error: unknown): undefined {
-	console.error(chalk.yellow(`Warning: sandbox init failed, falling back to host environment: ${error}`));
-	return undefined;
-}
 
 /**
  * Wrap an environment so every command clears `gate` first. The gate runs inside `exec`, not as a
@@ -51,12 +45,19 @@ export async function createEnvironments(
 	opts: { gate: ApprovalGate; shellPath?: string },
 ): Promise<AgentEnvironments> {
 	const override = process.env[ENV_SANDBOX]?.trim();
-	// docker is explicit opt-in only; auto/unset falls through to srt-or-host.
+	// docker is explicit opt-in only; auto/unset falls through to srt-or-host. On init failure
+	// each backend falls back to the unconfined host.
 	let sandbox: Environment | undefined;
 	if (override === "docker") {
-		sandbox = await createDockerEnvironment(agentDir, opts).catch(warnFallback);
+		sandbox = await createDockerEnvironment(agentDir, opts).catch((error) => {
+			console.error(chalk.yellow(`Warning: docker sandbox init failed, falling back to host: ${error}`));
+			return undefined;
+		});
 	} else if (override === "local-os" || (override !== "host" && isSandboxSupported())) {
-		sandbox = await createLocalOSEnvironment(agentDir, opts).catch(warnFallback);
+		sandbox = await createLocalOSEnvironment(agentDir, opts).catch((error) => {
+			console.error(chalk.yellow(`Warning: srt sandbox init failed, falling back to host: ${error}`));
+			return undefined;
+		});
 	}
 
 	const host = createHostEnvironment(agentDir, opts);
