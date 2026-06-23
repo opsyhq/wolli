@@ -60,6 +60,7 @@ import { createAgentPluginManager } from "./agent-plugin-manager.ts";
 import type { AuthStorage } from "./auth-storage.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ResourceDiagnostic, ResourceSummary } from "./diagnostics.ts";
+import { createHostEnvironment } from "./environment.ts";
 import { type ExtensionErrorListener, ExtensionRunner, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type {
 	ContextUsage,
@@ -1252,8 +1253,11 @@ export class SessionHost {
 				.map((error) => ({ path: getAgentIntegrationsPath(name), error: error.message })),
 		];
 
+		// The host environment backs the file/shell tools and is bound to every extension
+		// via ctx.environment. Phase 1 is always the unconfined host rooted at agentDir.
+		const environment = createHostEnvironment(agentDir);
 		const { extensions, errors, runtime } = loader.getExtensions();
-		const runner = new ExtensionRunner(extensions, runtime, agentDir, sessionManager, modelRegistry);
+		const runner = new ExtensionRunner(extensions, runtime, agentDir, sessionManager, modelRegistry, environment);
 		this._extensionRunner = runner;
 		this._extensionCount = extensions.length;
 		this._loadErrors = errors;
@@ -1294,22 +1298,21 @@ export class SessionHost {
 
 		// Tools operate in the agent's home dir, where SOUL/MEMORY/USER.md and the
 		// workspace/ subdir live. memory is steward's curated-notes tool; the rest
-		// are read/write/edit/ls/grep/find plus bash. bash uses the default local
-		// shell operations (it streams output itself via the renderer's onUpdate),
-		// so there are no overrides.
+		// are read/write/edit/ls/grep/find plus bash, all routed through the host
+		// environment (registerTool tools reach the same instance via ctx.environment).
 		const baseTools: AgentTool[] = [
 			createMemoryTool(name),
 			// The deploy tool only exists while forming — the agent uses it to author
 			// its purpose + SOUL.md and ask to be deployed. Once deployed it has served
 			// its purpose and is omitted.
 			...(isDeployed(config) ? [] : [createDeployTool(name)]),
-			createReadTool(agentDir),
-			createWriteTool(agentDir),
-			createEditTool(agentDir),
-			createLsTool(agentDir),
-			createGrepTool(agentDir),
-			createFindTool(agentDir),
-			createBashTool(agentDir),
+			createReadTool(environment),
+			createWriteTool(environment),
+			createEditTool(environment),
+			createLsTool(environment),
+			createGrepTool(environment),
+			createFindTool(environment),
+			createBashTool(environment),
 		];
 		// Wrap each extension-registered tool into an engine AgentTool. The context
 		// factory is lazy (`runner.createContext()`) so it resolves the live binding

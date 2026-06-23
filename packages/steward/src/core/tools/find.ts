@@ -4,8 +4,9 @@ import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
 import { ensureTool } from "../../utils/tools-manager.ts";
+import type { Environment } from "../environment.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import { pathExists, resolveToCwd } from "./path-utils.ts";
+import { resolveToCwd } from "./path-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
@@ -30,33 +31,9 @@ export interface FindToolDetails {
 	resultLimitReached?: number;
 }
 
-/**
- * Pluggable operations for the find tool.
- * Override these to delegate file search to remote systems (for example SSH).
- */
-export interface FindOperations {
-	/** Check if path exists */
-	exists: (absolutePath: string) => Promise<boolean> | boolean;
-	/** Find files matching glob pattern. Returns relative or absolute paths. */
-	glob: (pattern: string, cwd: string, options: { ignore: string[]; limit: number }) => Promise<string[]> | string[];
-}
-
-const defaultFindOperations: FindOperations = {
-	exists: pathExists,
-	// This is a placeholder. Actual fd execution happens in execute() when no custom glob is provided.
-	glob: () => [],
-};
-
-export interface FindToolOptions {
-	/** Custom operations for find. Default: local filesystem plus fd */
-	operations?: FindOperations;
-}
-
 export function createFindToolDefinition(
-	cwd: string,
-	options?: FindToolOptions,
+	env: Environment,
 ): ToolDefinition<typeof findSchema, FindToolDetails | undefined> {
-	const customOps = options?.operations;
 	return {
 		name: "find",
 		label: "find",
@@ -93,70 +70,10 @@ export function createFindToolDefinition(
 
 				(async () => {
 					try {
-						const searchPath = resolveToCwd(searchDir || ".", cwd);
+						const searchPath = resolveToCwd(searchDir || ".", env.cwd);
 						const effectiveLimit = limit ?? DEFAULT_LIMIT;
-						const ops = customOps ?? defaultFindOperations;
 
-						// If custom operations provide glob(), use that instead of fd.
-						if (customOps?.glob) {
-							if (!(await ops.exists(searchPath))) {
-								settle(() => reject(new Error(`Path not found: ${searchPath}`)));
-								return;
-							}
-							if (signal?.aborted) {
-								settle(() => reject(new Error("Operation aborted")));
-								return;
-							}
-							const results = await ops.glob(pattern, searchPath, {
-								ignore: ["**/node_modules/**", "**/.git/**"],
-								limit: effectiveLimit,
-							});
-							if (signal?.aborted) {
-								settle(() => reject(new Error("Operation aborted")));
-								return;
-							}
-							if (results.length === 0) {
-								settle(() =>
-									resolve({
-										content: [{ type: "text", text: "No files found matching pattern" }],
-										details: undefined,
-									}),
-								);
-								return;
-							}
-
-							// Relativize paths against the search root for stable output.
-							const relativized = results.map((p) => {
-								if (p.startsWith(searchPath)) return toPosixPath(p.slice(searchPath.length + 1));
-								return toPosixPath(path.relative(searchPath, p));
-							});
-							const resultLimitReached = relativized.length >= effectiveLimit;
-							const rawOutput = relativized.join("\n");
-							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
-							let resultOutput = truncation.content;
-							const details: FindToolDetails = {};
-							const notices: string[] = [];
-							if (resultLimitReached) {
-								notices.push(`${effectiveLimit} results limit reached`);
-								details.resultLimitReached = effectiveLimit;
-							}
-							if (truncation.truncated) {
-								notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
-								details.truncation = truncation;
-							}
-							if (notices.length > 0) {
-								resultOutput += `\n\n[${notices.join(". ")}]`;
-							}
-							settle(() =>
-								resolve({
-									content: [{ type: "text", text: resultOutput }],
-									details: Object.keys(details).length > 0 ? details : undefined,
-								}),
-							);
-							return;
-						}
-
-						// Default implementation uses fd.
+						// find always shells out to fd against the local filesystem.
 						const fdPath = await ensureTool("fd", true);
 						if (signal?.aborted) {
 							settle(() => reject(new Error("Operation aborted")));
@@ -298,6 +215,6 @@ export function createFindToolDefinition(
 	};
 }
 
-export function createFindTool(cwd: string, options?: FindToolOptions): AgentTool<typeof findSchema> {
-	return wrapToolDefinition(createFindToolDefinition(cwd, options));
+export function createFindTool(env: Environment): AgentTool<typeof findSchema> {
+	return wrapToolDefinition(createFindToolDefinition(env));
 }

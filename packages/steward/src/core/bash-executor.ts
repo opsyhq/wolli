@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sanitizeBinaryOutput } from "@opsyhq/agent";
 import { stripAnsi } from "../utils/ansi.ts";
-import type { BashOperations } from "./tools/bash.ts";
+import type { Environment } from "./environment.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 
 // ============================================================================
@@ -44,13 +44,13 @@ export interface BashResult {
 // ============================================================================
 
 /**
- * Execute a bash command using custom BashOperations.
- * Used for remote execution (SSH, containers, etc.).
+ * Execute a bash command through an Environment.
+ * The Environment backend decides where the command runs (host today; sandbox later).
  */
-export async function executeBashWithOperations(
+export async function executeBash(
 	command: string,
 	cwd: string,
-	operations: BashOperations,
+	environment: Environment,
 	options?: BashExecutorOptions,
 ): Promise<BashResult> {
 	const outputChunks: string[] = [];
@@ -105,7 +105,7 @@ export async function executeBashWithOperations(
 	};
 
 	try {
-		const result = await operations.exec(command, cwd, {
+		const result = await environment.exec(command, cwd, {
 			onData,
 			signal: options?.signal,
 		});

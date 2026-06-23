@@ -46,6 +46,7 @@ import type {
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../theme/theme.ts";
 import type { BashResult } from "../bash-executor.ts";
+import type { Environment } from "../environment.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
@@ -63,7 +64,6 @@ import type {
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
-import type { BashOperations } from "../tools/bash.ts";
 import type { EditToolDetails } from "../tools/edit.ts";
 import type {
 	BashToolDetails,
@@ -320,6 +320,8 @@ export interface ExtensionContext {
 	hasUI: boolean;
 	/** Current working directory */
 	cwd: string;
+	/** The environment that backs the file/shell tools (host today; sandbox later). */
+	environment: Environment;
 	/** Session manager (read-only) */
 	sessionManager: ReadonlySessionManager;
 	/** Model registry for API key resolution */
@@ -1039,8 +1041,8 @@ export interface ToolCallEventResult {
 
 /** Result from user_bash event handler */
 export interface UserBashEventResult {
-	/** Custom operations to use for execution */
-	operations?: BashOperations;
+	/** Custom environment to run the command in (default: the host environment) */
+	environment?: Environment;
 	/** Full replacement: extension handled execution, use this result */
 	result?: BashResult;
 }

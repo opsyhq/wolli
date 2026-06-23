@@ -1,7 +1,7 @@
 import type { AgentTool } from "@opsyhq/agent";
 import { constants } from "fs";
-import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
+import type { Environment } from "../environment.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import {
 	applyEditsToNormalizedContent,
@@ -54,30 +54,6 @@ export interface EditToolDetails {
 	firstChangedLine?: number;
 }
 
-/**
- * Pluggable operations for the edit tool.
- * Override these to delegate file editing to remote systems (for example SSH).
- */
-export interface EditOperations {
-	/** Read file contents as a Buffer */
-	readFile: (absolutePath: string) => Promise<Buffer>;
-	/** Write content to a file */
-	writeFile: (absolutePath: string, content: string) => Promise<void>;
-	/** Check if file is readable and writable (throw if not) */
-	access: (absolutePath: string) => Promise<void>;
-}
-
-const defaultEditOperations: EditOperations = {
-	readFile: (path) => fsReadFile(path),
-	writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
-	access: (path) => fsAccess(path, constants.R_OK | constants.W_OK),
-};
-
-export interface EditToolOptions {
-	/** Custom operations for file editing. Default: local filesystem */
-	operations?: EditOperations;
-}
-
 function prepareEditArguments(input: unknown): EditToolInput {
 	if (!input || typeof input !== "object") {
 		return input as EditToolInput;
@@ -112,10 +88,8 @@ function validateEditInput(input: EditToolInput): { path: string; edits: Edit[] 
 }
 
 export function createEditToolDefinition(
-	cwd: string,
-	options?: EditToolOptions,
+	env: Environment,
 ): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
-	const ops = options?.operations ?? defaultEditOperations;
 	return {
 		name: "edit",
 		label: "edit",
@@ -133,7 +107,7 @@ export function createEditToolDefinition(
 		prepareArguments: prepareEditArguments,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
 			const { path, edits } = validateEditInput(input);
-			const absolutePath = resolveToCwd(path, cwd);
+			const absolutePath = resolveToCwd(path, env.cwd);
 
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the
@@ -148,7 +122,7 @@ export function createEditToolDefinition(
 
 				// Check if file exists.
 				try {
-					await ops.access(absolutePath);
+					await env.access(absolutePath, constants.R_OK | constants.W_OK);
 				} catch (error: unknown) {
 					throwIfAborted();
 					const errorMessage =
@@ -158,7 +132,7 @@ export function createEditToolDefinition(
 				throwIfAborted();
 
 				// Read the file.
-				const buffer = await ops.readFile(absolutePath);
+				const buffer = await env.readFile(absolutePath);
 				const rawContent = buffer.toString("utf-8");
 				throwIfAborted();
 
@@ -170,7 +144,7 @@ export function createEditToolDefinition(
 				throwIfAborted();
 
 				const finalContent = bom + restoreLineEndings(newContent, originalEnding);
-				await ops.writeFile(absolutePath, finalContent);
+				await env.writeFile(absolutePath, finalContent);
 				throwIfAborted();
 
 				const diffResult = generateDiffString(baseContent, newContent);
@@ -189,6 +163,6 @@ export function createEditToolDefinition(
 	};
 }
 
-export function createEditTool(cwd: string, options?: EditToolOptions): AgentTool<typeof editSchema> {
-	return wrapToolDefinition(createEditToolDefinition(cwd, options));
+export function createEditTool(env: Environment): AgentTool<typeof editSchema> {
+	return wrapToolDefinition(createEditToolDefinition(env));
 }
