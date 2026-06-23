@@ -60,7 +60,7 @@ import { createAgentPluginManager } from "./agent-plugin-manager.ts";
 import type { AuthStorage } from "./auth-storage.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ResourceDiagnostic, ResourceSummary } from "./diagnostics.ts";
-import { createHostEnvironment } from "./environment.ts";
+import { createEnvironment, resetSandbox } from "./environments/index.ts";
 import { type ExtensionErrorListener, ExtensionRunner, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type {
 	ContextUsage,
@@ -1253,9 +1253,10 @@ export class SessionHost {
 				.map((error) => ({ path: getAgentIntegrationsPath(name), error: error.message })),
 		];
 
-		// The host environment backs the file/shell tools and is bound to every extension
-		// via ctx.environment. Phase 1 is always the unconfined host rooted at agentDir.
-		const environment = createHostEnvironment(agentDir);
+		// Backs the file/shell tools, bound to every extension via ctx.environment.
+		// createEnvironment picks host vs srt-confined per STEWARD_SANDBOX; srt init is
+		// memoized, so this reload re-call is cheap.
+		const environment = await createEnvironment(agentDir);
 		const { extensions, errors, runtime } = loader.getExtensions();
 		const runner = new ExtensionRunner(extensions, runtime, agentDir, sessionManager, modelRegistry, environment);
 		this._extensionRunner = runner;
@@ -1760,5 +1761,8 @@ export class SessionHost {
 		await this._integrationRunner?.stop();
 		await this.env?.cleanup();
 		this.env = undefined;
+		// Tear down the process-global srt singleton (proxy servers + OS profile).
+		// No-op when the host backend is active.
+		await resetSandbox();
 	}
 }

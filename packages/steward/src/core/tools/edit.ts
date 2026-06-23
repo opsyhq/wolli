@@ -1,7 +1,7 @@
 import type { AgentTool } from "@opsyhq/agent";
 import { constants } from "fs";
 import { type Static, Type } from "typebox";
-import type { Environment } from "../environment.ts";
+import type { Environment } from "../environments/types.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import {
 	applyEditsToNormalizedContent,

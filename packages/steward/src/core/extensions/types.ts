@@ -46,7 +46,7 @@ import type {
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../theme/theme.ts";
 import type { BashResult } from "../bash-executor.ts";
-import type { Environment } from "../environment.ts";
+import type { Environment } from "../environments/types.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";

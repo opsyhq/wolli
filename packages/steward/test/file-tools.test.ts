@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAgentDir, getSoulPath } from "../src/config.ts";
 import { createAgent } from "../src/core/agent-config.ts";
-import { createHostEnvironment, type Environment } from "../src/core/environment.ts";
+import { createHostEnvironment, type Environment } from "../src/core/environments/index.ts";
 import { readMemoryFile } from "../src/core/memory.ts";
 import { createEditTool } from "../src/core/tools/edit.ts";
 import { createGrepTool } from "../src/core/tools/grep.ts";

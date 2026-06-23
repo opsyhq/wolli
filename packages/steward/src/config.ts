@@ -77,6 +77,12 @@ export const ENV_DAEMON_TOKEN = `${APP_NAME.toUpperCase()}_DAEMON_TOKEN`;
 // (used in dev/CI so the deploy flow can be exercised without an OS-managed side effect).
 export const ENV_SERVICE_MANAGER = `${APP_NAME.toUpperCase()}_SERVICE_MANAGER`;
 
+// Select the file/shell confinement backend, e.g. STEWARD_SANDBOX=host|local-os|auto (default `auto`).
+// `auto` confines via srt (Apple Seatbelt / bubblewrap) on darwin/linux and falls back to the
+// unconfined host on unsupported platforms or srt-init failure; `host` forces today's unconfined
+// behavior; `local-os` forces the srt backend.
+export const ENV_SANDBOX = `${APP_NAME.toUpperCase()}_SANDBOX`;
+
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
 	if (path.startsWith("~/") || path.startsWith("~\\")) return join(homedir(), path.slice(2));

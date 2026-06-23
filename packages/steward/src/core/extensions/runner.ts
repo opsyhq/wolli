@@ -6,7 +6,7 @@ import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@opsyhq/agent";
 import { type Theme, theme } from "../../theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
-import type { Environment } from "../environment.ts";
+import type { Environment } from "../environments/types.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";

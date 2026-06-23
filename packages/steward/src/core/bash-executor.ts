@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sanitizeBinaryOutput } from "@opsyhq/agent";
 import { stripAnsi } from "../utils/ansi.ts";
-import type { Environment } from "./environment.ts";
+import type { Environment } from "./environments/types.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 
 // ============================================================================

@@ -50,8 +50,14 @@ export { executeBash } from "./core/bash-executor.ts";
 export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, isValidThinkingLevel } from "./core/defaults.ts";
 export type { ResourceDiagnostic, ResourceSummary } from "./core/diagnostics.ts";
 // The Environment seam: the single backend every file/shell tool consumes. Extensions reach the
-// session's instance via ctx.environment; createHostEnvironment builds the unconfined host backend.
-export { createHostEnvironment, type Environment, type FileStat } from "./core/environment.ts";
+// session's instance via ctx.environment; createHostEnvironment builds the unconfined host backend
+// (the CLI `!` path uses it), createEnvironment picks the confined/host backend per STEWARD_SANDBOX.
+export {
+	createEnvironment,
+	createHostEnvironment,
+	type Environment,
+	type FileStat,
+} from "./core/environments/index.ts";
 // Extension system
 export type {
 	AgentEndEvent,

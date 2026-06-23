@@ -3,7 +3,7 @@ import type { AgentTool } from "@opsyhq/agent";
 import { constants } from "fs";
 import { type Static, Type } from "typebox";
 import { formatDimensionNote, resizeImage } from "../../utils/image-resize.ts";
-import type { Environment } from "../environment.ts";
+import type { Environment } from "../environments/types.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { resolveReadPathAsync } from "./path-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
