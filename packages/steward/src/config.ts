@@ -88,8 +88,10 @@ export const ENV_SANDBOX = `${APP_NAME.toUpperCase()}_SANDBOX`;
 // DEFAULT_CONTAINER_IMAGE when unset.
 export const ENV_CONTAINER_IMAGE = `${APP_NAME.toUpperCase()}_CONTAINER_IMAGE`;
 
-// Default image for the docker sandbox backend (STEWARD_SANDBOX=docker). Slim so the first
-// pull is cheap; override with STEWARD_CONTAINER_IMAGE for a richer toolchain.
+// Default image for the docker sandbox backend (STEWARD_SANDBOX=docker). Slim + multi-arch so the
+// first pull is cheap and native on Apple Silicon; grep/find's rg+fd are installed into it on
+// container create (it ships neither). Override with STEWARD_CONTAINER_IMAGE for a richer toolchain
+// — a custom image is expected to already carry rg+fd.
 export const DEFAULT_CONTAINER_IMAGE = "debian:stable-slim";
 
 export function expandTildePath(path: string): string {

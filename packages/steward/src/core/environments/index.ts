@@ -42,7 +42,7 @@ export function createGatedEnvironment(base: Environment, gate: ApprovalGate): E
  */
 export async function createEnvironments(
 	agentDir: string,
-	opts: { gate: ApprovalGate; shellPath?: string },
+	opts: { gate: ApprovalGate; shellPath?: string; denyWrite?: string[] },
 ): Promise<AgentEnvironments> {
 	const override = process.env[ENV_SANDBOX]?.trim();
 	// docker is explicit opt-in only; auto/unset falls through to srt-or-host. On init failure

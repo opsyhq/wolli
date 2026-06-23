@@ -1,6 +1,4 @@
-import { createInterface } from "node:readline";
 import type { AgentTool } from "@opsyhq/agent";
-import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
 import { ensureTool } from "../../utils/tools-manager.ts";
@@ -12,6 +10,11 @@ import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } fr
 
 function toPosixPath(value: string): string {
 	return value.split(path.sep).join("/");
+}
+
+/** POSIX single-quote so a glob/path carrying shell metacharacters reaches fd verbatim. */
+function shellQuote(arg: string): string {
+	return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
 const findSchema = Type.Object({
@@ -47,170 +50,110 @@ export function createFindToolDefinition(
 			_onUpdate?,
 			_ctx?,
 		) {
-			return new Promise((resolve, reject) => {
-				if (signal?.aborted) {
-					reject(new Error("Operation aborted"));
-					return;
+			if (signal?.aborted) throw new Error("Operation aborted");
+
+			// Host/local-os run fd from the host PATH, so make sure it's downloaded. The docker backend
+			// runs it inside the provisioned container instead, so skip the (otherwise unused) host download.
+			if (env.id !== "docker") await ensureTool("fd", true);
+
+			const searchPath = resolveToCwd(searchDir || ".", env.cwd);
+			const effectiveLimit = limit ?? DEFAULT_LIMIT;
+
+			// Build fd arguments. --no-require-git makes fd apply hierarchical .gitignore semantics
+			// whether or not the search path is inside a git repository, without leaking sibling-directory
+			// rules the way --ignore-file (a global source) would.
+			const args: string[] = [
+				"--glob",
+				"--color=never",
+				"--hidden",
+				"--no-require-git",
+				"--max-results",
+				String(effectiveLimit),
+			];
+
+			// fd --glob matches against the basename unless --full-path is set; in --full-path mode it
+			// matches against the absolute candidate path, so a path-containing pattern like
+			// 'src/**/*.spec.ts' needs a leading '**/' to match anything.
+			let effectivePattern = pattern;
+			if (pattern.includes("/")) {
+				args.push("--full-path");
+				if (!pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") {
+					effectivePattern = `**/${pattern}`;
 				}
+			}
+			args.push("--", effectivePattern, searchPath);
 
-				let settled = false;
-				let stopChild: (() => void) | undefined;
-				const settle = (fn: () => void) => {
-					if (settled) return;
-					settled = true;
-					signal?.removeEventListener("abort", onAbort);
-					stopChild = undefined;
-					fn();
+			// Run fd inside the environment so it only sees what that environment can — the container's
+			// FS for docker (host invisible), the local FS otherwise. exec merges stdout + stderr, so send
+			// fd's stderr to /dev/null: an interleaved diagnostic would otherwise land among the paths.
+			// Errors still surface through the exit code.
+			const command = `fd ${args.map(shellQuote).join(" ")} 2>/dev/null`;
+			let raw = "";
+			let exitCode: number | null;
+			try {
+				({ exitCode } = await env.exec(command, env.cwd, {
+					onData: (data) => {
+						raw += data.toString();
+					},
+					signal,
+				}));
+			} catch (err) {
+				if (err instanceof Error && err.message === "aborted") throw new Error("Operation aborted");
+				throw err;
+			}
+
+			const lines = raw
+				.split("\n")
+				.map((line) => line.replace(/\r$/, "").trim())
+				.filter((line) => line.length > 0);
+			// fd exits 0 on success whether or not it matched; a non-zero exit with no paths is a real
+			// failure (2 = error, 127 = fd absent) whose diagnostics are the merged output.
+			if (exitCode !== 0 && lines.length === 0) {
+				throw new Error(raw.trim() || `fd exited with code ${exitCode}`);
+			}
+			if (lines.length === 0) {
+				return {
+					content: [{ type: "text", text: "No files found matching pattern" }],
+					details: undefined,
 				};
-				const onAbort = () => {
-					stopChild?.();
-					settle(() => reject(new Error("Operation aborted")));
-				};
-				signal?.addEventListener("abort", onAbort, { once: true });
+			}
 
-				(async () => {
-					try {
-						const searchPath = resolveToCwd(searchDir || ".", env.cwd);
-						const effectiveLimit = limit ?? DEFAULT_LIMIT;
+			const relativized: string[] = [];
+			for (const line of lines) {
+				const hadTrailingSlash = line.endsWith("/") || line.endsWith("\\");
+				let relativePath = line;
+				if (line.startsWith(searchPath)) {
+					relativePath = line.slice(searchPath.length + 1);
+				} else {
+					relativePath = path.relative(searchPath, line);
+				}
+				if (hadTrailingSlash && !relativePath.endsWith("/")) relativePath += "/";
+				relativized.push(toPosixPath(relativePath));
+			}
 
-						// find always shells out to fd against the local filesystem.
-						const fdPath = await ensureTool("fd", true);
-						if (signal?.aborted) {
-							settle(() => reject(new Error("Operation aborted")));
-							return;
-						}
-						if (!fdPath) {
-							settle(() => reject(new Error("fd is not available and could not be downloaded")));
-							return;
-						}
-
-						// Build fd arguments. --no-require-git makes fd apply hierarchical .gitignore
-						// semantics whether or not the search path is inside a git repository, without
-						// leaking sibling-directory rules the way --ignore-file (a global source) would.
-						const args: string[] = [
-							"--glob",
-							"--color=never",
-							"--hidden",
-							"--no-require-git",
-							"--max-results",
-							String(effectiveLimit),
-						];
-
-						// fd --glob matches against the basename unless --full-path is set; in --full-path
-						// mode it matches against the absolute candidate path, so a path-containing
-						// pattern like 'src/**/*.spec.ts' needs a leading '**/' to match anything.
-						let effectivePattern = pattern;
-						if (pattern.includes("/")) {
-							args.push("--full-path");
-							if (!pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") {
-								effectivePattern = `**/${pattern}`;
-							}
-						}
-						args.push("--", effectivePattern, searchPath);
-
-						const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
-						const rl = createInterface({ input: child.stdout });
-						let stderr = "";
-						const lines: string[] = [];
-
-						stopChild = () => {
-							if (!child.killed) {
-								child.kill();
-							}
-						};
-
-						const cleanup = () => {
-							rl.close();
-						};
-
-						child.stderr?.on("data", (chunk) => {
-							stderr += chunk.toString();
-						});
-
-						rl.on("line", (line) => {
-							lines.push(line);
-						});
-
-						child.on("error", (error) => {
-							cleanup();
-							settle(() => reject(new Error(`Failed to run fd: ${error.message}`)));
-						});
-
-						child.on("close", (code) => {
-							cleanup();
-							if (signal?.aborted) {
-								settle(() => reject(new Error("Operation aborted")));
-								return;
-							}
-							const output = lines.join("\n");
-							if (code !== 0) {
-								const errorMsg = stderr.trim() || `fd exited with code ${code}`;
-								if (!output) {
-									settle(() => reject(new Error(errorMsg)));
-									return;
-								}
-							}
-							if (!output) {
-								settle(() =>
-									resolve({
-										content: [{ type: "text", text: "No files found matching pattern" }],
-										details: undefined,
-									}),
-								);
-								return;
-							}
-
-							const relativized: string[] = [];
-							for (const rawLine of lines) {
-								const line = rawLine.replace(/\r$/, "").trim();
-								if (!line) continue;
-								const hadTrailingSlash = line.endsWith("/") || line.endsWith("\\");
-								let relativePath = line;
-								if (line.startsWith(searchPath)) {
-									relativePath = line.slice(searchPath.length + 1);
-								} else {
-									relativePath = path.relative(searchPath, line);
-								}
-								if (hadTrailingSlash && !relativePath.endsWith("/")) relativePath += "/";
-								relativized.push(toPosixPath(relativePath));
-							}
-
-							const resultLimitReached = relativized.length >= effectiveLimit;
-							const rawOutput = relativized.join("\n");
-							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
-							let resultOutput = truncation.content;
-							const details: FindToolDetails = {};
-							const notices: string[] = [];
-							if (resultLimitReached) {
-								notices.push(
-									`${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
-								);
-								details.resultLimitReached = effectiveLimit;
-							}
-							if (truncation.truncated) {
-								notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
-								details.truncation = truncation;
-							}
-							if (notices.length > 0) {
-								resultOutput += `\n\n[${notices.join(". ")}]`;
-							}
-							settle(() =>
-								resolve({
-									content: [{ type: "text", text: resultOutput }],
-									details: Object.keys(details).length > 0 ? details : undefined,
-								}),
-							);
-						});
-					} catch (e) {
-						if (signal?.aborted) {
-							settle(() => reject(new Error("Operation aborted")));
-							return;
-						}
-						const error = e instanceof Error ? e : new Error(String(e));
-						settle(() => reject(error));
-					}
-				})();
-			});
+			const resultLimitReached = relativized.length >= effectiveLimit;
+			const rawOutput = relativized.join("\n");
+			const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
+			let resultOutput = truncation.content;
+			const details: FindToolDetails = {};
+			const notices: string[] = [];
+			if (resultLimitReached) {
+				notices.push(
+					`${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+				);
+				details.resultLimitReached = effectiveLimit;
+			}
+			if (truncation.truncated) {
+				notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
+				details.truncation = truncation;
+			}
+			if (notices.length > 0) {
+				resultOutput += `\n\n[${notices.join(". ")}]`;
+			}
+			return {
+				content: [{ type: "text", text: resultOutput }],
+				details: Object.keys(details).length > 0 ? details : undefined,
+			};
 		},
 	};
 }

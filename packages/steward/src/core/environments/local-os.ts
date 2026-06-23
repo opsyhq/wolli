@@ -11,7 +11,7 @@ import * as fs from "node:fs/promises";
 import { dirname } from "node:path";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { canonicalizePath, getCwdRelativePath } from "../../utils/paths.ts";
-import { getShellConfig } from "../../utils/shell.ts";
+import { getShellConfig, getShellEnv } from "../../utils/shell.ts";
 import { createLocalBashOperations } from "../tools/bash.ts";
 import { pathExists, resolveToCwd } from "../tools/path-utils.ts";
 import { createSandbox, createSandboxConfig } from "./sandbox.ts";
@@ -19,11 +19,12 @@ import type { Environment } from "./types.ts";
 
 export async function createLocalOSEnvironment(
 	cwd: string,
-	options?: { shellPath?: string; allowWrite?: string[] },
+	options?: { shellPath?: string; allowWrite?: string[]; denyWrite?: string[] },
 ): Promise<Environment> {
 	const sandbox = await createSandbox(createSandboxConfig(cwd, options));
 	const { exec: localExec } = createLocalBashOperations({ shellPath: options?.shellPath });
 	const realRoot = canonicalizePath(cwd);
+	const denyRoots = (options?.denyWrite ?? []).map(canonicalizePath);
 
 	const ensureInJail = (absolutePath: string): void => {
 		// Resolve symlinks on the nearest existing path component (the target may
@@ -32,9 +33,23 @@ export async function createLocalOSEnvironment(
 		// is in-jail. getCwdRelativePath returns undefined when the path escapes.
 		let anchor = absolutePath;
 		while (!existsSync(anchor) && anchor !== dirname(anchor)) anchor = dirname(anchor);
-		const escapesRoot = getCwdRelativePath(canonicalizePath(anchor), realRoot) === undefined;
+		const canonicalAnchor = canonicalizePath(anchor);
+		const escapesRoot = getCwdRelativePath(canonicalAnchor, realRoot) === undefined;
 		if (escapesRoot || isSymlink(absolutePath)) {
 			throw new Error(`write blocked: ${absolutePath} outside sandbox root ${cwd}`);
+		}
+		// Daemon-owned control state (approvals.json / sessions/ / agent.json) is write-denied to the
+		// agent's own tools; the daemon writes it host-side, bypassing this jail. Match the literal
+		// target (a not-yet-created approvals.json) and the nearest existing component (a symlinked
+		// dir pointing back into control state).
+		const canonicalTarget = canonicalizePath(absolutePath);
+		const deniesControlState = denyRoots.some(
+			(root) =>
+				getCwdRelativePath(canonicalTarget, root) !== undefined ||
+				getCwdRelativePath(canonicalAnchor, root) !== undefined,
+		);
+		if (deniesControlState) {
+			throw new Error(`write blocked: ${absolutePath} is daemon-owned control state`);
 		}
 	};
 
@@ -47,8 +62,12 @@ export async function createLocalOSEnvironment(
 			// runs under the user's shell rather than srt's default.
 			const { shell } = getShellConfig(options?.shellPath);
 			const wrapped = await sandbox.wrap(command, shell);
+			// The agent's home IS its $HOME: repoint it over the inherited env so `~`-rooted shell
+			// writes land in the jail. Only this confined target is repointed; `host` keeps the
+			// user's real $HOME (unchanged host.ts).
+			const env = { ...(execOptions.env ?? getShellEnv()), HOME: cwd };
 			try {
-				return await localExec(wrapped, execCwd, execOptions);
+				return await localExec(wrapped, execCwd, { ...execOptions, env });
 			} finally {
 				sandbox.cleanupAfterCommand();
 			}

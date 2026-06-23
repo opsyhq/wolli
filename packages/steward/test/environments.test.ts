@@ -20,6 +20,7 @@ import { ENV_SANDBOX } from "../src/config.ts";
 import type { ApprovalGate } from "../src/core/approval/types.ts";
 import { startContainer } from "../src/core/environments/container.ts";
 import { createDockerEnvironment } from "../src/core/environments/docker.ts";
+import { createHostEnvironment } from "../src/core/environments/host.ts";
 import { createEnvironments, createGatedEnvironment } from "../src/core/environments/index.ts";
 import { createLocalOSEnvironment } from "../src/core/environments/local-os.ts";
 import { createSandbox, isSandboxSupported } from "../src/core/environments/sandbox.ts";
@@ -36,14 +37,23 @@ vi.mock("../src/core/environments/sandbox.ts", () => ({
 	resetSandbox: vi.fn(async () => {}),
 }));
 
-// Mock the docker primitive so selection/jail tests stay daemon-free; the real exec
-// round-trip lives in environments-docker.test.ts (skipped where docker is unavailable).
+// Mock the docker primitive so selection/routing tests stay daemon-free; the real exec + file
+// round-trip lives in environments-docker.test.ts (skipped where docker is unavailable). The file
+// methods return sentinels so a test can prove createDockerEnvironment delegates to the container.
 vi.mock("../src/core/environments/container.ts", () => ({
 	isContainerSupported: vi.fn(async () => true),
 	createContainerConfig: vi.fn((cwd: string) => ({ name: `sbx-${cwd}`, image: "img", cwd, configHash: "h" })),
 	startContainer: vi.fn(async (config: { name: string }) => ({
 		name: config.name,
 		exec: async () => ({ exitCode: 0 }),
+		readFile: async () => Buffer.from("from-container"),
+		writeFile: async () => {},
+		mkdir: async () => {},
+		stat: async () => ({ isDirectory: () => false, isFile: () => true, size: 0 }),
+		readdir: async () => ["in-container.txt"],
+		access: async () => {},
+		exists: async () => true,
+		detectImageMimeType: async () => null,
 	})),
 	stopContainer: vi.fn(async () => {}),
 }));
@@ -235,38 +245,97 @@ describe("local write-jail", () => {
 	});
 });
 
-// docker confines bash, but file tools write host-side via node:fs — so the docker backend
-// carries its own copy of the same write-jail. (createContainer is mocked, so no daemon.)
-describe("docker write-jail", () => {
+// Daemon-owned control state lives under the jail root but must be write-denied to the agent's own
+// file tools, so the agent can't self-approve a host escalation or self-flip the deploy latch.
+describe("local control-state write-deny", () => {
 	let jail: string;
-	let outside: string;
+	let denyWrite: string[];
 
 	beforeEach(() => {
 		jail = mkdtempSync(join(tmpdir(), "steward-jail-"));
-		outside = mkdtempSync(join(tmpdir(), "steward-outside-"));
+		denyWrite = [join(jail, "approvals.json"), join(jail, "sessions"), join(jail, "agent.json")];
 	});
 
 	afterEach(() => {
 		rmSync(jail, { recursive: true, force: true });
-		rmSync(outside, { recursive: true, force: true });
 	});
 
-	it("allows writes inside the jail root", async () => {
-		const env = await createDockerEnvironment(jail);
-		const target = join(jail, "note.txt");
-		await env.writeFile(target, "hi");
-		expect(await readFile(target, "utf-8")).toBe("hi");
+	it("rejects writing approvals.json (host-escalation self-approval)", async () => {
+		const env = await createLocalOSEnvironment(jail, { denyWrite });
+		await expect(env.writeFile(join(jail, "approvals.json"), "{}")).rejects.toThrow(/daemon-owned control state/);
 	});
 
-	it("rejects writes outside the jail root", async () => {
-		const env = await createDockerEnvironment(jail);
-		await expect(env.writeFile("/etc/should-not-write", "nope")).rejects.toThrow(/outside sandbox root/);
+	it("rejects writing agent.json (deploy-latch self-flip)", async () => {
+		const env = await createLocalOSEnvironment(jail, { denyWrite });
+		await expect(env.writeFile(join(jail, "agent.json"), "{}")).rejects.toThrow(/daemon-owned control state/);
 	});
 
-	it("rejects writing through a symlink that points outside the jail", async () => {
-		const env = await createDockerEnvironment(jail);
-		const link = join(jail, "escape");
-		symlinkSync(join(outside, "target.txt"), link);
-		await expect(env.writeFile(link, "nope")).rejects.toThrow(/outside sandbox root/);
+	it("rejects writes under the sessions dir", async () => {
+		const env = await createLocalOSEnvironment(jail, { denyWrite });
+		await expect(env.writeFile(join(jail, "sessions", "s1.jsonl"), "{}")).rejects.toThrow(
+			/daemon-owned control state/,
+		);
+	});
+
+	it("rejects mkdir under the sessions dir", async () => {
+		const env = await createLocalOSEnvironment(jail, { denyWrite });
+		await expect(env.mkdir(join(jail, "sessions", "nested"))).rejects.toThrow(/daemon-owned control state/);
+	});
+
+	it("still allows writes to the agent's workspace", async () => {
+		const env = await createLocalOSEnvironment(jail, { denyWrite });
+		await env.mkdir(join(jail, "workspace"));
+		await env.writeFile(join(jail, "workspace", "note.txt"), "ok");
+		expect(await readFile(join(jail, "workspace", "note.txt"), "utf-8")).toBe("ok");
+	});
+});
+
+// The agent's home IS its $HOME on the confined target; the host escape keeps the user's real one.
+// createSandbox is mocked to a passthrough, so exec runs the real shell with the injected env.
+describe("local-os home env", () => {
+	let jail: string;
+
+	beforeEach(() => {
+		jail = mkdtempSync(join(tmpdir(), "steward-jail-"));
+	});
+
+	afterEach(() => {
+		rmSync(jail, { recursive: true, force: true });
+	});
+
+	it("repoints $HOME to the agent home on the confined target", async () => {
+		const env = await createLocalOSEnvironment(jail);
+		let out = "";
+		await env.exec('printf %s "$HOME"', jail, {
+			onData: (data) => {
+				out += data.toString();
+			},
+		});
+		expect(out).toBe(jail);
+	});
+
+	it("leaves the host target's $HOME inherited from the user", async () => {
+		const env = createHostEnvironment(jail);
+		let out = "";
+		await env.exec('printf %s "$HOME"', jail, {
+			onData: (data) => {
+				out += data.toString();
+			},
+		});
+		expect(out).toBe(process.env.HOME);
+	});
+});
+
+// Every docker file op runs inside the container (docker exec), not host-side node:fs, so the
+// container boundary is the jail. We assert the Environment delegates to the container surface; the
+// real confinement round-trip lives in environments-docker.test.ts. (container.ts is mocked here.)
+describe("docker file ops route through the container", () => {
+	it("keeps the host agent dir as cwd but reads through the container, not host node:fs", async () => {
+		const env = await createDockerEnvironment("/some/agent/dir");
+		expect(env.id).toBe("docker");
+		expect(env.cwd).toBe("/some/agent/dir");
+		// The mocked container returns a sentinel; a host node:fs read of this path would throw.
+		expect((await env.readFile("/anything")).toString()).toBe("from-container");
+		expect(await env.readdir("/anything")).toEqual(["in-container.txt"]);
 	});
 });

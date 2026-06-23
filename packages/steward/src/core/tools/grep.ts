@@ -1,6 +1,4 @@
-import { createInterface } from "node:readline";
 import type { AgentTool } from "@opsyhq/agent";
-import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
 import { ensureTool } from "../../utils/tools-manager.ts";
@@ -33,11 +31,29 @@ const grepSchema = Type.Object({
 
 export type GrepToolInput = Static<typeof grepSchema>;
 const DEFAULT_LIMIT = 100;
+// rg has no global match cap, so bound the buffered json. The match limit keeps far fewer rows than
+// this; the cap only guards against a broad pattern over a large tree (e.g. on the open-read host).
+const MAX_RG_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 export interface GrepToolDetails {
 	truncation?: TruncationResult;
 	matchLimitReached?: number;
 	linesTruncated?: boolean;
+}
+
+/** The one ripgrep `--json` event kind we read: a match with its path, line number, and text. */
+interface RgEvent {
+	type?: string;
+	data?: {
+		path?: { text?: string };
+		line_number?: number;
+		lines?: { text?: string };
+	};
+}
+
+/** POSIX single-quote so a regex/path carrying shell metacharacters reaches rg verbatim. */
+function shellQuote(arg: string): string {
+	return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
 export function createGrepToolDefinition(
@@ -72,217 +88,167 @@ export function createGrepToolDefinition(
 			_onUpdate?,
 			_ctx?,
 		) {
-			return new Promise((resolve, reject) => {
-				if (signal?.aborted) {
-					reject(new Error("Operation aborted"));
-					return;
+			if (signal?.aborted) throw new Error("Operation aborted");
+
+			// Host/local-os run rg from the host PATH, so make sure it's downloaded. The docker backend
+			// runs it inside the provisioned container instead, so skip the (otherwise unused) host download.
+			if (env.id !== "docker") await ensureTool("rg", true);
+
+			const searchPath = resolveToCwd(searchDir || ".", env.cwd);
+			let isDirectory: boolean;
+			try {
+				isDirectory = (await env.stat(searchPath)).isDirectory();
+			} catch {
+				throw new Error(`Path not found: ${searchPath}`);
+			}
+
+			const contextValue = context && context > 0 ? context : 0;
+			const effectiveLimit = Math.max(1, limit ?? DEFAULT_LIMIT);
+			let linesTruncated = false;
+
+			const formatPath = (filePath: string): string => {
+				if (isDirectory) {
+					const relative = path.relative(searchPath, filePath);
+					if (relative && !relative.startsWith("..")) {
+						return relative.replace(/\\/g, "/");
+					}
 				}
-				let settled = false;
-				const settle = (fn: () => void) => {
-					if (!settled) {
-						settled = true;
-						fn();
-					}
-				};
+				return path.basename(filePath);
+			};
 
-				(async () => {
+			// rg --json prints only the matched line, so context lines are read back from the file —
+			// through env.readFile, i.e. inside the container for docker.
+			const fileCache = new Map<string, string[]>();
+			const getFileLines = async (filePath: string): Promise<string[]> => {
+				let lines = fileCache.get(filePath);
+				if (!lines) {
 					try {
-						const rgPath = await ensureTool("rg", true);
-						if (!rgPath) {
-							settle(() => reject(new Error("ripgrep (rg) is not available and could not be downloaded")));
-							return;
-						}
-
-						const searchPath = resolveToCwd(searchDir || ".", env.cwd);
-						let isDirectory: boolean;
-						try {
-							isDirectory = (await env.stat(searchPath)).isDirectory();
-						} catch {
-							settle(() => reject(new Error(`Path not found: ${searchPath}`)));
-							return;
-						}
-
-						const contextValue = context && context > 0 ? context : 0;
-						const effectiveLimit = Math.max(1, limit ?? DEFAULT_LIMIT);
-						const formatPath = (filePath: string): string => {
-							if (isDirectory) {
-								const relative = path.relative(searchPath, filePath);
-								if (relative && !relative.startsWith("..")) {
-									return relative.replace(/\\/g, "/");
-								}
-							}
-							return path.basename(filePath);
-						};
-
-						const fileCache = new Map<string, string[]>();
-						const getFileLines = async (filePath: string): Promise<string[]> => {
-							let lines = fileCache.get(filePath);
-							if (!lines) {
-								try {
-									const content = (await env.readFile(filePath)).toString("utf-8");
-									lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-								} catch {
-									lines = [];
-								}
-								fileCache.set(filePath, lines);
-							}
-							return lines;
-						};
-
-						const args: string[] = ["--json", "--line-number", "--color=never", "--hidden"];
-						if (ignoreCase) args.push("--ignore-case");
-						if (literal) args.push("--fixed-strings");
-						if (glob) args.push("--glob", glob);
-						args.push("--", pattern, searchPath);
-
-						const child = spawn(rgPath, args, { stdio: ["ignore", "pipe", "pipe"] });
-						const rl = createInterface({ input: child.stdout });
-						let stderr = "";
-						let matchCount = 0;
-						let matchLimitReached = false;
-						let linesTruncated = false;
-						let aborted = false;
-						let killedDueToLimit = false;
-						const outputLines: string[] = [];
-
-						const cleanup = () => {
-							rl.close();
-							signal?.removeEventListener("abort", onAbort);
-						};
-						const stopChild = (dueToLimit = false) => {
-							if (!child.killed) {
-								killedDueToLimit = dueToLimit;
-								child.kill();
-							}
-						};
-						const onAbort = () => {
-							aborted = true;
-							stopChild();
-						};
-						signal?.addEventListener("abort", onAbort, { once: true });
-						child.stderr?.on("data", (chunk) => {
-							stderr += chunk.toString();
-						});
-
-						const formatBlock = async (filePath: string, lineNumber: number): Promise<string[]> => {
-							const relativePath = formatPath(filePath);
-							const lines = await getFileLines(filePath);
-							if (!lines.length) return [`${relativePath}:${lineNumber}: (unable to read file)`];
-							const block: string[] = [];
-							const start = contextValue > 0 ? Math.max(1, lineNumber - contextValue) : lineNumber;
-							const end = contextValue > 0 ? Math.min(lines.length, lineNumber + contextValue) : lineNumber;
-							for (let current = start; current <= end; current++) {
-								const lineText = lines[current - 1] ?? "";
-								const sanitized = lineText.replace(/\r/g, "");
-								const isMatchLine = current === lineNumber;
-								// Truncate long lines so grep output stays compact.
-								const { text: truncatedText, wasTruncated } = truncateLine(sanitized);
-								if (wasTruncated) linesTruncated = true;
-								if (isMatchLine) block.push(`${relativePath}:${current}: ${truncatedText}`);
-								else block.push(`${relativePath}-${current}- ${truncatedText}`);
-							}
-							return block;
-						};
-
-						// Collect matches during streaming, then format them after rg exits.
-						const matches: Array<{ filePath: string; lineNumber: number; lineText?: string }> = [];
-						rl.on("line", (line) => {
-							if (!line.trim() || matchCount >= effectiveLimit) return;
-							let event: any;
-							try {
-								event = JSON.parse(line);
-							} catch {
-								return;
-							}
-							if (event.type === "match") {
-								matchCount++;
-								const filePath = event.data?.path?.text;
-								const lineNumber = event.data?.line_number;
-								const lineText = event.data?.lines?.text;
-								if (filePath && typeof lineNumber === "number")
-									matches.push({ filePath, lineNumber, lineText });
-								if (matchCount >= effectiveLimit) {
-									matchLimitReached = true;
-									stopChild(true);
-								}
-							}
-						});
-
-						child.on("error", (error) => {
-							cleanup();
-							settle(() => reject(new Error(`Failed to run ripgrep: ${error.message}`)));
-						});
-						child.on("close", async (code) => {
-							cleanup();
-							if (aborted) {
-								settle(() => reject(new Error("Operation aborted")));
-								return;
-							}
-							if (!killedDueToLimit && code !== 0 && code !== 1) {
-								const errorMsg = stderr.trim() || `ripgrep exited with code ${code}`;
-								settle(() => reject(new Error(errorMsg)));
-								return;
-							}
-							if (matchCount === 0) {
-								settle(() =>
-									resolve({ content: [{ type: "text", text: "No matches found" }], details: undefined }),
-								);
-								return;
-							}
-
-							// Format matches after streaming finishes so custom readFile() backends can be async.
-							for (const match of matches) {
-								if (contextValue === 0 && match.lineText !== undefined) {
-									const relativePath = formatPath(match.filePath);
-									const sanitized = match.lineText
-										.replace(/\r\n/g, "\n")
-										.replace(/\r/g, "")
-										.replace(/\n$/, "");
-									const { text: truncatedText, wasTruncated } = truncateLine(sanitized);
-									if (wasTruncated) linesTruncated = true;
-									outputLines.push(`${relativePath}:${match.lineNumber}: ${truncatedText}`);
-								} else {
-									const block = await formatBlock(match.filePath, match.lineNumber);
-									outputLines.push(...block);
-								}
-							}
-
-							const rawOutput = outputLines.join("\n");
-							// Apply byte truncation. There is no line limit here because the match limit already capped rows.
-							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
-							let output = truncation.content;
-							const details: GrepToolDetails = {};
-							// Build actionable notices for truncation and match limits.
-							const notices: string[] = [];
-							if (matchLimitReached) {
-								notices.push(
-									`${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
-								);
-								details.matchLimitReached = effectiveLimit;
-							}
-							if (truncation.truncated) {
-								notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
-								details.truncation = truncation;
-							}
-							if (linesTruncated) {
-								notices.push(
-									`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`,
-								);
-								details.linesTruncated = true;
-							}
-							if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
-							settle(() =>
-								resolve({
-									content: [{ type: "text", text: output }],
-									details: Object.keys(details).length > 0 ? details : undefined,
-								}),
-							);
-						});
-					} catch (err) {
-						settle(() => reject(err as Error));
+						const content = (await env.readFile(filePath)).toString("utf-8");
+						lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+					} catch {
+						lines = [];
 					}
-				})();
-			});
+					fileCache.set(filePath, lines);
+				}
+				return lines;
+			};
+
+			const formatBlock = async (filePath: string, lineNumber: number): Promise<string[]> => {
+				const relativePath = formatPath(filePath);
+				const lines = await getFileLines(filePath);
+				if (!lines.length) return [`${relativePath}:${lineNumber}: (unable to read file)`];
+				const block: string[] = [];
+				const start = contextValue > 0 ? Math.max(1, lineNumber - contextValue) : lineNumber;
+				const end = contextValue > 0 ? Math.min(lines.length, lineNumber + contextValue) : lineNumber;
+				for (let current = start; current <= end; current++) {
+					const lineText = lines[current - 1] ?? "";
+					const sanitized = lineText.replace(/\r/g, "");
+					const isMatchLine = current === lineNumber;
+					// Truncate long lines so grep output stays compact.
+					const { text: truncatedText, wasTruncated } = truncateLine(sanitized);
+					if (wasTruncated) linesTruncated = true;
+					if (isMatchLine) block.push(`${relativePath}:${current}: ${truncatedText}`);
+					else block.push(`${relativePath}-${current}- ${truncatedText}`);
+				}
+				return block;
+			};
+
+			// Run rg inside the environment so it only sees what that environment can — the container's
+			// FS for docker (host invisible), the local FS otherwise. exec merges stdout + stderr, so send
+			// rg's stderr to /dev/null: an interleaved diagnostic would otherwise split a json line and
+			// drop that match. Errors still surface through the exit code.
+			const rgArgs = ["--json", "--line-number", "--color=never", "--hidden"];
+			if (ignoreCase) rgArgs.push("--ignore-case");
+			if (literal) rgArgs.push("--fixed-strings");
+			if (glob) rgArgs.push("--glob", glob);
+			rgArgs.push("--", pattern, searchPath);
+			const command = `rg ${rgArgs.map(shellQuote).join(" ")} 2>/dev/null`;
+
+			let raw = "";
+			let exitCode: number | null;
+			try {
+				({ exitCode } = await env.exec(command, env.cwd, {
+					onData: (data) => {
+						if (raw.length < MAX_RG_OUTPUT_BYTES) raw += data.toString();
+					},
+					signal,
+				}));
+			} catch (err) {
+				if (err instanceof Error && err.message === "aborted") throw new Error("Operation aborted");
+				throw err;
+			}
+
+			// rg has no global match cap, so stop collecting at the limit (and note one extra existed).
+			const matches: Array<{ filePath: string; lineNumber: number; lineText?: string }> = [];
+			let matchLimitReached = false;
+			for (const line of raw.split("\n")) {
+				if (!line.trim()) continue;
+				let event: RgEvent;
+				try {
+					event = JSON.parse(line) as RgEvent;
+				} catch {
+					continue;
+				}
+				if (event.type !== "match") continue;
+				if (matches.length >= effectiveLimit) {
+					matchLimitReached = true;
+					break;
+				}
+				const filePath = event.data?.path?.text;
+				const lineNumber = event.data?.line_number;
+				const lineText = event.data?.lines?.text;
+				if (filePath && typeof lineNumber === "number") matches.push({ filePath, lineNumber, lineText });
+			}
+
+			if (matches.length === 0) {
+				// rg exits 0 with matches, 1 for none; anything else (2 = error, 127 = rg absent) is a real
+				// failure whose diagnostics are the merged output.
+				if (exitCode !== 0 && exitCode !== 1) {
+					throw new Error(raw.trim() || `ripgrep exited with code ${exitCode}`);
+				}
+				return { content: [{ type: "text", text: "No matches found" }], details: undefined };
+			}
+
+			const outputLines: string[] = [];
+			for (const match of matches) {
+				if (contextValue === 0 && match.lineText !== undefined) {
+					const relativePath = formatPath(match.filePath);
+					const sanitized = match.lineText.replace(/\r\n/g, "\n").replace(/\r/g, "").replace(/\n$/, "");
+					const { text: truncatedText, wasTruncated } = truncateLine(sanitized);
+					if (wasTruncated) linesTruncated = true;
+					outputLines.push(`${relativePath}:${match.lineNumber}: ${truncatedText}`);
+				} else {
+					const block = await formatBlock(match.filePath, match.lineNumber);
+					outputLines.push(...block);
+				}
+			}
+
+			const rawOutput = outputLines.join("\n");
+			// Apply byte truncation. There is no line limit here because the match limit already capped rows.
+			const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
+			let output = truncation.content;
+			const details: GrepToolDetails = {};
+			// Build actionable notices for truncation and match limits.
+			const notices: string[] = [];
+			if (matchLimitReached) {
+				notices.push(
+					`${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+				);
+				details.matchLimitReached = effectiveLimit;
+			}
+			if (truncation.truncated) {
+				notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
+				details.truncation = truncation;
+			}
+			if (linesTruncated) {
+				notices.push(`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`);
+				details.linesTruncated = true;
+			}
+			if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
+			return {
+				content: [{ type: "text", text: output }],
+				details: Object.keys(details).length > 0 ? details : undefined,
+			};
 		},
 	};
 }

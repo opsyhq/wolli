@@ -18,7 +18,10 @@ export function isSandboxSupported(): boolean {
 	return SandboxManager.isSupportedPlatform();
 }
 
-export function createSandboxConfig(jailRoot: string, options?: { allowWrite?: string[] }): SandboxRuntimeConfig {
+export function createSandboxConfig(
+	jailRoot: string,
+	options?: { allowWrite?: string[]; denyWrite?: string[] },
+): SandboxRuntimeConfig {
 	// srt treats an absent `network.allowedDomains` as "no network restriction":
 	// it gates restriction on `allowedDomains !== undefined` and only routes
 	// through the proxy when set. The network plane is Phase 4, so we omit it. The
@@ -28,8 +31,10 @@ export function createSandboxConfig(jailRoot: string, options?: { allowWrite?: s
 		network,
 		filesystem: {
 			denyRead: [],
+			// srt's denyWrite beats allowWrite, so the daemon-owned control state passed here is
+			// write-denied even though it lives under the jail root.
 			allowWrite: [jailRoot, ...getDefaultWritePaths(), ...(options?.allowWrite ?? [])],
-			denyWrite: [],
+			denyWrite: options?.denyWrite ?? [],
 		},
 	};
 }
