@@ -12,7 +12,7 @@ export interface FileStat {
 }
 
 export interface Environment {
-	/** Backend identity. "host" (unconfined) or "local-os" (srt-confined). */
+	/** Backend identity. "host" (unconfined), "local-os" (srt-confined), or "docker" (container). */
 	readonly id: string;
 	/** Working directory the tools are rooted at (== agentDir today). */
 	readonly cwd: string;

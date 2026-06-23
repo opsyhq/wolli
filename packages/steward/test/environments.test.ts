@@ -18,6 +18,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_SANDBOX } from "../src/config.ts";
 import type { ApprovalGate } from "../src/core/approval/types.ts";
+import { createContainer } from "../src/core/environments/container.ts";
+import { createDockerEnvironment } from "../src/core/environments/docker.ts";
 import { createEnvironments, createGatedEnvironment } from "../src/core/environments/index.ts";
 import { createLocalOSEnvironment } from "../src/core/environments/local-os.ts";
 import { createSandbox, isSandboxSupported } from "../src/core/environments/sandbox.ts";
@@ -32,6 +34,18 @@ vi.mock("../src/core/environments/sandbox.ts", () => ({
 	createSandboxConfig: vi.fn(() => ({})),
 	createSandbox: vi.fn(async () => ({ wrap: async (command: string) => command, cleanupAfterCommand: () => {} })),
 	resetSandbox: vi.fn(async () => {}),
+}));
+
+// Mock the docker primitive so selection/jail tests stay daemon-free; the real exec
+// round-trip lives in environments-docker.test.ts (skipped where docker is unavailable).
+vi.mock("../src/core/environments/container.ts", () => ({
+	isContainerSupported: vi.fn(async () => true),
+	createContainerConfig: vi.fn((cwd: string) => ({ name: `sbx-${cwd}`, image: "img", cwd })),
+	createContainer: vi.fn(async (config: { name: string }) => ({
+		name: config.name,
+		exec: async () => ({ exitCode: 0 }),
+	})),
+	resetContainers: vi.fn(async () => {}),
 }));
 
 beforeEach(() => {
@@ -105,6 +119,32 @@ describe("createEnvironments target selection", () => {
 		expect(envs.default).toBe("host");
 		expect(Object.keys(envs.targets)).toEqual(["host"]);
 		expect(createSandbox).toHaveBeenCalled();
+	});
+
+	it("selects the docker backend on STEWARD_SANDBOX=docker", async () => {
+		process.env[ENV_SANDBOX] = "docker";
+		const envs = await mkEnvs();
+		expect(envs.default).toBe("sandbox");
+		expect(envs.targets.sandbox.id).toBe("docker");
+		expect(envs.targets.host.id).toBe("host");
+		expect(Object.keys(envs.targets)).toEqual(["sandbox", "host"]);
+	});
+
+	it("never selects docker for auto/unset — it is explicit opt-in only", async () => {
+		process.env[ENV_SANDBOX] = "auto";
+		expect((await mkEnvs()).targets.sandbox.id).toBe("local-os");
+		delete process.env[ENV_SANDBOX];
+		expect((await mkEnvs()).targets.sandbox.id).toBe("local-os");
+		expect(createContainer).not.toHaveBeenCalled();
+	});
+
+	it("collapses to host when the docker backend fails to initialize", async () => {
+		process.env[ENV_SANDBOX] = "docker";
+		vi.mocked(createContainer).mockRejectedValueOnce(new Error("docker init boom"));
+		const envs = await mkEnvs();
+		expect(envs.default).toBe("host");
+		expect(Object.keys(envs.targets)).toEqual(["host"]);
+		expect(createContainer).toHaveBeenCalled();
 	});
 });
 
@@ -192,5 +232,41 @@ describe("local write-jail", () => {
 		const linkedDir = join(jail, "linkdir");
 		symlinkSync(outside, linkedDir);
 		await expect(env.writeFile(join(linkedDir, "file.txt"), "nope")).rejects.toThrow(/outside sandbox root/);
+	});
+});
+
+// docker confines bash, but file tools write host-side via node:fs — so the docker backend
+// carries its own copy of the same write-jail. (createContainer is mocked, so no daemon.)
+describe("docker write-jail", () => {
+	let jail: string;
+	let outside: string;
+
+	beforeEach(() => {
+		jail = mkdtempSync(join(tmpdir(), "steward-jail-"));
+		outside = mkdtempSync(join(tmpdir(), "steward-outside-"));
+	});
+
+	afterEach(() => {
+		rmSync(jail, { recursive: true, force: true });
+		rmSync(outside, { recursive: true, force: true });
+	});
+
+	it("allows writes inside the jail root", async () => {
+		const env = await createDockerEnvironment(jail);
+		const target = join(jail, "note.txt");
+		await env.writeFile(target, "hi");
+		expect(await readFile(target, "utf-8")).toBe("hi");
+	});
+
+	it("rejects writes outside the jail root", async () => {
+		const env = await createDockerEnvironment(jail);
+		await expect(env.writeFile("/etc/should-not-write", "nope")).rejects.toThrow(/outside sandbox root/);
+	});
+
+	it("rejects writing through a symlink that points outside the jail", async () => {
+		const env = await createDockerEnvironment(jail);
+		const link = join(jail, "escape");
+		symlinkSync(join(outside, "target.txt"), link);
+		await expect(env.writeFile(link, "nope")).rejects.toThrow(/outside sandbox root/);
 	});
 });

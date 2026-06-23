@@ -77,11 +77,20 @@ export const ENV_DAEMON_TOKEN = `${APP_NAME.toUpperCase()}_DAEMON_TOKEN`;
 // (used in dev/CI so the deploy flow can be exercised without an OS-managed side effect).
 export const ENV_SERVICE_MANAGER = `${APP_NAME.toUpperCase()}_SERVICE_MANAGER`;
 
-// Select the file/shell confinement backend, e.g. STEWARD_SANDBOX=host|local-os|auto (default `auto`).
+// Select the file/shell confinement backend, e.g. STEWARD_SANDBOX=host|local-os|docker|auto (default `auto`).
 // `auto` confines via srt (Apple Seatbelt / bubblewrap) on darwin/linux and falls back to the
 // unconfined host on unsupported platforms or srt-init failure; `host` forces today's unconfined
-// behavior; `local-os` forces the srt backend.
+// behavior; `local-os` forces the srt backend; `docker` runs bash inside a container (explicit
+// opt-in only — `auto`/unset never spins up a container).
 export const ENV_SANDBOX = `${APP_NAME.toUpperCase()}_SANDBOX`;
+
+// Image for the docker sandbox backend, e.g. STEWARD_CONTAINER_IMAGE. Falls back to
+// DEFAULT_CONTAINER_IMAGE when unset.
+export const ENV_CONTAINER_IMAGE = `${APP_NAME.toUpperCase()}_CONTAINER_IMAGE`;
+
+// Default image for the docker sandbox backend (STEWARD_SANDBOX=docker). Slim so the first
+// pull is cheap; override with STEWARD_CONTAINER_IMAGE for a richer toolchain.
+export const DEFAULT_CONTAINER_IMAGE = "debian:stable-slim";
 
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
