@@ -13,7 +13,7 @@ let home: string;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "steward-test-"));
 	process.env.STEWARD_HOME = home;
-	AgentSettingsManager.create({ name: "scribe", purpose: "notes" });
+	AgentSettingsManager.createAgent({ name: "scribe", purpose: "notes" });
 });
 
 afterEach(() => {

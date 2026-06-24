@@ -208,7 +208,7 @@ async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise
 		case "new_session": {
 			// A forming (undeployed) agent stays in its birth session; only a deploy-reason swap may
 			// replace it. snapshot() re-resolves the new conversation after the swap.
-			if (cmd.reason !== "deploy" && !AgentSettingsManager.load(runtime.config.name).isDeployed()) {
+			if (cmd.reason !== "deploy" && !AgentSettingsManager.create(runtime.config.name).getAgentDeployed()) {
 				throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
 			}
 			await runtime.createConversation();
@@ -226,7 +226,7 @@ async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise
 			// backend there is no supervisor, so this daemon stays on the fresh session.
 			const name = runtime.config.name;
 			const serviceManager = getServiceManager();
-			AgentSettingsManager.load(name).deploy();
+			AgentSettingsManager.create(name).setAgentDeployed();
 			serviceManager.install(name);
 			// Latch already flipped, so swap unguarded to the fresh deployed session.
 			await runtime.createConversation();
@@ -344,7 +344,7 @@ async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise
  * stderr and exit 1.
  */
 async function createAgentRuntime(name: string): Promise<{ runtime: AgentRuntime } | { error: string }> {
-	const store = AgentSettingsManager.load(name);
+	const store = AgentSettingsManager.create(name);
 
 	const authStorage = AuthStorage.create();
 	// Integration accounts are per-agent (`~/.steward/agents/<name>/integrations.json`).
@@ -393,7 +393,7 @@ export interface RunDaemonOptions {
  * OS service unit invoke this.
  */
 export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Promise<number> {
-	if (!AgentSettingsManager.exists(name)) {
+	if (!AgentSettingsManager.get(name)) {
 		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
 		return 1;
 	}
@@ -739,7 +739,7 @@ export async function runDaemonMode(
 		commandContextActions: {
 			waitForIdle: () => runtime.getConversation()?.harness.waitForIdle() ?? Promise.resolve(),
 			newSession: async () => {
-				if (!AgentSettingsManager.load(runtime.config.name).isDeployed()) {
+				if (!AgentSettingsManager.create(runtime.config.name).getAgentDeployed()) {
 					throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
 				}
 				await runtime.createConversation();

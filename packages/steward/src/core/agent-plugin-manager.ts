@@ -22,7 +22,7 @@ export function createAgentPluginManager(agentName: string): AgentPluginManager 
 	const agentDir = getAgentDir(agentName);
 	const cwd = process.cwd();
 	// plugins[] persists into the agent's own agent.json settings override.
-	const settingsManager = AgentSettingsManager.load(agentName);
+	const settingsManager = AgentSettingsManager.create(agentName);
 	const pluginManager = new DefaultPluginManager({ cwd, agentDir, settingsManager });
 	return { agentDir, settingsManager, pluginManager };
 }

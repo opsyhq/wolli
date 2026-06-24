@@ -76,13 +76,13 @@ export class Steward {
 
 	/** A handle for `name` if it exists on disk, else `undefined`. */
 	get(name: string): Agent | undefined {
-		if (!AgentSettingsManager.exists(name)) return undefined;
-		return new Agent(AgentSettingsManager.load(name).config);
+		const store = AgentSettingsManager.get(name);
+		return store ? new Agent(store.config) : undefined;
 	}
 
 	/** Create the agent's home tree and return its handle. */
 	create(name: string, opts: { purpose?: string; model?: string } = {}): Agent {
-		return new Agent(AgentSettingsManager.create({ name, ...opts }).config);
+		return new Agent(AgentSettingsManager.createAgent({ name, ...opts }).config);
 	}
 }
 

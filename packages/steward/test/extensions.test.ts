@@ -171,7 +171,7 @@ beforeEach(() => {
 	process.env.STEWARD_SHARED_DIR = sharedDir;
 	process.env.STEWARD_TEST_MARKER_DIR = markerDir;
 
-	AgentSettingsManager.create({ name: AGENT });
+	AgentSettingsManager.createAgent({ name: AGENT });
 
 	const agentDir = getAgentDir(AGENT);
 	// Skill: <agentDir>/skills/note-taking/SKILL.md → loaded as a "user" skill.

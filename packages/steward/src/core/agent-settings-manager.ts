@@ -241,12 +241,19 @@ export class AgentSettingsManager {
 
 	// --- statics -------------------------------------------------------------
 
-	static load(name: string): AgentSettingsManager {
+	/** Construct a manager for an existing agent (throws if its `agent.json` is missing/invalid). */
+	static create(name: string): AgentSettingsManager {
 		return new AgentSettingsManager(name, AgentSettingsManager.loadConfig(name));
 	}
 
-	static exists(name: string): boolean {
-		return existsSync(getAgentConfigPath(name));
+	/** Construct a manager for `name` if it exists on disk, else `undefined`. */
+	static get(name: string): AgentSettingsManager | undefined {
+		if (!existsSync(getAgentConfigPath(name))) return undefined;
+		try {
+			return AgentSettingsManager.create(name);
+		} catch {
+			return undefined;
+		}
 	}
 
 	/** All agents under the agents root, sorted by name. Skips non-agent/invalid dirs. */
@@ -256,26 +263,23 @@ export class AgentSettingsManager {
 
 		const managers: AgentSettingsManager[] = [];
 		for (const entry of readdirSync(root, { withFileTypes: true })) {
-			if (!entry.isDirectory() || !AgentSettingsManager.exists(entry.name)) continue;
-			try {
-				managers.push(AgentSettingsManager.load(entry.name));
-			} catch {
-				// Skip directories that aren't valid agents.
-			}
+			if (!entry.isDirectory()) continue;
+			const manager = AgentSettingsManager.get(entry.name);
+			if (manager) managers.push(manager);
 		}
 		managers.sort((a, b) => a.name.localeCompare(b.name));
 		return managers;
 	}
 
 	/** Create an agent's home tree (`agent.json`, empty memory files, sessions/, workspace/). */
-	static create(options: CreateAgentOptions): AgentSettingsManager {
+	static createAgent(options: CreateAgentOptions): AgentSettingsManager {
 		const { name, purpose, model } = options;
 		if (!isValidAgentName(name)) {
 			throw new Error(
 				`Invalid agent name "${name}". Use lowercase letters, digits, and hyphens (must start with a letter or digit).`,
 			);
 		}
-		if (AgentSettingsManager.exists(name)) {
+		if (existsSync(getAgentConfigPath(name))) {
 			throw new Error(`Agent "${name}" already exists.`);
 		}
 
@@ -367,18 +371,18 @@ export class AgentSettingsManager {
 		return this._config;
 	}
 
-	isDeployed(): boolean {
+	getAgentDeployed(): boolean {
 		return Boolean(this._config.deployedAt);
 	}
 
-	/** Set deployedAt once (idempotent: a second call leaves the timestamp unchanged). */
-	deploy(): AgentConfig {
+	/** Stamp deployedAt once (idempotent: a second call leaves the timestamp unchanged). */
+	setAgentDeployed(): AgentConfig {
 		this.update((config) => (config.deployedAt ? config : { ...config, deployedAt: new Date().toISOString() }));
 		return this._config;
 	}
 
 	/** Set the agent's purpose (authored by the agent via the deploy tool) and persist. */
-	setPurpose(purpose: string): AgentConfig {
+	setAgentPurpose(purpose: string): AgentConfig {
 		this.update((config) => ({ ...config, purpose }));
 		return this._config;
 	}

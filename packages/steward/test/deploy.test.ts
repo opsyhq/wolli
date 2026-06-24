@@ -12,7 +12,7 @@ let home: string;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "steward-test-"));
 	process.env.STEWARD_HOME = home;
-	AgentSettingsManager.create({ name: "scribe" });
+	AgentSettingsManager.createAgent({ name: "scribe" });
 });
 
 afterEach(() => {
@@ -30,11 +30,11 @@ describe("deploy tool", () => {
 		expect(result.details.bytes).toBeGreaterThan(0);
 
 		// Purpose persisted to agent.json, SOUL.md written verbatim.
-		expect(AgentSettingsManager.load("scribe").config.purpose).toBe("keep the meeting minutes");
+		expect(AgentSettingsManager.create("scribe").config.purpose).toBe("keep the meeting minutes");
 		expect(readMemoryFile(getSoulPath("scribe"))).toContain("I am the scribe");
 
 		// The latch is the UI's to flip — the tool leaves the agent still forming.
-		expect(AgentSettingsManager.load("scribe").isDeployed()).toBe(false);
+		expect(AgentSettingsManager.create("scribe").getAgentDeployed()).toBe(false);
 	});
 
 	it("trims both fields before saving", async () => {
@@ -42,7 +42,7 @@ describe("deploy tool", () => {
 			purpose: "  do the thing  ",
 			soul: "  soulful  ",
 		});
-		expect(AgentSettingsManager.load("scribe").config.purpose).toBe("do the thing");
+		expect(AgentSettingsManager.create("scribe").config.purpose).toBe("do the thing");
 		expect(readMemoryFile(getSoulPath("scribe"))).toBe("soulful");
 	});
 
@@ -51,14 +51,14 @@ describe("deploy tool", () => {
 		expect(result.details.applied).toBe(false);
 		expect(result.content[0]).toMatchObject({ type: "text" });
 		// Nothing written.
-		expect(AgentSettingsManager.load("scribe").config.purpose).toBe("");
+		expect(AgentSettingsManager.create("scribe").config.purpose).toBe("");
 		expect(readMemoryFile(getSoulPath("scribe"))).toBe("");
 	});
 
 	it("rejects an empty soul", async () => {
 		const result = await createDeployTool("scribe").execute("call-1", { purpose: "a purpose", soul: "   " });
 		expect(result.details.applied).toBe(false);
-		expect(AgentSettingsManager.load("scribe").config.purpose).toBe("");
+		expect(AgentSettingsManager.create("scribe").config.purpose).toBe("");
 	});
 
 	it("rejects a SOUL.md over budget", async () => {
@@ -67,7 +67,7 @@ describe("deploy tool", () => {
 			soul: "x".repeat(SOUL_BUDGET + 1),
 		});
 		expect(result.details.applied).toBe(false);
-		expect(AgentSettingsManager.load("scribe").config.purpose).toBe("");
+		expect(AgentSettingsManager.create("scribe").config.purpose).toBe("");
 		expect(readMemoryFile(getSoulPath("scribe"))).toBe("");
 	});
 });

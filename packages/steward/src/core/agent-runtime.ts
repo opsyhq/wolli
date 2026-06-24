@@ -330,7 +330,7 @@ export class AgentRuntime {
 	constructor(options: AgentRuntimeOptions) {
 		this.options = options;
 		this._modelRegistry = options.modelRegistry;
-		this._settingsManager = AgentSettingsManager.load(options.name);
+		this._settingsManager = AgentSettingsManager.create(options.name);
 		this._agent = new Agent(this);
 	}
 

@@ -300,7 +300,7 @@ export async function runPlugins(agent: string, rest: string[], help = false): P
 					console.log(chalk.dim(`Run "${APP_NAME} ${agent} plugins configure ${source}" to set it up.`));
 					return 0;
 				}
-				const settingsManager = AgentSettingsManager.load(agent);
+				const settingsManager = AgentSettingsManager.create(agent);
 				session.onUiRequest = (req) => void dispatchUiRequest(session, settingsManager, req);
 				return printOnboardResults(agent, await session.onboardPlugin(source));
 			}
@@ -321,7 +321,7 @@ export async function runPlugins(agent: string, rest: string[], help = false): P
 				return 0;
 
 			case "configure": {
-				const settingsManager = AgentSettingsManager.load(agent);
+				const settingsManager = AgentSettingsManager.create(agent);
 				session.onUiRequest = (req) => void dispatchUiRequest(session, settingsManager, req);
 				return printOnboardResults(
 					agent,

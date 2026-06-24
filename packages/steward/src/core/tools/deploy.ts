@@ -65,7 +65,7 @@ export function createDeployTool(name: string): AgentTool<typeof deploySchema, D
 				);
 			}
 
-			AgentSettingsManager.load(name).setPurpose(purpose);
+			AgentSettingsManager.create(name).setAgentPurpose(purpose);
 			writeMemoryFile(getSoulPath(name), soul);
 			return textResult("Purpose and SOUL.md saved — awaiting your human's confirmation to deploy.", {
 				applied: true,

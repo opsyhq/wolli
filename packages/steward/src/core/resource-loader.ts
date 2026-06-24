@@ -224,7 +224,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	constructor(options: DefaultResourceLoaderOptions) {
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
-		this.settingsManager = options.settingsManager ?? AgentSettingsManager.load(basename(this.agentDir));
+		this.settingsManager = options.settingsManager ?? AgentSettingsManager.create(basename(this.agentDir));
 		this.eventBus = options.eventBus ?? createEventBus();
 		this.pluginManager = new DefaultPluginManager({
 			cwd: this.cwd,
