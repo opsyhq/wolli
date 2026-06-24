@@ -18,11 +18,11 @@ import {
 	type ThinkingLevel,
 } from "@opsyhq/agent";
 import type { AgentRuntime, Conversation } from "./agent-runtime.ts";
+import type { AgentSettingsManager } from "./agent-settings-manager.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { SessionInfo } from "./session.ts";
-import type { SettingsManager } from "./settings-manager.ts";
 
 export interface CreateAgentSessionOptions {
 	env: ExecutionEnv;
@@ -41,7 +41,7 @@ export interface CreateAgentSessionOptions {
 	/** Model registry that resolves request-time auth (api keys + per-model/provider headers). */
 	modelRegistry: ModelRegistry;
 	/** Settings manager, read for provider-attribution headers. */
-	settingsManager: SettingsManager;
+	settingsManager: AgentSettingsManager;
 	/** Session id, threaded into provider-attribution session headers. */
 	sessionId: string;
 }
@@ -62,7 +62,7 @@ export interface CreateAgentSessionResult {
  */
 async function getApiKeyAndHeaders(
 	modelRegistry: ModelRegistry,
-	settingsManager: SettingsManager,
+	settingsManager: AgentSettingsManager,
 	sessionId: string,
 	model: Model<Api>,
 ): Promise<{ apiKey: string; headers?: Record<string, string> }> {

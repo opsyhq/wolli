@@ -1,6 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { APP_NAME } from "../config.ts";
-import type { SettingsManager } from "./settings-manager.ts";
+import type { AgentSettingsManager } from "./agent-settings-manager.ts";
 import { isInstallTelemetryEnabled } from "./telemetry.ts";
 
 const OPENROUTER_HOST = "openrouter.ai";
@@ -36,7 +36,7 @@ function isCloudflareModel(model: Model<Api>): boolean {
 
 function getDefaultAttributionHeaders(
 	model: Model<Api>,
-	settingsManager: SettingsManager,
+	settingsManager: AgentSettingsManager,
 ): Record<string, string> | undefined {
 	if (!isInstallTelemetryEnabled(settingsManager)) {
 		return undefined;
@@ -79,7 +79,7 @@ function getSessionHeaders(model: Model<Api>, sessionId: string | undefined): Re
 
 export function mergeProviderAttributionHeaders(
 	model: Model<Api>,
-	settingsManager: SettingsManager,
+	settingsManager: AgentSettingsManager,
 	sessionId: string | undefined,
 	...headerSources: Array<Record<string, string> | undefined>
 ): Record<string, string> | undefined {

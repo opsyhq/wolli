@@ -21,8 +21,9 @@ import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
 import { APP_NAME, ENV_DAEMON_TOKEN, getAgentDir, VERSION } from "./config.ts";
-import { agentExists, deployAgent, isDeployed, loadAgentConfig } from "./core/agent-config.ts";
 import { createAgentPluginManager } from "./core/agent-plugin-manager.ts";
+import { AgentRuntime, type Conversation } from "./core/agent-runtime.ts";
+import { AgentSettingsManager } from "./core/agent-settings-manager.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { loadDaemonConfig, saveDaemonConfig } from "./core/daemon-config.ts";
 import type {
@@ -39,8 +40,6 @@ import { ModelRegistry } from "./core/model-registry.ts";
 import { findInitialModel } from "./core/model-resolver.ts";
 import type { DefaultPluginManager } from "./core/plugin-manager.ts";
 import { getServiceManager } from "./core/service/service-manager.ts";
-import { AgentRuntime, type Conversation } from "./core/agent-runtime.ts";
-import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
 import { type Theme, theme } from "./theme/theme.ts";
 import {
 	type DaemonCommand,
@@ -209,7 +208,7 @@ async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise
 		case "new_session": {
 			// A forming (undeployed) agent stays in its birth session; only a deploy-reason swap may
 			// replace it. snapshot() re-resolves the new conversation after the swap.
-			if (cmd.reason !== "deploy" && !isDeployed(loadAgentConfig(runtime.config.name))) {
+			if (cmd.reason !== "deploy" && !AgentSettingsManager.create(runtime.config.name).getAgentDeployed()) {
 				throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
 			}
 			await runtime.createConversation();
@@ -227,7 +226,7 @@ async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise
 			// backend there is no supervisor, so this daemon stays on the fresh session.
 			const name = runtime.config.name;
 			const serviceManager = getServiceManager();
-			deployAgent(name);
+			AgentSettingsManager.create(name).setAgentDeployed();
 			serviceManager.install(name);
 			// Latch already flipped, so swap unguarded to the fresh deployed session.
 			await runtime.createConversation();
@@ -345,15 +344,15 @@ async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise
  * stderr and exit 1.
  */
 async function createAgentRuntime(name: string): Promise<{ runtime: AgentRuntime } | { error: string }> {
-	const config = loadAgentConfig(name);
+	const store = AgentSettingsManager.create(name);
 
 	const authStorage = AuthStorage.create();
 	// Integration accounts are per-agent (`~/.steward/agents/<name>/integrations.json`).
 	const integrationAccounts = IntegrationAccountStorage.create(name);
 	const modelRegistry = ModelRegistry.create(authStorage);
 
-	// Model precedence: agent.json → shared default → known-provider defaults → first-available.
-	const savedModel = config.model ?? sharedDefaultModel();
+	// Model precedence: agent.json override → shared default → known-provider defaults → first-available.
+	const savedModel = store.getDefaultModel();
 	const slashIndex = savedModel?.indexOf("/") ?? -1;
 	const defaultProvider = savedModel && slashIndex !== -1 ? savedModel.slice(0, slashIndex) : undefined;
 	const defaultModelId = savedModel ? (slashIndex !== -1 ? savedModel.slice(slashIndex + 1) : savedModel) : undefined;
@@ -394,7 +393,7 @@ export interface RunDaemonOptions {
  * OS service unit invoke this.
  */
 export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Promise<number> {
-	if (!agentExists(name)) {
+	if (!AgentSettingsManager.get(name)) {
 		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
 		return 1;
 	}
@@ -738,7 +737,7 @@ export async function runDaemonMode(
 		// Surface runner errors (extension + integration) to clients as error notifies.
 		onError: (e) => uiContext.notify(`${e.path}: ${e.error}`, "error"),
 		newSession: async () => {
-			if (!isDeployed(loadAgentConfig(runtime.config.name))) {
+			if (!AgentSettingsManager.create(runtime.config.name).getAgentDeployed()) {
 				throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
 			}
 			await runtime.createConversation();
@@ -856,16 +855,4 @@ export async function runDaemonMode(
 	});
 
 	return server;
-}
-
-/**
- * The shared default model as a `provider/model` reference (or just the model
- * id when no provider is set), read from `~/.steward/agent/settings.json`. Used
- * to seed model resolution when neither `--model` nor agent.json picks a model.
- */
-function sharedDefaultModel(): string | undefined {
-	const model = getDefaultModel();
-	if (!model) return undefined;
-	const provider = getDefaultProvider();
-	return provider ? `${provider}/${model}` : model;
 }

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AgentToolResult } from "@opsyhq/agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getMemoryPath, getSoulPath, getUserMemoryPath } from "../src/config.ts";
-import { createAgent } from "../src/core/agent-config.ts";
+import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { loadMemory, MEMORY_BUDGET, readMemoryFile, writeMemoryFile } from "../src/core/memory.ts";
 import { createMemoryTool, type MemoryToolDetails } from "../src/core/tools/memory.ts";
 
@@ -13,7 +13,7 @@ let home: string;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "steward-test-"));
 	process.env.STEWARD_HOME = home;
-	createAgent({ name: "scribe", purpose: "notes" });
+	AgentSettingsManager.createAgent({ name: "scribe", purpose: "notes" });
 });
 
 afterEach(() => {

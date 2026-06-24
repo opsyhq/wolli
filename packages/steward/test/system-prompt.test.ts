@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createAgent, deployAgent, loadAgentConfig } from "../src/core/agent-config.ts";
+import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { loadMemory } from "../src/core/memory.ts";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 import { createMemoryTool } from "../src/core/tools/memory.ts";
@@ -12,7 +12,7 @@ let home: string;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "steward-test-"));
 	process.env.STEWARD_HOME = home;
-	createAgent({ name: "scribe", purpose: "Keep meeting notes" });
+	AgentSettingsManager.createAgent({ name: "scribe", purpose: "Keep meeting notes" });
 });
 
 afterEach(() => {
@@ -22,13 +22,18 @@ afterEach(() => {
 
 describe("buildSystemPrompt", () => {
 	it("includes the agent identity and purpose", () => {
-		const prompt = buildSystemPrompt({ config: loadAgentConfig("scribe") });
+		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
 		expect(prompt).toContain("You are scribe");
 		expect(prompt).toContain("Keep meeting notes");
 	});
 
 	it("always renders the curated-file sections, empty marked", () => {
-		const prompt = buildSystemPrompt({ config: loadAgentConfig("scribe"), soul: "", memory: "", user: "" });
+		const prompt = buildSystemPrompt({
+			config: AgentSettingsManager.create("scribe").config,
+			soul: "",
+			memory: "",
+			user: "",
+		});
 		expect(prompt).toContain("### SOUL.md");
 		expect(prompt).toContain("### MEMORY.md");
 		expect(prompt).toContain("### USER.md");
@@ -37,7 +42,7 @@ describe("buildSystemPrompt", () => {
 
 	it("includes a delimited, read-only curated block with content when present", () => {
 		const prompt = buildSystemPrompt({
-			config: loadAgentConfig("scribe"),
+			config: AgentSettingsManager.create("scribe").config,
 			soul: "I am the scribe",
 			memory: "remembered fact",
 			user: "user fact",
@@ -53,9 +58,9 @@ describe("buildSystemPrompt", () => {
 	});
 
 	it("appends appendSystemPrompt text at the end", () => {
-		const base = buildSystemPrompt({ config: loadAgentConfig("scribe") });
+		const base = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
 		const prompt = buildSystemPrompt({
-			config: loadAgentConfig("scribe"),
+			config: AgentSettingsManager.create("scribe").config,
 			appendSystemPrompt: "Always answer in haiku.",
 		});
 		expect(prompt).toContain("Always answer in haiku.");
@@ -66,15 +71,15 @@ describe("buildSystemPrompt", () => {
 
 describe("birth instruction (deploy)", () => {
 	it("appends the birth instruction when not yet deployed", () => {
-		const prompt = buildSystemPrompt({ config: loadAgentConfig("scribe") });
+		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
 		expect(prompt).toContain("not yet deployed");
 		expect(prompt).toContain("`deploy` tool");
 		expect(prompt).toContain("/deploy");
 	});
 
 	it("omits the birth instruction once deployed", () => {
-		deployAgent("scribe");
-		const prompt = buildSystemPrompt({ config: loadAgentConfig("scribe") });
+		AgentSettingsManager.create("scribe").setAgentDeployed();
+		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
 		expect(prompt).not.toContain("not yet deployed");
 		expect(prompt).toContain("deployed: you may now act");
 	});
@@ -82,7 +87,7 @@ describe("birth instruction (deploy)", () => {
 
 describe("frozen-snapshot invariant", () => {
 	it("keeps the built prompt stable after a mid-session memory write", async () => {
-		const config = loadAgentConfig("scribe");
+		const config = AgentSettingsManager.create("scribe").config;
 
 		// Session start: read memory ONCE and freeze it into the prompt.
 		const snapshot = loadMemory("scribe");

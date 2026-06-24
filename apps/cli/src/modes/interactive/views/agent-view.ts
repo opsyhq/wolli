@@ -32,7 +32,7 @@ export class AgentView extends Container implements AppView {
 			this.addChild(new Text(purpose, 1, 0));
 			this.addChild(new Spacer(1));
 		}
-		this.addChild(new Text(theme.fg("dim", `Model: ${config.model ?? "default"}`), 1, 0));
+		this.addChild(new Text(theme.fg("dim", `Model: ${config.settings?.defaultModel ?? "default"}`), 1, 0));
 		this.addChild(new Spacer(1));
 
 		// Live capability sections are rendered only when the daemon answered. No session (open

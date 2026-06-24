@@ -18,8 +18,8 @@ import { join } from "node:path";
 import { type Api, fauxAssistantMessage, type Model, registerFauxProvider } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAgentDir } from "../src/config.ts";
-import { createAgent } from "../src/core/agent-config.ts";
 import { AgentRuntime } from "../src/core/agent-runtime.ts";
+import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { convertToLlm, createBashExecutionMessage } from "../src/core/messages.ts";
@@ -184,7 +184,7 @@ beforeEach(() => {
 	process.env.STEWARD_SHARED_DIR = sharedDir;
 	process.env.STEWARD_TEST_MARKER_DIR = markerDir;
 
-	createAgent({ name: AGENT });
+	AgentSettingsManager.createAgent({ name: AGENT });
 
 	const agentDir = getAgentDir(AGENT);
 	// Skill: <agentDir>/skills/note-taking/SKILL.md → loaded as a "user" skill.

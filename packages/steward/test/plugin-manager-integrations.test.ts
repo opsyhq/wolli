@@ -8,7 +8,7 @@
  *    `.plugins/local/<key>/`, each carrying plugin metadata (`origin: "package"`);
  *  - `local:` sources are copied into the agent home so they survive the origin moving away;
  *  - `<agentDir>/integrations/` is auto-discovered like extensions;
- *  - install/persist is per-agent: it writes only the named agent's `settings.json`,
+ *  - install/persist is per-agent: it writes only the named agent's `agent.json` settings,
  *    never a sibling agent's, and the persisted local source round-trips through resolve;
  *  - managed npm/git installs land under `.plugins/`.
  */
@@ -17,8 +17,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getAgentConfigPath, getAgentDir } from "../src/config.ts";
+import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { DefaultPluginManager } from "../src/core/plugin-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
 
 let tempDir: string;
 let agentDir: string;
@@ -31,11 +32,18 @@ beforeEach(() => {
 	// Resolution must never reach the network for these local-only fixtures.
 	process.env.STEWARD_OFFLINE = "1";
 	tempDir = join(tmpdir(), `pm-int-${process.pid}-${tempDirCounter++}`);
-	agentDir = join(tempDir, "agents", "alice");
-	mkdirSync(agentDir, { recursive: true });
+	mkdirSync(tempDir, { recursive: true });
+	process.env.STEWARD_HOME = tempDir;
+	// Isolate the shared defaults to an (empty) temp dir so the merge can't pick up the
+	// real user's ~/.steward/agent/settings.json.
+	process.env.STEWARD_SHARED_DIR = join(tempDir, "shared");
+	AgentSettingsManager.createAgent({ name: "alice" });
+	agentDir = getAgentDir("alice");
 });
 
 afterEach(() => {
+	delete process.env.STEWARD_HOME;
+	delete process.env.STEWARD_SHARED_DIR;
 	if (previousOfflineEnv === undefined) {
 		delete process.env.STEWARD_OFFLINE;
 	} else {
@@ -66,7 +74,8 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		const pkgDir = join(tempDir, "telegram-pkg");
 		writeDualHalfPackage(pkgDir);
 
-		const settingsManager = SettingsManager.inMemory({ plugins: [pkgDir] });
+		const settingsManager = AgentSettingsManager.create("alice");
+		settingsManager.setPlugins([pkgDir]);
 		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
 
 		const result = await pm.resolve();
@@ -106,7 +115,7 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		mkdirSync(pkgDir, { recursive: true });
 		writeFileSync(join(pkgDir, "index.ts"), "export default function () {}");
 
-		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const settingsManager = AgentSettingsManager.create("alice");
 		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
 
 		await pm.installAndPersist(pkgDir);
@@ -134,7 +143,7 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		const intPath = join(intDir, "weather.ts");
 		writeFileSync(intPath, "export default function () {}");
 
-		const settingsManager = SettingsManager.inMemory({});
+		const settingsManager = AgentSettingsManager.create("alice");
 		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
 
 		const result = await pm.resolve();
@@ -145,7 +154,7 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		expect(discovered?.metadata.origin).toBe("top-level");
 	});
 
-	it("persists installs to the named agent's settings.json only, and round-trips on resolve", async () => {
+	it("persists installs to the named agent's agent.json only, and round-trips on resolve", async () => {
 		const pkgDir = join(tempDir, "telegram-pkg");
 		writeDualHalfPackage(pkgDir);
 
@@ -153,23 +162,21 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		const otherAgentDir = join(tempDir, "agents", "bob");
 		mkdirSync(otherAgentDir, { recursive: true });
 
-		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const settingsManager = AgentSettingsManager.create("alice");
 		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
 
 		await pm.installAndPersist(pkgDir);
 
-		// Persisted to alice's settings only.
-		const aliceSettingsPath = join(agentDir, "settings.json");
-		expect(existsSync(aliceSettingsPath)).toBe(true);
-		const persisted = JSON.parse(readFileSync(aliceSettingsPath, "utf-8"));
-		expect(persisted.plugins).toHaveLength(1);
+		// Persisted to alice's agent.json settings override only.
+		const persisted = JSON.parse(readFileSync(getAgentConfigPath("alice"), "utf-8"));
+		expect(persisted.settings.plugins).toHaveLength(1);
 
-		// Bob's home is untouched — no settings.json leaked into a shared/other agent.
-		expect(existsSync(join(otherAgentDir, "settings.json"))).toBe(false);
+		// Bob's home is untouched — no agent.json leaked into a sibling agent.
+		expect(existsSync(join(otherAgentDir, "agent.json"))).toBe(false);
 
-		// The persisted local source round-trips: a fresh manager reading the same settings
+		// The persisted local source round-trips: a fresh manager reading the same agent.json
 		// resolves the integration half from the managed copy.
-		const reread = SettingsManager.create(tempDir, agentDir);
+		const reread = AgentSettingsManager.create("alice");
 		const pm2 = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager: reread });
 		const result = await pm2.resolve();
 		const integration = result.integrations.find((r) => r.path.endsWith("index.ts"));
@@ -183,7 +190,7 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		mkdirSync(pkgDir, { recursive: true });
 		writeFileSync(join(pkgDir, "index.ts"), "export default function () {}");
 
-		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const settingsManager = AgentSettingsManager.create("alice");
 		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
 
 		await pm.installAndPersist(pkgDir);
@@ -196,7 +203,7 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 	});
 
 	it("lands managed npm and git installs under .plugins/", () => {
-		const settingsManager = SettingsManager.inMemory({});
+		const settingsManager = AgentSettingsManager.create("alice");
 		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
 
 		// Simulate installed npm + git trees under the managed store layout.

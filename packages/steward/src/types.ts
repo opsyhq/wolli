@@ -15,7 +15,7 @@ import type {
 	ThinkingLevel,
 	ThinkingLevelUpdateEvent,
 } from "@opsyhq/agent";
-import type { AgentConfig } from "./core/agent-config.ts";
+import type { AgentConfig } from "./core/agent-settings-manager.ts";
 import type { OnboardIntegrationResult } from "./core/integrations/onboarding.ts";
 import type { ScopedModel } from "./core/model-resolver.ts";
 

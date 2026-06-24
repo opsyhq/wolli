@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAgentDir, getSoulPath } from "../src/config.ts";
-import { createAgent } from "../src/core/agent-config.ts";
+import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { createHostEnvironment, type Environment } from "../src/core/environments/index.ts";
 import { readMemoryFile } from "../src/core/memory.ts";
 import { createEditTool } from "../src/core/tools/edit.ts";
@@ -26,7 +26,7 @@ let env: Environment;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "steward-test-"));
 	process.env.STEWARD_HOME = home;
-	createAgent({ name: "scribe", purpose: "notes" });
+	AgentSettingsManager.createAgent({ name: "scribe", purpose: "notes" });
 	dir = getAgentDir("scribe");
 	env = createHostEnvironment(dir);
 });

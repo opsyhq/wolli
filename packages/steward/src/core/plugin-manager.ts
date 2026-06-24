@@ -30,8 +30,8 @@ import { minimatch } from "minimatch";
 import { spawnProcess } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
+import type { AgentSettingsManager, PluginSource } from "./agent-settings-manager.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
-import type { PluginSource, SettingsManager } from "./settings-manager.ts";
 // PathMetadata + SourceScope are owned by source-info.ts in steward (single source
 // of truth, shared with skills/prompts/themes loaders). Re-exported so the
 // resource-loader can keep importing PathMetadata from the plugin manager.
@@ -105,7 +105,7 @@ export interface PluginManager {
 interface PluginManagerOptions {
 	cwd: string;
 	agentDir: string;
-	settingsManager: SettingsManager;
+	settingsManager: AgentSettingsManager;
 }
 
 type NpmSource = {
@@ -723,7 +723,7 @@ function applyPatterns(allPaths: string[], patterns: string[], baseDir: string):
 export class DefaultPluginManager implements PluginManager {
 	private cwd: string;
 	private agentDir: string;
-	private settingsManager: SettingsManager;
+	private settingsManager: AgentSettingsManager;
 	private progressCallback: ProgressCallback | undefined;
 
 	constructor(options: PluginManagerOptions) {
@@ -2042,7 +2042,7 @@ export class DefaultPluginManager implements PluginManager {
 
 	private addAutoDiscoveredResources(
 		accumulator: ResourceAccumulator,
-		globalSettings: ReturnType<SettingsManager["getGlobalSettings"]>,
+		globalSettings: ReturnType<AgentSettingsManager["getGlobalSettings"]>,
 		globalBaseDir: string,
 	): void {
 		// Per-agent only: auto-discovery scans the agent's own `<agentDir>/<kind>/`

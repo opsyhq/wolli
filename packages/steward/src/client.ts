@@ -15,15 +15,8 @@ import {
 	type Model,
 } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, AgentMessage, SessionContext, SessionTreeEntry, ThinkingLevel } from "@opsyhq/agent";
-import {
-	type AgentConfig,
-	agentExists,
-	createAgent,
-	deleteAgent,
-	listAgents,
-	loadAgentConfig,
-} from "./core/agent-config.ts";
 import type { ContextInfo, IntegrationInfo } from "./core/agent-runtime.ts";
+import { type AgentConfig, AgentSettingsManager } from "./core/agent-settings-manager.ts";
 import { type DaemonConfig, deleteDaemonConfig, loadDaemonConfig } from "./core/daemon-config.ts";
 import { THINKING_LEVELS } from "./core/defaults.ts";
 import type { ResourceSummary } from "./core/diagnostics.ts";
@@ -78,18 +71,18 @@ type ConnectionEvent = AgentHarnessEvent | ScopedModelsUpdateEvent;
 export class Steward {
 	/** Every agent under the agents root, as handles. */
 	list(): Agent[] {
-		return listAgents().map((config) => new Agent(config));
+		return AgentSettingsManager.list().map((store) => new Agent(store.config));
 	}
 
 	/** A handle for `name` if it exists on disk, else `undefined`. */
 	get(name: string): Agent | undefined {
-		if (!agentExists(name)) return undefined;
-		return new Agent(loadAgentConfig(name));
+		const store = AgentSettingsManager.get(name);
+		return store ? new Agent(store.config) : undefined;
 	}
 
 	/** Create the agent's home tree and return its handle. */
 	create(name: string, opts: { purpose?: string; model?: string } = {}): Agent {
-		return new Agent(createAgent({ name, ...opts }));
+		return new Agent(AgentSettingsManager.createAgent({ name, ...opts }).config);
 	}
 }
 
@@ -147,7 +140,7 @@ export class Agent {
 	/**
 	 * Tear the agent down: uninstall the OS service (so a supervised daemon won't relaunch), SIGTERM
 	 * any daemon still running (a birth daemon has no unit but is a live process), delete the home
-	 * dir, then drop the daemon config. `deleteAgent` touches only the agent home — never the shared
+	 * dir, then drop the daemon config. `AgentSettingsManager.delete` touches only the agent home — never the shared
 	 * credential dir.
 	 */
 	delete(): { ok: boolean; method: "trash" | "unlink"; error?: string } {
@@ -162,7 +155,7 @@ export class Agent {
 			}
 		}
 
-		const result = deleteAgent(this.name);
+		const result = AgentSettingsManager.delete(this.name);
 		if (result.ok) deleteDaemonConfig(this.name);
 		return result;
 	}

@@ -21,21 +21,27 @@ export {
 	rawKeyHint,
 } from "./components/keybinding-hints.ts";
 export * from "./config.ts";
+// Per-agent plugin-manager factory: the daemon builds it to run installs server-side, and the
+// @opsyhq/cli client's `plugins` command uses it for its read-only `list` arm.
+export { type AgentPluginManager, createAgentPluginManager } from "./core/agent-plugin-manager.ts";
+export {
+	AgentRuntime,
+	type AgentRuntimeOptions,
+	type ContextInfo,
+	type IntegrationInfo,
+} from "./core/agent-runtime.ts";
 export {
 	AGENT_SCHEMA_VERSION,
 	type AgentConfig,
 	AgentConfigSchema,
+	AgentSettingsManager,
 	type CreateAgentOptions,
-	deployAgent,
+	getDefaultModel,
+	getDefaultProvider,
 	isDeployed,
 	isValidAgentName,
-	loadAgentConfig,
-	saveAgentConfig,
-	setAgentPurpose,
-} from "./core/agent-config.ts";
-// Per-agent plugin-manager factory: the daemon builds it to run installs server-side, and the
-// @opsyhq/cli client's `plugins` command uses it for its read-only `list` arm.
-export { type AgentPluginManager, createAgentPluginManager } from "./core/agent-plugin-manager.ts";
+	type Settings,
+} from "./core/agent-settings-manager.ts";
 export {
 	type ApiKeyCredential,
 	type AuthCredential,
@@ -225,12 +231,6 @@ export {
 	type OpenAgentSessionResult,
 	openAgentSession,
 } from "./core/session.ts";
-export {
-	AgentRuntime,
-	type AgentRuntimeOptions,
-	type ContextInfo,
-	type IntegrationInfo,
-} from "./core/agent-runtime.ts";
 export type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -241,12 +241,6 @@ export type {
 	SessionTreeNode,
 } from "./core/session-manager.ts";
 export { SessionManager } from "./core/session-manager.ts";
-export { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
-export {
-	type Settings,
-	SettingsManager,
-	type SettingsManagerCreateOptions,
-} from "./core/settings-manager.ts";
 export {
 	formatSkillsForPrompt,
 	type LoadSkillsOptions,

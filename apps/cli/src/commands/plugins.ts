@@ -8,12 +8,11 @@
 
 import {
 	type AgentSession,
+	AgentSettingsManager,
 	APP_NAME,
 	createAgentPluginManager,
 	type ExtensionUIRequest,
-	getAgentDir,
 	type OnboardServiceResult,
-	SettingsManager,
 	Steward,
 } from "@opsyhq/steward";
 import chalk from "chalk";
@@ -127,7 +126,7 @@ function parsePluginsCommand(rest: string[]): PluginsCommandOptions | undefined 
 /** Render one daemon-side onboarding dialog in the startup TUI and answer it over `/ui-response`. */
 async function dispatchUiRequest(
 	session: AgentSession,
-	settingsManager: SettingsManager,
+	settingsManager: AgentSettingsManager,
 	req: ExtensionUIRequest,
 ): Promise<void> {
 	switch (req.method) {
@@ -301,7 +300,7 @@ export async function runPlugins(agent: string, rest: string[], help = false): P
 					console.log(chalk.dim(`Run "${APP_NAME} ${agent} plugins configure ${source}" to set it up.`));
 					return 0;
 				}
-				const settingsManager = SettingsManager.create(getAgentDir(agent));
+				const settingsManager = AgentSettingsManager.create(agent);
 				session.onUiRequest = (req) => void dispatchUiRequest(session, settingsManager, req);
 				return printOnboardResults(agent, await session.onboardPlugin(source));
 			}
@@ -322,7 +321,7 @@ export async function runPlugins(agent: string, rest: string[], help = false): P
 				return 0;
 
 			case "configure": {
-				const settingsManager = SettingsManager.create(getAgentDir(agent));
+				const settingsManager = AgentSettingsManager.create(agent);
 				session.onUiRequest = (req) => void dispatchUiRequest(session, settingsManager, req);
 				return printOnboardResults(
 					agent,

@@ -5,12 +5,12 @@
  */
 
 import { ProcessTerminal, setKeybindings, TUI } from "@opsyhq/tui";
-import { initTheme, type SettingsManager } from "@opsyhq/steward";
+import { type AgentSettingsManager, initTheme } from "@opsyhq/steward";
 import { KeybindingsManager } from "./keybindings-manager.ts";
 import { ExtensionInputComponent } from "./modes/interactive/views/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./modes/interactive/views/components/extension-selector.ts";
 
-function createStartupTui(settingsManager: SettingsManager): TUI {
+function createStartupTui(settingsManager: AgentSettingsManager): TUI {
 	initTheme(settingsManager.getTheme());
 	setKeybindings(KeybindingsManager.create());
 	const ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor());
@@ -25,7 +25,7 @@ async function clearStartupTui(ui: TUI): Promise<void> {
 }
 
 export async function showStartupSelector<T>(
-	settingsManager: SettingsManager,
+	settingsManager: AgentSettingsManager,
 	title: string,
 	options: Array<{ label: string; value: T }>,
 ): Promise<T | undefined> {
@@ -57,7 +57,7 @@ export async function showStartupSelector<T>(
 }
 
 export async function showStartupInput(
-	settingsManager: SettingsManager,
+	settingsManager: AgentSettingsManager,
 	title: string,
 	placeholder?: string,
 ): Promise<string | undefined> {

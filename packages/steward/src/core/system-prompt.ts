@@ -6,7 +6,7 @@
  */
 
 import { APP_NAME, getDocsPath, getReadmePath } from "../config.ts";
-import type { AgentConfig } from "./agent-config.ts";
+import type { AgentConfig } from "./agent-settings-manager.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {

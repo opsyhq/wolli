@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import chalk from "chalk";
 import { CONFIG_DIR_NAME } from "../config.ts";
 import { loadThemeFromPath, type Theme } from "../theme/theme.ts";
@@ -8,6 +8,7 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 
 import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
+import { AgentSettingsManager } from "./agent-settings-manager.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } from "./extensions/loader.ts";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
@@ -17,7 +18,6 @@ import type { Integration, IntegrationRuntime, LoadIntegrationsResult } from "./
 import { DefaultPluginManager, type PathMetadata, type ResolvedResource } from "./plugin-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
-import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
 import { createSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -132,7 +132,7 @@ export function loadProjectContextFiles(options: {
 export interface DefaultResourceLoaderOptions {
 	cwd: string;
 	agentDir: string;
-	settingsManager?: SettingsManager;
+	settingsManager?: AgentSettingsManager;
 	eventBus?: EventBus;
 	additionalSkillPaths?: string[];
 	additionalPromptTemplatePaths?: string[];
@@ -168,7 +168,7 @@ export interface DefaultResourceLoaderOptions {
 export class DefaultResourceLoader implements ResourceLoader {
 	private cwd: string;
 	private agentDir: string;
-	private settingsManager: SettingsManager;
+	private settingsManager: AgentSettingsManager;
 	private eventBus: EventBus;
 	private pluginManager: DefaultPluginManager;
 	private additionalSkillPaths: string[];
@@ -224,7 +224,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	constructor(options: DefaultResourceLoaderOptions) {
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
-		this.settingsManager = options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir);
+		this.settingsManager = options.settingsManager ?? AgentSettingsManager.create(basename(this.agentDir));
 		this.eventBus = options.eventBus ?? createEventBus();
 		this.pluginManager = new DefaultPluginManager({
 			cwd: this.cwd,

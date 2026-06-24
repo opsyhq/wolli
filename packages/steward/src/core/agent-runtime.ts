@@ -49,8 +49,8 @@ import { getAgentApprovalsPath, getAgentDir, getAgentIntegrationsPath, getSessio
 import type { AuthSelectorProvider } from "../types.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { openBrowser } from "../utils/open-browser.ts";
-import { type AgentConfig, isDeployed, loadAgentConfig, saveAgentConfig } from "./agent-config.ts";
 import { createAgentPluginManager } from "./agent-plugin-manager.ts";
+import { type AgentConfig, AgentSettingsManager, isDeployed } from "./agent-settings-manager.ts";
 import { createApprovalGate } from "./approval/approval-gate.ts";
 import { ApprovalStore } from "./approval/approval-storage.ts";
 import type { AuthStorage } from "./auth-storage.ts";
@@ -86,8 +86,6 @@ import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, loadProjectContextFiles } from "./resource-loader.ts";
 import { listAgentSessions, openAgentSession, type SessionInfo } from "./session.ts";
 import { SessionManager } from "./session-manager.ts";
-import { getEnabledModels } from "./settings.ts";
-import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
@@ -286,10 +284,11 @@ export class AgentRuntime {
 	/** Durable per-agent model registry — built once, shared across every conversation build/reload. */
 	private readonly _modelRegistry: ModelRegistry;
 	/**
-	 * Durable per-agent settings manager — read for request-time provider-attribution headers and,
-	 * after a `reload()`, fresh resource discovery. Built once; re-read from disk in `buildResources`.
+	 * Durable per-agent settings manager (identity + merged settings) — read for request-time
+	 * provider-attribution headers, model/thinking defaults, and resource discovery. Built once;
+	 * the writer for runtime mutations and re-read from disk on each conversation build/reload.
 	 */
-	private readonly _settingsManager: SettingsManager;
+	private readonly _settingsManager: AgentSettingsManager;
 
 	/** The single live conversation (N=1). Undefined until `start()`. */
 	private _conversation?: Conversation;
@@ -309,8 +308,7 @@ export class AgentRuntime {
 	constructor(options: AgentRuntimeOptions) {
 		this.options = options;
 		this._modelRegistry = options.modelRegistry;
-		const agentDir = getAgentDir(options.name);
-		this._settingsManager = SettingsManager.create(agentDir, agentDir);
+		this._settingsManager = AgentSettingsManager.create(options.name);
 	}
 
 	/**
@@ -595,7 +593,10 @@ export class AgentRuntime {
 		// clean up before the new runner takes over.
 		await emitSessionShutdownEvent(previousRunner, { type: "session_shutdown", reason: "reload" });
 
-		const config = loadAgentConfig(this.options.name);
+		// Re-read settings + agent.json from disk so a `/reload` picks up settings.json changes
+		// (plugin sources, local resource paths) — the manager is otherwise frozen since the last build.
+		this._settingsManager.reload();
+		const config = this._settingsManager.config;
 		const agentDir = getAgentDir(this.options.name);
 		const {
 			runner,
@@ -659,31 +660,27 @@ export class AgentRuntime {
 		return this._modelRegistry.getAvailable();
 	}
 
-	/** Persist the agent-tier scoped-model shortlist (`enabledModels`) to agent.json. */
+	/** Persist the agent-tier scoped-model shortlist (`enabledModels`) to agent.json's settings. */
 	setEnabledModels(enabledModels: string[] | undefined): void {
-		const config = loadAgentConfig(this.options.name);
-		saveAgentConfig(this.options.name, { ...config, enabledModels });
+		this._settingsManager.setEnabledModels(enabledModels);
 	}
 
 	/**
-	 * Persist a model choice to this agent's own agent.json (`model`), the first source the startup
-	 * resolution reads (`config.model ?? sharedDefaultModel() ?? DEFAULT_MODEL`), so the agent reopens
-	 * on it. The shared/global default is a separate concern, set elsewhere. Called by the live
-	 * conversation after switching the harness model.
+	 * Persist a model choice into this agent's own agent.json (`settings.defaultModel`), the first
+	 * source the startup resolution reads, so the agent reopens on it. The shared/global default is a
+	 * separate concern, set elsewhere. Called by the live conversation after switching the harness model.
 	 */
 	persistModel(provider: string, modelId: string): void {
-		const config = loadAgentConfig(this.options.name);
-		saveAgentConfig(this.options.name, { ...config, model: `${provider}/${modelId}` });
+		this._settingsManager.setDefaultModelAndProvider(provider, modelId);
 	}
 
 	/**
-	 * Persist a thinking level as this agent's default in agent.json (`thinkingLevel`), so a new
-	 * conversation reopens on it. Called by the live conversation, which decides whether the level
-	 * actually changed.
+	 * Persist a thinking level as this agent's default in agent.json (`settings.defaultThinkingLevel`),
+	 * so a new conversation reopens on it. Called by the live conversation, which decides whether the
+	 * level actually changed.
 	 */
 	persistThinkingLevel(level: ThinkingLevel): void {
-		const config = loadAgentConfig(this.options.name);
-		saveAgentConfig(this.options.name, { ...config, thinkingLevel: level });
+		this._settingsManager.setDefaultThinkingLevel(level);
 	}
 
 	/**
@@ -797,12 +794,16 @@ export class AgentRuntime {
 		const previousRunner = this._extensionRunner;
 		const previousIntegrationRunner = this._integrationRunner;
 
-		const config = loadAgentConfig(name);
+		this._settingsManager.reload();
+		const config = this._settingsManager.config;
 		const { session, env } = await openAgentSession(name, { fresh: true });
 		const metadata = await session.getMetadata();
 		const sessionManager = new SessionManager(session, metadata);
 		await options?.setup?.(sessionManager);
-		const thinkingLevel = clampThinkingLevel(model, config.thinkingLevel ?? DEFAULT_THINKING_LEVEL) as ThinkingLevel;
+		const thinkingLevel = clampThinkingLevel(
+			model,
+			this._settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
+		) as ThinkingLevel;
 
 		const {
 			runner,
@@ -855,9 +856,10 @@ export class AgentRuntime {
 		}
 		await previousConversation?.cleanup();
 
-		// Re-seed model scope from agent.json (`enabledModels`) → global shortlist, so a session-only
-		// `/scope` does NOT survive `/new` — it resets to the agent default (intended).
-		const enabledModelIds = config.enabledModels ?? getEnabledModels();
+		// Re-seed model scope from the merged `enabledModels` (agent override over shared default) →
+		// global shortlist, so a session-only `/scope` does NOT survive `/new` — it resets to the
+		// agent default (intended).
+		const enabledModelIds = this._settingsManager.getEnabledModels();
 		if (enabledModelIds && enabledModelIds.length > 0) await conversation.setScopedModels(enabledModelIds);
 
 		// Hand `withConversation` the public facade for the live conversation (now bound on the runner).
@@ -878,7 +880,8 @@ export class AgentRuntime {
 		const previousRunner = this._extensionRunner;
 		const previousIntegrationRunner = this._integrationRunner;
 
-		const config = loadAgentConfig(name);
+		this._settingsManager.reload();
+		const config = this._settingsManager.config;
 		const { session, env } = await openAgentSession(name, id ? { id } : { fresh: false });
 		const metadata = await session.getMetadata();
 		const sessionManager = new SessionManager(session, metadata);
@@ -893,7 +896,7 @@ export class AgentRuntime {
 		// Restore the session's thinking level if the branch pinned one, else the agent default.
 		const sessionThinking = sessionManager.getBranch().some((e) => e.type === "thinking_level_change")
 			? (buildSessionContext(sessionManager.getBranch()).thinkingLevel as ThinkingLevel)
-			: (config.thinkingLevel ?? DEFAULT_THINKING_LEVEL);
+			: (this._settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL);
 		const thinkingLevel = clampThinkingLevel(effectiveModel, sessionThinking) as ThinkingLevel;
 
 		const {
@@ -941,7 +944,7 @@ export class AgentRuntime {
 		}
 		await previousConversation?.cleanup();
 
-		const enabledModelIds = config.enabledModels ?? getEnabledModels();
+		const enabledModelIds = this._settingsManager.getEnabledModels();
 		if (enabledModelIds && enabledModelIds.length > 0) await conversation.setScopedModels(enabledModelIds);
 		return conversation;
 	}
@@ -1002,9 +1005,8 @@ export class AgentRuntime {
 	}> {
 		const { config, agentDir, name, sessionManager, seedFlagValues } = params;
 		const integrationAccounts = this.options.integrationAccounts;
-		// Re-read settings from disk so a `/reload` picks up settings.json changes (plugin sources,
-		// local resource paths) — the shared manager is otherwise frozen at construction.
-		await this._settingsManager.reload();
+		// Settings + agent.json were re-read from disk by the caller (createConversation/
+		// resumeConversation/reload) right before this build, so the manager is current here.
 
 		// One resource loader owns npm/git/local install + resolution and resolves extensions
 		// AND integrations in place from the same per-agent home (cwd = agentDir; there is no

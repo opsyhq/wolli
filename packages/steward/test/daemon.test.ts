@@ -11,11 +11,11 @@ import { basename, join } from "node:path";
 import { type Api, fauxAssistantMessage, type Model, registerFauxProvider } from "@earendil-works/pi-ai";
 import type { ServerType } from "@hono/node-server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createAgent, deployAgent, isDeployed, loadAgentConfig } from "../src/core/agent-config.ts";
+import { AgentRuntime } from "../src/core/agent-runtime.ts";
+import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
-import { AgentRuntime } from "../src/core/agent-runtime.ts";
 import { runDaemonMode } from "../src/server.ts";
 import { FORWARDED_EVENT_TYPES } from "../src/types.ts";
 
@@ -51,7 +51,7 @@ function makeRuntime(): { runtime: AgentRuntime; registration: ReturnType<typeof
 
 /** Build + start a runtime, wrap it in a daemon on an ephemeral port. Returns the faux provider. */
 async function startDaemon(opts: { deploy?: boolean } = {}): Promise<ReturnType<typeof registerFauxProvider>> {
-	if (opts.deploy) deployAgent(AGENT);
+	if (opts.deploy) AgentSettingsManager.create(AGENT).setAgentDeployed();
 	const { runtime, registration } = makeRuntime();
 	activeRuntime = runtime;
 	await runtime.createConversation();
@@ -211,7 +211,7 @@ beforeEach(() => {
 	process.env.STEWARD_SERVICE_MANAGER = "none";
 	// The package/onboarding verbs install local fixtures only — never let resolution hit the network.
 	process.env.STEWARD_OFFLINE = "1";
-	createAgent({ name: AGENT });
+	AgentSettingsManager.createAgent({ name: AGENT });
 });
 
 afterEach(async () => {
@@ -429,7 +429,7 @@ describe("daemon client-support verbs (Slice 0)", () => {
 
 	it("deploy flips the latch and swaps to a fresh deployed session", async () => {
 		await startDaemon(); // forming (not pre-deployed)
-		expect(isDeployed(loadAgentConfig(AGENT))).toBe(false);
+		expect(AgentSettingsManager.create(AGENT).getAgentDeployed()).toBe(false);
 		const before = await control({ type: "get_state" });
 		const birthSessionId = before.data.sessionId;
 
@@ -441,7 +441,7 @@ describe("daemon client-support verbs (Slice 0)", () => {
 		// Deploy always swaps to a fresh session — the supervised daemon resumes the most-recent one.
 		expect(res.data.sessionId).not.toBe(birthSessionId);
 		// And the latch is persisted to disk.
-		expect(isDeployed(loadAgentConfig(AGENT))).toBe(true);
+		expect(AgentSettingsManager.create(AGENT).getAgentDeployed()).toBe(true);
 	});
 });
 

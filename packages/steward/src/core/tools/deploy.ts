@@ -14,7 +14,7 @@
 import type { AgentTool, AgentToolResult } from "@opsyhq/agent";
 import { Type } from "typebox";
 import { getSoulPath } from "../../config.ts";
-import { setAgentPurpose } from "../agent-config.ts";
+import { AgentSettingsManager } from "../agent-settings-manager.ts";
 import { SOUL_BUDGET, writeMemoryFile } from "../memory.ts";
 
 const deploySchema = Type.Object({
@@ -65,7 +65,7 @@ export function createDeployTool(name: string): AgentTool<typeof deploySchema, D
 				);
 			}
 
-			setAgentPurpose(name, purpose);
+			AgentSettingsManager.create(name).setAgentPurpose(purpose);
 			writeMemoryFile(getSoulPath(name), soul);
 			return textResult("Purpose and SOUL.md saved — awaiting your human's confirmation to deploy.", {
 				applied: true,
