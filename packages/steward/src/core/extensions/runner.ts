@@ -350,10 +350,9 @@ export class ExtensionRunner {
 		return this.resolveRegisteredCommands().find((command) => command.invocationName === name);
 	}
 
-	private isSessionBeforeCompact(event: RunnerEmitEvent): event is Extract<
-		RunnerEmitEvent,
-		{ type: "session_before_compact" }
-	> {
+	private isSessionBeforeCompact(
+		event: RunnerEmitEvent,
+	): event is Extract<RunnerEmitEvent, { type: "session_before_compact" }> {
 		return event.type === "session_before_compact";
 	}
 

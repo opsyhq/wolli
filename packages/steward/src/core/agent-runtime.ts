@@ -611,7 +611,6 @@ export class AgentRuntime {
 			config,
 			agentDir,
 			name: this.options.name,
-			sessionManager: conversation.sessionManager,
 			seedFlagValues: previousFlagValues,
 		});
 		this._config = config;
@@ -818,7 +817,6 @@ export class AgentRuntime {
 			config,
 			agentDir: getAgentDir(name),
 			name,
-			sessionManager,
 		});
 
 		// Frozen system prompt as a constant callback (prefix cache stays warm); request-time auth
@@ -912,7 +910,6 @@ export class AgentRuntime {
 			config,
 			agentDir: getAgentDir(name),
 			name,
-			sessionManager,
 		});
 
 		const harness = new AgentHarness({
@@ -990,7 +987,6 @@ export class AgentRuntime {
 		config: AgentConfig;
 		agentDir: string;
 		name: string;
-		sessionManager: SessionManager;
 		seedFlagValues?: Map<string, boolean | string>;
 	}): Promise<{
 		runner: ExtensionRunner;
@@ -1003,7 +999,7 @@ export class AgentRuntime {
 		extensionTools: AgentTool[];
 		errors: { path: string; error: string }[];
 	}> {
-		const { config, agentDir, name, sessionManager, seedFlagValues } = params;
+		const { config, agentDir, name, seedFlagValues } = params;
 		const integrationAccounts = this.options.integrationAccounts;
 		// Settings + agent.json were re-read from disk by the caller (createConversation/
 		// resumeConversation/reload) right before this build, so the manager is current here.
