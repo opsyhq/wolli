@@ -19,12 +19,12 @@ import { type Api, fauxAssistantMessage, type Model, registerFauxProvider } from
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAgentDir } from "../src/config.ts";
 import { createAgent } from "../src/core/agent-config.ts";
+import { AgentRuntime } from "../src/core/agent-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { convertToLlm, createBashExecutionMessage } from "../src/core/messages.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { openAgentSession } from "../src/core/session.ts";
-import { AgentRuntime } from "../src/core/agent-runtime.ts";
 
 const AGENT = "scribe";
 
@@ -81,6 +81,30 @@ export default function commandExtension(pi) {
 		async handler(args) {
 			const dir = process.env.STEWARD_TEST_MARKER_DIR;
 			if (dir) writeFileSync(join(dir, "command.json"), JSON.stringify({ args }));
+		},
+	});
+}
+`;
+
+// Registers a `/facade` command that drives the agent via steward.agent: records the live
+// conversation's session id and the stored-session count to the marker dir.
+const AGENT_FACADE_EXTENSION_SOURCE = `
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export default function facadeExtension(pi) {
+	pi.registerCommand("facade", {
+		description: "Records the live conversation id + session count via steward.agent.",
+		async handler() {
+			const dir = process.env.STEWARD_TEST_MARKER_DIR;
+			const convo = pi.agent.getConversation();
+			const sessions = await pi.agent.listSessions();
+			if (dir) {
+				writeFileSync(
+					join(dir, "facade.json"),
+					JSON.stringify({ sessionId: convo ? convo.getSessionId() : null, sessionCount: sessions.length }),
+				);
+			}
 		},
 	});
 }
@@ -255,6 +279,55 @@ describe("extension subsystem wiring", () => {
 		expect(marker).toEqual({ args: "there" });
 		// The command handled the input itself — no model turn ran.
 		expect(registration.state.callCount).toBe(0);
+		await runtime.cleanup();
+	});
+
+	it("exposes steward.agent so a command resolves the live conversation and lists sessions", async () => {
+		writeFileSync(join(getAgentDir(AGENT), "extensions", "facade-ext.ts"), AGENT_FACADE_EXTENSION_SOURCE, "utf-8");
+		const { runtime } = makeRuntime();
+		const conversation = await runtime.createConversation();
+
+		await conversation.prompt("/facade");
+
+		const marker = JSON.parse(readFileSync(join(markerDir, "facade.json"), "utf-8"));
+		// steward.agent.getConversation() resolved the SAME live conversation the runtime built.
+		expect(marker.sessionId).toBe(conversation.getSessionId());
+		// steward.agent.listSessions() surfaced the stored session create() wrote eagerly.
+		expect(marker.sessionCount).toBeGreaterThanOrEqual(1);
+		await runtime.cleanup();
+	});
+
+	it("resumes a stored session by id and lists stored sessions", async () => {
+		const { runtime, registration } = makeRuntime();
+		registration.setResponses([() => fauxAssistantMessage("a"), () => fauxAssistantMessage("b")]);
+
+		// Session A gets some history, then capture its id.
+		const a = await runtime.createConversation();
+		await a.harness.prompt("hello from A");
+		const idA = a.getSessionId();
+
+		// Session B becomes the live conversation.
+		const b = await runtime.createConversation();
+		await b.harness.prompt("hello from B");
+		expect(b.getSessionId()).not.toBe(idA);
+
+		// Both stored sessions are listable.
+		const ids = (await runtime.listSessions()).map((session) => session.id);
+		expect(ids).toContain(idA);
+		expect(ids).toContain(b.getSessionId());
+
+		// Resume A by id → it becomes the live conversation again, carrying its persisted history.
+		const resumed = await runtime.resumeConversation(idA);
+		expect(resumed.getSessionId()).toBe(idA);
+		expect(runtime.getConversation()?.getSessionId()).toBe(idA);
+		expect(resumed.getEntries().some((entry) => entry.type === "message")).toBe(true);
+		await runtime.cleanup();
+	});
+
+	it("throws resuming an unknown session id", async () => {
+		const { runtime } = makeRuntime();
+		await runtime.createConversation();
+		await expect(runtime.resumeConversation("does-not-exist")).rejects.toThrow(/No session/);
 		await runtime.cleanup();
 	});
 

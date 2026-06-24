@@ -31,6 +31,7 @@ import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import type { IntegrationRunner } from "../integrations/runner.ts";
 import type { IntegrationHandle } from "../integrations/types.ts";
+import type { Agent } from "../sdk.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import type {
 	Extension,
@@ -356,6 +357,18 @@ function createExtensionAPI(
 				return deferredIntegrationHandle(name);
 			}
 			return integrationRunner.getIntegration(name, account);
+		},
+
+		// The agent façade is set on the shared runtime by the runner, so it resolves lazily here —
+		// available once a command/handler runs, but not during extension load (mirrors the action stubs).
+		get agent(): Agent {
+			runtime.assertActive();
+			if (!runtime.agent) {
+				throw new Error(
+					"Extension runtime not initialized. steward.agent is unavailable during extension loading.",
+				);
+			}
+			return runtime.agent;
 		},
 
 		events: eventBus,

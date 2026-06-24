@@ -74,16 +74,17 @@ import type { IntegrationAccountStorage } from "./integration-account-storage.ts
 import { IntegrationRunner } from "./integrations/runner.ts";
 import { loadMemory } from "./memory.ts";
 import { type CustomMessage, createCustomMessage } from "./messages.ts";
-import { isApiKeyLoginProvider, ModelRegistry } from "./model-registry.ts";
+import { isApiKeyLoginProvider, type ModelRegistry } from "./model-registry.ts";
 import { resolveModelScope, type ScopedModel } from "./model-resolver.ts";
 import type { ConfiguredPlugin } from "./plugin-manager.ts";
 import { type PromptTemplate, parseCommandArgs } from "./prompt-templates.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, loadProjectContextFiles } from "./resource-loader.ts";
-import { openAgentSession } from "./session.ts";
+import { Agent } from "./sdk.ts";
+import { listAgentSessions, openAgentSession, type SessionInfo } from "./session.ts";
 import { SessionManager } from "./session-manager.ts";
-import { SettingsManager } from "./settings-manager.ts";
 import { getEnabledModels } from "./settings.ts";
+import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type PathMetadata } from "./source-info.ts";
@@ -324,11 +325,20 @@ export class AgentRuntime {
 	/** The single live conversation (N=1). Undefined until `start()`. */
 	private _conversation?: Conversation;
 
+	/** The public agent façade handed to every extension runner (exposed as `steward.agent`). */
+	private readonly _agent: Agent;
+
 	constructor(options: AgentRuntimeOptions) {
 		this.options = options;
 		this._modelRegistry = options.modelRegistry;
 		const agentDir = getAgentDir(options.name);
 		this._settingsManager = SettingsManager.create(agentDir, agentDir);
+		this._agent = new Agent(this);
+	}
+
+	/** The public agent façade exposed to extensions as `steward.agent`. */
+	get agent(): Agent {
+		return this._agent;
 	}
 
 	/**
@@ -601,15 +611,23 @@ export class AgentRuntime {
 
 		const config = loadAgentConfig(this.options.name);
 		const agentDir = getAgentDir(this.options.name);
-		const { runner, integrationRunner, skills, promptTemplates, systemPrompt, systemPromptOptions, baseTools, extensionTools } =
-			await this.buildResources({
-				config,
-				agentDir,
-				name: this.options.name,
-				sessionManager: conversation.sessionManager,
-				discoverReason: "reload",
-				seedFlagValues: previousFlagValues,
-			});
+		const {
+			runner,
+			integrationRunner,
+			skills,
+			promptTemplates,
+			systemPrompt,
+			systemPromptOptions,
+			baseTools,
+			extensionTools,
+		} = await this.buildResources({
+			config,
+			agentDir,
+			name: this.options.name,
+			sessionManager: conversation.sessionManager,
+			discoverReason: "reload",
+			seedFlagValues: previousFlagValues,
+		});
 		this._config = config;
 		// The model-facing prompt stays frozen this conversation; refresh the ctx-readable copy.
 		conversation.systemPrompt = systemPrompt;
@@ -797,8 +815,22 @@ export class AgentRuntime {
 		const sessionManager = new SessionManager(session, metadata);
 		const thinkingLevel = clampThinkingLevel(model, config.thinkingLevel ?? DEFAULT_THINKING_LEVEL) as ThinkingLevel;
 
-		const { runner, integrationRunner, skills, promptTemplates, systemPrompt, systemPromptOptions, baseTools, extensionTools } =
-			await this.buildResources({ config, agentDir: getAgentDir(name), name, sessionManager, discoverReason: "reload" });
+		const {
+			runner,
+			integrationRunner,
+			skills,
+			promptTemplates,
+			systemPrompt,
+			systemPromptOptions,
+			baseTools,
+			extensionTools,
+		} = await this.buildResources({
+			config,
+			agentDir: getAgentDir(name),
+			name,
+			sessionManager,
+			discoverReason: "reload",
+		});
 
 		// Frozen system prompt as a constant callback (prefix cache stays warm); request-time auth
 		// resolves through resolveRequestAuth, closing over this session id.
@@ -843,18 +875,19 @@ export class AgentRuntime {
 	}
 
 	/**
-	 * Resume the agent's most-recent session as the live conversation: reopen the latest session and
-	 * restore its own model + thinking level over the agent defaults (the engine reconstructs them from
-	 * the branch). The daemon does this on startup.
+	 * Resume a stored session as the live conversation, swapping out any previous in place. With no
+	 * `id`, reopens the agent's most-recent session (the daemon does this on startup); with an `id`,
+	 * reopens that specific session. Restores the session's own model + thinking level over the agent
+	 * defaults (the engine reconstructs them from the branch).
 	 */
-	async resumeConversation(): Promise<Conversation> {
+	async resumeConversation(id?: string): Promise<Conversation> {
 		const { name, model } = this.options;
 		const previousConversation = this._conversation;
 		const previousRunner = this._extensionRunner;
 		const previousIntegrationRunner = this._integrationRunner;
 
 		const config = loadAgentConfig(name);
-		const { session, env } = await openAgentSession(name, { fresh: false });
+		const { session, env } = await openAgentSession(name, id ? { id } : { fresh: false });
 		const metadata = await session.getMetadata();
 		const sessionManager = new SessionManager(session, metadata);
 
@@ -871,8 +904,22 @@ export class AgentRuntime {
 			: (config.thinkingLevel ?? DEFAULT_THINKING_LEVEL);
 		const thinkingLevel = clampThinkingLevel(effectiveModel, sessionThinking) as ThinkingLevel;
 
-		const { runner, integrationRunner, skills, promptTemplates, systemPrompt, systemPromptOptions, baseTools, extensionTools } =
-			await this.buildResources({ config, agentDir: getAgentDir(name), name, sessionManager, discoverReason: "startup" });
+		const {
+			runner,
+			integrationRunner,
+			skills,
+			promptTemplates,
+			systemPrompt,
+			systemPromptOptions,
+			baseTools,
+			extensionTools,
+		} = await this.buildResources({
+			config,
+			agentDir: getAgentDir(name),
+			name,
+			sessionManager,
+			discoverReason: "startup",
+		});
 
 		const harness = new AgentHarness({
 			env,
@@ -906,6 +953,11 @@ export class AgentRuntime {
 		const enabledModelIds = config.enabledModels ?? getEnabledModels();
 		if (enabledModelIds && enabledModelIds.length > 0) await conversation.setScopedModels(enabledModelIds);
 		return conversation;
+	}
+
+	/** Stored sessions for this agent (newest first) — the ids `resumeConversation(id)` accepts. */
+	listSessions(): Promise<SessionInfo[]> {
+		return listAgentSessions(this.options.name);
 	}
 
 	/**
@@ -1012,7 +1064,15 @@ export class AgentRuntime {
 		const environments = await createEnvironments(agentDir, { gate, denyWrite: controlState });
 		const defaultEnv = environments.targets[environments.default];
 		const { extensions, errors, runtime } = loader.getExtensions();
-		const runner = new ExtensionRunner(extensions, runtime, agentDir, sessionManager, this._modelRegistry, defaultEnv);
+		const runner = new ExtensionRunner(
+			extensions,
+			runtime,
+			agentDir,
+			sessionManager,
+			this._modelRegistry,
+			defaultEnv,
+			this._agent,
+		);
 		this._extensionRunner = runner;
 		this._extensionCount = extensions.length;
 		this._loadErrors = errors;
@@ -1122,7 +1182,6 @@ export class AgentRuntime {
 		await resetSandbox();
 		await stopContainer(getAgentDir(this.options.name));
 	}
-
 }
 
 /**

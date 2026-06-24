@@ -54,6 +54,7 @@ import type { IntegrationHandle } from "../integrations/types.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { Agent } from "../sdk.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -1375,6 +1376,20 @@ export interface ExtensionAPI {
 	 */
 	getIntegration(name: string, account?: string): IntegrationHandle;
 
+	// =========================================================================
+	// Agent
+	// =========================================================================
+
+	/**
+	 * The agent this extension runs inside — find, create, or resume conversations and drive them.
+	 *
+	 * `getConversation()` returns the live conversation (or undefined); `createConversation()` starts a
+	 * fresh one; `resumeConversation(id)` reopens a stored session by id; `listSessions()` lists the
+	 * stored sessions you can resume. Driving a returned conversation (`prompt`/`sendUserMessage`) streams
+	 * to every attached client exactly as a user turn would.
+	 */
+	agent: Agent;
+
 	/** Shared event bus for extension communication. */
 	events: EventBus;
 }
@@ -1517,6 +1532,12 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  * Contains flag values (defaults set during registration, CLI values set after).
  */
 export interface ExtensionRuntimeState {
+	/**
+	 * The public agent façade (`steward.agent`). Optional here because the runtime is created with
+	 * throwing action stubs during extension load and only the runner sets this — by the time any
+	 * command/handler runs it is populated.
+	 */
+	agent?: Agent;
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;

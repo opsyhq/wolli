@@ -8,6 +8,7 @@ import { type Theme, theme } from "../../theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { Environment } from "../environments/types.ts";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { Agent } from "../sdk.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {
@@ -249,9 +250,14 @@ export class ExtensionRunner {
 		sessionManager: SessionManager,
 		modelRegistry: ModelRegistry,
 		environment: Environment,
+		agent: Agent,
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
+		// The agent façade is stable for the runtime's life; set it on the shared runtime now so
+		// `steward.agent` resolves once an extension command/handler runs (createExtensionAPI reads it
+		// lazily, like the bindCore action stubs, so a load-time access still throws).
+		runtime.agent = agent;
 		this.uiContext = noOpUIContext;
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;

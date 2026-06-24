@@ -13,6 +13,8 @@ import { getSessionsDir, getWorkspaceDir } from "../config.ts";
 export interface OpenAgentSessionOptions {
 	/** Start a fresh session instead of resuming the latest. */
 	fresh?: boolean;
+	/** Resume a specific stored session by id instead of the latest. Ignored when `fresh` is set. */
+	id?: string;
 }
 
 export interface OpenAgentSessionResult {
@@ -22,16 +24,37 @@ export interface OpenAgentSessionResult {
 	cwd: string;
 }
 
+/** One stored session for an agent — the `id` is what `openAgentSession({ id })` / `listSessions` use. */
+export interface SessionInfo {
+	id: string;
+	createdAt: string;
+}
+
+/**
+ * Build the per-agent session repo. Key-by-agent: always use the agent's own workspace
+ * as cwd, so the repo's encodeCwd() resolves to one constant subdir per agent — sessions
+ * never scatter by whatever directory the user happened to run `steward` from.
+ */
+function agentRepo(name: string): { repo: JsonlSessionRepo; env: NodeExecutionEnv; cwd: string } {
+	const cwd = getWorkspaceDir(name);
+	const env = new NodeExecutionEnv({ cwd });
+	const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: getSessionsDir(name) });
+	return { repo, env, cwd };
+}
+
 export async function openAgentSession(
 	name: string,
 	options: OpenAgentSessionOptions = {},
 ): Promise<OpenAgentSessionResult> {
-	// Key-by-agent: always use the agent's own workspace as cwd, so the repo's
-	// encodeCwd() resolves to one constant subdir per agent — sessions never
-	// scatter by whatever directory the user happened to run `steward` from.
-	const cwd = getWorkspaceDir(name);
-	const env = new NodeExecutionEnv({ cwd });
-	const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: getSessionsDir(name) });
+	const { repo, env, cwd } = agentRepo(name);
+
+	// Resume a specific stored session by id, matched off the repo's listing.
+	if (options.id) {
+		const existing = await repo.list({ cwd });
+		const match = existing.find((metadata) => metadata.id === options.id);
+		if (!match) throw new Error(`No session "${options.id}" for agent "${name}"`);
+		return { repo, session: await repo.open(match), env, cwd };
+	}
 
 	if (!options.fresh) {
 		const existing = await repo.list({ cwd });
@@ -43,4 +66,11 @@ export async function openAgentSession(
 
 	const session = await repo.create({ cwd });
 	return { repo, session, env, cwd };
+}
+
+/** Stored sessions for an agent, as `repo.list` returns them (newest first). */
+export async function listAgentSessions(name: string): Promise<SessionInfo[]> {
+	const { repo, cwd } = agentRepo(name);
+	const metadatas = await repo.list({ cwd });
+	return metadatas.map((metadata) => ({ id: metadata.id, createdAt: metadata.createdAt }));
 }
