@@ -27,11 +27,8 @@ import { getSharedAgentDir as getAgentDir, isBunBinary } from "../../config.ts";
 import * as _bundledPiCodingAgent from "../../index.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
-import type { ExecOptions } from "../exec.ts";
-import { execCommand } from "../exec.ts";
 import type { IntegrationRunner } from "../integrations/runner.ts";
 import type { IntegrationHandle } from "../integrations/types.ts";
-import type { Agent } from "../sdk.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import type {
 	Extension,
@@ -150,28 +147,24 @@ export function createExtensionRuntime(): ExtensionRuntime {
 	};
 
 	const runtime: ExtensionRuntime = {
-		sendMessage: notInitialized,
-		sendUserMessage: notInitialized,
-		appendEntry: notInitialized,
-		setSessionName: notInitialized,
-		getSessionName: notInitialized,
-		setLabel: notInitialized,
-		getActiveTools: notInitialized,
-		getAllTools: notInitialized,
-		setActiveTools: notInitialized,
+		// Agent-global capabilities backing `steward.*` — throwing stubs until the runtime overrides
+		// them (closures over the AgentRuntime) once resources are built. Accessing during load throws.
+		getConversation: notInitialized,
+		createConversation: notInitialized,
+		listSessions: notInitialized,
+		reload: notInitialized,
+		shutdown: notInitialized,
+		getModelRegistry: notInitialized,
+		getEnvironments: notInitialized,
 		// registerTool() is valid during extension load; refresh is only needed post-bind.
 		refreshTools: () => {},
-		getCommands: notInitialized,
-		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
-		getThinkingLevel: notInitialized,
-		setThinkingLevel: notInitialized,
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
 		assertActive,
 		invalidate: (message) => {
 			state.staleMessage ??=
 				message ??
-				"This extension ctx is stale after session replacement or reload. Do not use a captured steward or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
+				"This extension handle is stale after session replacement or reload. Do not use a captured conversation after conversation.newSession() or conversation.reload(). For newSession, move post-replacement work into withConversation and use the conversation passed to it.";
 		},
 		// Pre-bind: queue registrations so bindCore() can flush them once the
 		// model registry is available. bindCore() replaces both with direct calls.
@@ -270,75 +263,45 @@ function createExtensionAPI(
 			return runtime.flagValues.get(name);
 		},
 
-		// Action methods - delegate to shared runtime
-		sendMessage(message, options): void {
+		// Agent-global (durable / shared) state - delegate to the shared runtime
+		get cwd(): string {
 			runtime.assertActive();
-			runtime.sendMessage(message, options);
+			return cwd;
 		},
 
-		sendUserMessage(content, options): void {
+		get environments() {
 			runtime.assertActive();
-			runtime.sendUserMessage(content, options);
+			return runtime.getEnvironments();
 		},
 
-		appendEntry(customType: string, data?: unknown): void {
+		get modelRegistry() {
 			runtime.assertActive();
-			runtime.appendEntry(customType, data);
+			return runtime.getModelRegistry();
 		},
 
-		setSessionName(name: string): void {
+		getConversation() {
 			runtime.assertActive();
-			runtime.setSessionName(name);
+			return runtime.getConversation();
 		},
 
-		getSessionName(): string | undefined {
+		createConversation() {
 			runtime.assertActive();
-			return runtime.getSessionName();
+			return runtime.createConversation();
 		},
 
-		setLabel(entryId: string, label: string | undefined): void {
+		listSessions() {
 			runtime.assertActive();
-			runtime.setLabel(entryId, label);
+			return runtime.listSessions();
 		},
 
-		exec(command: string, args: string[], options?: ExecOptions) {
+		reload() {
 			runtime.assertActive();
-			return execCommand(command, args, options?.cwd ?? cwd, options);
+			return runtime.reload();
 		},
 
-		getActiveTools(): string[] {
+		shutdown(): void {
 			runtime.assertActive();
-			return runtime.getActiveTools();
-		},
-
-		getAllTools() {
-			runtime.assertActive();
-			return runtime.getAllTools();
-		},
-
-		setActiveTools(toolNames: string[]): void {
-			runtime.assertActive();
-			runtime.setActiveTools(toolNames);
-		},
-
-		getCommands() {
-			runtime.assertActive();
-			return runtime.getCommands();
-		},
-
-		setModel(model) {
-			runtime.assertActive();
-			return runtime.setModel(model);
-		},
-
-		getThinkingLevel() {
-			runtime.assertActive();
-			return runtime.getThinkingLevel();
-		},
-
-		setThinkingLevel(level) {
-			runtime.assertActive();
-			runtime.setThinkingLevel(level);
+			runtime.shutdown();
 		},
 
 		registerProvider(name: string, config: ProviderConfig) {
@@ -357,18 +320,6 @@ function createExtensionAPI(
 				return deferredIntegrationHandle(name);
 			}
 			return integrationRunner.getIntegration(name, account);
-		},
-
-		// The agent façade is set on the shared runtime by the runner, so it resolves lazily here —
-		// available once a command/handler runs, but not during extension load (mirrors the action stubs).
-		get agent(): Agent {
-			runtime.assertActive();
-			if (!runtime.agent) {
-				throw new Error(
-					"Extension runtime not initialized. steward.agent is unavailable during extension loading.",
-				);
-			}
-			return runtime.agent;
 		},
 
 		events: eventBus,

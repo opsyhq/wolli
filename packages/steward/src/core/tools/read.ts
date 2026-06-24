@@ -75,7 +75,7 @@ export function createReadToolDefinition(
 							const mimeType = env.detectImageMimeType ? await env.detectImageMimeType(absolutePath) : undefined;
 							let content: (TextContent | ImageContent)[];
 							let details: ReadToolDetails | undefined;
-							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
+							const nonVisionImageNote = getNonVisionImageNote(ctx?.conversation.model);
 							if (mimeType) {
 								// Read image as binary.
 								const buffer = await env.readFile(absolutePath);

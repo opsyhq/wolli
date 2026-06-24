@@ -737,20 +737,12 @@ export async function runDaemonMode(
 		mode: "rpc",
 		// Surface runner errors (extension + integration) to clients as error notifies.
 		onError: (e) => uiContext.notify(`${e.path}: ${e.error}`, "error"),
-		commandContextActions: {
-			waitForIdle: () => runtime.getConversation()?.harness.waitForIdle() ?? Promise.resolve(),
-			newSession: async () => {
-				if (!isDeployed(loadAgentConfig(runtime.config.name))) {
-					throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
-				}
-				await runtime.createConversation();
-				return { cancelled: false };
-			},
-			// Tree navigation is not a daemon concern — report cancelled.
-			fork: async () => ({ cancelled: true }),
-			navigateTree: async () => ({ cancelled: true }),
-			switchSession: async () => ({ cancelled: true }),
-			reload: () => runtime.reload(),
+		newSession: async () => {
+			if (!isDeployed(loadAgentConfig(runtime.config.name))) {
+				throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
+			}
+			await runtime.createConversation();
+			return { cancelled: false };
 		},
 	});
 

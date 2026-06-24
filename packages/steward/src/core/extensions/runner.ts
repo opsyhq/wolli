@@ -1,30 +1,26 @@
 /**
  * Extension runner - executes extensions and manages their lifecycle.
+ *
+ * Handlers, custom tools, and commands receive an `ExtensionContext` (`{ conversation }`) built by
+ * `createContext()`. The runner holds the durable extension state (loaded extensions, flag values,
+ * UI context, the shared runtime) and the currently-bound conversation; it translates harness events
+ * into `ExtensionEvent`s and routes them to the registered handlers along with that context.
  */
 
-import type { ImageContent, Model } from "@earendil-works/pi-ai";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@opsyhq/agent";
 import { type Theme, theme } from "../../theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
-import type { Environment } from "../environments/types.ts";
 import type { ModelRegistry } from "../model-registry.ts";
-import type { Agent } from "../sdk.ts";
-import type { SessionManager } from "../session-manager.ts";
-import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
 	BeforeProviderRequestEvent,
-	CompactOptions,
 	ContextEvent,
 	ContextEventResult,
-	ContextUsage,
+	Conversation,
 	Extension,
-	ExtensionActions,
-	ExtensionCommandContext,
-	ExtensionCommandContextActions,
 	ExtensionContext,
-	ExtensionContextActions,
 	ExtensionError,
 	ExtensionEvent,
 	ExtensionFlag,
@@ -34,24 +30,15 @@ import type {
 	InputEvent,
 	InputEventResult,
 	InputSource,
-	LoadExtensionsResult,
 	MessageEndEvent,
 	MessageEndEventResult,
 	MessageRenderer,
-	ProjectTrustContext,
-	ProjectTrustEvent,
-	ProjectTrustEventResult,
+	NewSessionOptions,
 	ProviderConfig,
 	RegisteredCommand,
 	RegisteredTool,
-	ReplacedSessionContext,
 	ResolvedCommand,
-	ResourcesDiscoverEvent,
-	ResourcesDiscoverResult,
 	SessionBeforeCompactResult,
-	SessionBeforeForkResult,
-	SessionBeforeSwitchResult,
-	SessionBeforeTreeResult,
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
@@ -74,62 +61,23 @@ interface BeforeAgentStartCombinedResult {
 type RunnerEmitEvent = Exclude<
 	ExtensionEvent,
 	| ToolCallEvent
-	| ProjectTrustEvent
 	| ToolResultEvent
 	| UserBashEvent
 	| ContextEvent
 	| BeforeProviderRequestEvent
 	| BeforeAgentStartEvent
 	| MessageEndEvent
-	| ResourcesDiscoverEvent
 	| InputEvent
 >;
 
-type SessionBeforeEvent = Extract<
-	RunnerEmitEvent,
-	{ type: "session_before_switch" | "session_before_fork" | "session_before_compact" | "session_before_tree" }
->;
-
-type SessionBeforeEventResult =
-	| SessionBeforeSwitchResult
-	| SessionBeforeForkResult
-	| SessionBeforeCompactResult
-	| SessionBeforeTreeResult;
-
-type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_before_switch" }
-	? SessionBeforeSwitchResult | undefined
-	: TEvent extends { type: "session_before_fork" }
-		? SessionBeforeForkResult | undefined
-		: TEvent extends { type: "session_before_compact" }
-			? SessionBeforeCompactResult | undefined
-			: TEvent extends { type: "session_before_tree" }
-				? SessionBeforeTreeResult | undefined
-				: undefined;
+/** Only `session_before_compact` carries a cancellable result through the generic emit(). */
+type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_before_compact" }
+	? SessionBeforeCompactResult | undefined
+	: undefined;
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
-export type NewSessionHandler = (options?: {
-	parentSession?: string;
-	setup?: (sessionManager: SessionManager) => Promise<void>;
-	withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-}) => Promise<{ cancelled: boolean }>;
-
-export type ForkHandler = (
-	entryId: string,
-	options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-) => Promise<{ cancelled: boolean }>;
-
-export type NavigateTreeHandler = (
-	targetId: string,
-	options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
-) => Promise<{ cancelled: boolean }>;
-
-export type SwitchSessionHandler = (
-	sessionPath: string,
-	options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-) => Promise<{ cancelled: boolean }>;
-
-export type ReloadHandler = () => Promise<void>;
+export type NewSessionHandler = (options?: NewSessionOptions) => Promise<{ cancelled: boolean }>;
 
 export type ShutdownHandler = () => void;
 
@@ -146,38 +94,6 @@ export async function emitSessionShutdownEvent(
 		return true;
 	}
 	return false;
-}
-
-export async function emitProjectTrustEvent(
-	extensionsResult: LoadExtensionsResult,
-	event: ProjectTrustEvent,
-	ctx: ProjectTrustContext,
-): Promise<{ result?: ProjectTrustEventResult; errors: ExtensionError[] }> {
-	const errors: ExtensionError[] = [];
-	for (const ext of extensionsResult.extensions) {
-		// A single extension may register multiple handlers for the same event.
-		// The first project_trust handler that returns yes/no wins; undecided falls through.
-		const handlers = ext.handlers.get("project_trust");
-		if (!handlers || handlers.length === 0) continue;
-
-		for (const handler of handlers) {
-			try {
-				const handlerResult = (await handler(event, ctx)) as ProjectTrustEventResult;
-				if (handlerResult.trusted === "undecided") {
-					continue;
-				}
-				return { result: handlerResult, errors };
-			} catch (error) {
-				errors.push({
-					path: ext.path,
-					event: event.type,
-					error: error instanceof Error ? error.message : String(error),
-					stack: error instanceof Error ? error.stack : undefined,
-				});
-			}
-		}
-	}
-	return { errors };
 }
 
 const noOpUIContext: ExtensionUIContext = {
@@ -216,100 +132,37 @@ const noOpUIContext: ExtensionUIContext = {
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
+	private modelRegistry: ModelRegistry;
 	private uiContext: ExtensionUIContext;
 	private mode: ExtensionMode = "print";
-	private cwd: string;
-	private sessionManager: SessionManager;
-	private modelRegistry: ModelRegistry;
-	private environment: Environment;
+	/** The conversation handed to handlers/tools/commands. Bound (before any event fires) by bindConversation(). */
+	private conversation!: Conversation;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
-	private getModel: () => Model<any> | undefined = () => undefined;
-	private isIdleFn: () => boolean = () => true;
-	private isProjectTrustedFn: () => boolean = () => true;
-	private getSignalFn: () => AbortSignal | undefined = () => undefined;
-	private waitForIdleFn: () => Promise<void> = async () => {};
-	private abortFn: () => void = () => {};
-	private hasPendingMessagesFn: () => boolean = () => false;
-	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
-	private compactFn: (options?: CompactOptions) => void = () => {};
-	private getSystemPromptFn: () => string = () => "";
-	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
-	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
-	private forkHandler: ForkHandler = async () => ({ cancelled: false });
-	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
-	private switchSessionHandler: SwitchSessionHandler = async () => ({ cancelled: false });
-	private reloadHandler: ReloadHandler = async () => {};
-	private shutdownHandler: ShutdownHandler = () => {};
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
 
-	constructor(
-		extensions: Extension[],
-		runtime: ExtensionRuntime,
-		cwd: string,
-		sessionManager: SessionManager,
-		modelRegistry: ModelRegistry,
-		environment: Environment,
-		agent: Agent,
-	) {
+	constructor(extensions: Extension[], runtime: ExtensionRuntime, modelRegistry: ModelRegistry) {
 		this.extensions = extensions;
 		this.runtime = runtime;
-		// The agent façade is stable for the runtime's life; set it on the shared runtime now so
-		// `steward.agent` resolves once an extension command/handler runs (createExtensionAPI reads it
-		// lazily, like the bindCore action stubs, so a load-time access still throws).
-		runtime.agent = agent;
-		this.uiContext = noOpUIContext;
-		this.cwd = cwd;
-		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
-		this.environment = environment;
+		this.uiContext = noOpUIContext;
 	}
 
-	bindCore(
-		actions: ExtensionActions,
-		contextActions: ExtensionContextActions,
-		providerActions?: {
-			registerProvider?: (name: string, config: ProviderConfig) => void;
-			unregisterProvider?: (name: string) => void;
-		},
-	): void {
-		// Copy actions into the shared runtime (all extension APIs reference this)
-		this.runtime.sendMessage = actions.sendMessage;
-		this.runtime.sendUserMessage = actions.sendUserMessage;
-		this.runtime.appendEntry = actions.appendEntry;
-		this.runtime.setSessionName = actions.setSessionName;
-		this.runtime.getSessionName = actions.getSessionName;
-		this.runtime.setLabel = actions.setLabel;
-		this.runtime.getActiveTools = actions.getActiveTools;
-		this.runtime.getAllTools = actions.getAllTools;
-		this.runtime.setActiveTools = actions.setActiveTools;
-		this.runtime.refreshTools = actions.refreshTools;
-		this.runtime.getCommands = actions.getCommands;
-		this.runtime.setModel = actions.setModel;
-		this.runtime.getThinkingLevel = actions.getThinkingLevel;
-		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+	/**
+	 * Bind the live conversation to this runner: it is handed to every handler/tool/command, backs
+	 * `registerTool()`'s mid-session tool refresh, and triggers the one-time provider-registration
+	 * flush. Called once per runner build (createConversation / resumeConversation / reload).
+	 */
+	bindConversation(conversation: Conversation): void {
+		this.conversation = conversation;
+		// registerTool() refreshes the live tool set through the conversation.
+		this.runtime.refreshTools = () => conversation.refreshTools();
 
-		// Context actions (required)
-		this.getModel = contextActions.getModel;
-		this.isIdleFn = contextActions.isIdle;
-		this.isProjectTrustedFn = contextActions.isProjectTrusted;
-		this.getSignalFn = contextActions.getSignal;
-		this.abortFn = contextActions.abort;
-		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
-		this.shutdownHandler = contextActions.shutdown;
-		this.getContextUsageFn = contextActions.getContextUsage;
-		this.compactFn = contextActions.compact;
-		this.getSystemPromptFn = contextActions.getSystemPrompt;
-		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
-
-		// Flush provider registrations queued during extension loading
+		// Flush provider registrations queued during extension loading. A fresh runner is built per
+		// createConversation/resumeConversation/reload, so this flushes once and empties the list.
 		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
 			try {
-				if (providerActions?.registerProvider) {
-					providerActions.registerProvider(name, config);
-				} else {
-					this.modelRegistry.registerProvider(name, config);
-				}
+				this.modelRegistry.registerProvider(name, config);
 			} catch (err) {
 				this.emitError({
 					path: extensionPath,
@@ -321,41 +174,18 @@ export class ExtensionRunner {
 		}
 		this.runtime.pendingProviderRegistrations = [];
 
-		// From this point on, provider registration/unregistration takes effect immediately
-		// without requiring a /reload.
-		this.runtime.registerProvider = (name, config) => {
-			if (providerActions?.registerProvider) {
-				providerActions.registerProvider(name, config);
-				return;
-			}
+		// From here, provider register/unregister take effect immediately (no /reload required).
+		this.runtime.registerProvider = (name: string, config: ProviderConfig) => {
 			this.modelRegistry.registerProvider(name, config);
 		};
-		this.runtime.unregisterProvider = (name) => {
-			if (providerActions?.unregisterProvider) {
-				providerActions.unregisterProvider(name);
-				return;
-			}
+		this.runtime.unregisterProvider = (name: string) => {
 			this.modelRegistry.unregisterProvider(name);
 		};
 	}
 
-	bindCommandContext(actions?: ExtensionCommandContextActions): void {
-		if (actions) {
-			this.waitForIdleFn = actions.waitForIdle;
-			this.newSessionHandler = actions.newSession;
-			this.forkHandler = actions.fork;
-			this.navigateTreeHandler = actions.navigateTree;
-			this.switchSessionHandler = actions.switchSession;
-			this.reloadHandler = actions.reload;
-			return;
-		}
-
-		this.waitForIdleFn = async () => {};
-		this.newSessionHandler = async () => ({ cancelled: false });
-		this.forkHandler = async () => ({ cancelled: false });
-		this.navigateTreeHandler = async () => ({ cancelled: false });
-		this.switchSessionHandler = async () => ({ cancelled: false });
-		this.reloadHandler = async () => {};
+	/** The conversation bound to this runner, or undefined before bindConversation(). */
+	getConversation(): Conversation | undefined {
+		return this.conversation;
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
@@ -367,8 +197,20 @@ export class ExtensionRunner {
 		return this.uiContext;
 	}
 
+	getMode(): ExtensionMode {
+		return this.mode;
+	}
+
 	hasUI(): boolean {
 		return this.uiContext !== noOpUIContext;
+	}
+
+	/**
+	 * Build the context handed to event handlers, custom tools, and commands. A fresh `{ conversation }`
+	 * each call, resolving the live conversation bound to this runner.
+	 */
+	createContext(): ExtensionContext {
+		return { conversation: this.conversation };
 	}
 
 	getExtensionPaths(): string[] {
@@ -420,17 +262,11 @@ export class ExtensionRunner {
 	}
 
 	invalidate(
-		message = "This extension ctx is stale after session replacement or reload. Do not use a captured steward or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+		message = "This extension handle is stale after session replacement or reload. Do not use a captured steward or conversation after conversation.newSession() or conversation.reload(). For newSession, move post-replacement work into withConversation and use the conversation passed to it.",
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
 			this.runtime.invalidate(message);
-		}
-	}
-
-	private assertActive(): void {
-		if (this.staleMessage) {
-			throw new Error(this.staleMessage);
 		}
 	}
 
@@ -514,144 +350,16 @@ export class ExtensionRunner {
 		return this.resolveRegisteredCommands().find((command) => command.invocationName === name);
 	}
 
-	/**
-	 * Request a graceful shutdown. Called by extension tools and event handlers.
-	 * The actual shutdown behavior is provided by the mode via bindExtensions().
-	 */
-	shutdown(): void {
-		this.shutdownHandler();
-	}
-
-	/**
-	 * Create an ExtensionContext for use in event handlers and tool execution.
-	 * Context values are resolved at call time, so changes via bindCore/bindUI are reflected.
-	 */
-	createContext(): ExtensionContext {
-		const runner = this;
-		const getModel = this.getModel;
-		return {
-			get ui() {
-				runner.assertActive();
-				return runner.uiContext;
-			},
-			get mode() {
-				runner.assertActive();
-				return runner.mode;
-			},
-			get hasUI() {
-				runner.assertActive();
-				return runner.hasUI();
-			},
-			get cwd() {
-				runner.assertActive();
-				return runner.cwd;
-			},
-			get environment() {
-				runner.assertActive();
-				return runner.environment;
-			},
-			get sessionManager() {
-				runner.assertActive();
-				return runner.sessionManager;
-			},
-			get modelRegistry() {
-				runner.assertActive();
-				return runner.modelRegistry;
-			},
-			get model() {
-				runner.assertActive();
-				return getModel();
-			},
-			isIdle: () => {
-				runner.assertActive();
-				return runner.isIdleFn();
-			},
-			isProjectTrusted: () => {
-				runner.assertActive();
-				return runner.isProjectTrustedFn();
-			},
-			get signal() {
-				runner.assertActive();
-				return runner.getSignalFn();
-			},
-			abort: () => {
-				runner.assertActive();
-				runner.abortFn();
-			},
-			hasPendingMessages: () => {
-				runner.assertActive();
-				return runner.hasPendingMessagesFn();
-			},
-			shutdown: () => {
-				runner.assertActive();
-				runner.shutdownHandler();
-			},
-			getContextUsage: () => {
-				runner.assertActive();
-				return runner.getContextUsageFn();
-			},
-			compact: (options) => {
-				runner.assertActive();
-				runner.compactFn(options);
-			},
-			getSystemPrompt: () => {
-				runner.assertActive();
-				return runner.getSystemPromptFn();
-			},
-		};
-	}
-
-	createCommandContext(): ExtensionCommandContext {
-		// Use property descriptors instead of object spread so the guarded getters from
-		// createContext() stay lazy. A spread would eagerly read them once and freeze the
-		// old values into the returned object, bypassing stale-instance checks.
-		const context = Object.defineProperties(
-			{},
-			Object.getOwnPropertyDescriptors(this.createContext()),
-		) as ExtensionCommandContext;
-		context.getSystemPromptOptions = () => {
-			this.assertActive();
-			return this.getSystemPromptOptionsFn();
-		};
-		context.waitForIdle = () => {
-			this.assertActive();
-			return this.waitForIdleFn();
-		};
-		context.newSession = (options) => {
-			this.assertActive();
-			return this.newSessionHandler(options);
-		};
-		context.fork = (entryId, options) => {
-			this.assertActive();
-			return this.forkHandler(entryId, options);
-		};
-		context.navigateTree = (targetId, options) => {
-			this.assertActive();
-			return this.navigateTreeHandler(targetId, options);
-		};
-		context.switchSession = (sessionPath, options) => {
-			this.assertActive();
-			return this.switchSessionHandler(sessionPath, options);
-		};
-		context.reload = () => {
-			this.assertActive();
-			return this.reloadHandler();
-		};
-		return context;
-	}
-
-	private isSessionBeforeEvent(event: RunnerEmitEvent): event is SessionBeforeEvent {
-		return (
-			event.type === "session_before_switch" ||
-			event.type === "session_before_fork" ||
-			event.type === "session_before_compact" ||
-			event.type === "session_before_tree"
-		);
+	private isSessionBeforeCompact(event: RunnerEmitEvent): event is Extract<
+		RunnerEmitEvent,
+		{ type: "session_before_compact" }
+	> {
+		return event.type === "session_before_compact";
 	}
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
 		const ctx = this.createContext();
-		let result: SessionBeforeEventResult | undefined;
+		let result: SessionBeforeCompactResult | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
@@ -661,8 +369,8 @@ export class ExtensionRunner {
 				try {
 					const handlerResult = await handler(event, ctx);
 
-					if (this.isSessionBeforeEvent(event) && handlerResult) {
-						result = handlerResult as SessionBeforeEventResult;
+					if (this.isSessionBeforeCompact(event) && handlerResult) {
+						result = handlerResult as SessionBeforeCompactResult;
 						if (result.cancel) {
 							return result as RunnerEmitResult<TEvent>;
 						}
@@ -897,17 +605,10 @@ export class ExtensionRunner {
 		prompt: string,
 		images: ImageContent[] | undefined,
 		systemPrompt: string,
-		systemPromptOptions: BuildSystemPromptOptions,
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
+		const ctx = this.createContext();
 		let currentSystemPrompt = systemPrompt;
-		const ctx = Object.defineProperties(
-			{},
-			Object.getOwnPropertyDescriptors(this.createContext()),
-		) as ExtensionContext;
-		ctx.getSystemPrompt = () => {
-			this.assertActive();
-			return currentSystemPrompt;
-		};
+		const systemPromptOptions = ctx.conversation.getSystemPromptOptions();
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
 		let systemPromptModified = false;
 
@@ -957,54 +658,6 @@ export class ExtensionRunner {
 		}
 
 		return undefined;
-	}
-
-	async emitResourcesDiscover(
-		cwd: string,
-		reason: ResourcesDiscoverEvent["reason"],
-	): Promise<{
-		skillPaths: Array<{ path: string; extensionPath: string }>;
-		promptPaths: Array<{ path: string; extensionPath: string }>;
-		themePaths: Array<{ path: string; extensionPath: string }>;
-	}> {
-		const ctx = this.createContext();
-		const skillPaths: Array<{ path: string; extensionPath: string }> = [];
-		const promptPaths: Array<{ path: string; extensionPath: string }> = [];
-		const themePaths: Array<{ path: string; extensionPath: string }> = [];
-
-		for (const ext of this.extensions) {
-			const handlers = ext.handlers.get("resources_discover");
-			if (!handlers || handlers.length === 0) continue;
-
-			for (const handler of handlers) {
-				try {
-					const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
-					const handlerResult = await handler(event, ctx);
-					const result = handlerResult as ResourcesDiscoverResult | undefined;
-
-					if (result?.skillPaths?.length) {
-						skillPaths.push(...result.skillPaths.map((path) => ({ path, extensionPath: ext.path })));
-					}
-					if (result?.promptPaths?.length) {
-						promptPaths.push(...result.promptPaths.map((path) => ({ path, extensionPath: ext.path })));
-					}
-					if (result?.themePaths?.length) {
-						themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
-					}
-				} catch (err) {
-					const message = err instanceof Error ? err.message : String(err);
-					const stack = err instanceof Error ? err.stack : undefined;
-					this.emitError({
-						path: ext.path,
-						event: "resources_discover",
-						error: message,
-						stack,
-					});
-				}
-			}
-		}
-
-		return { skillPaths, promptPaths, themePaths };
 	}
 
 	/** Emit input event. Transforms chain, "handled" short-circuits. */

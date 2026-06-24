@@ -20,7 +20,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename } from "node:path";
 import {
 	type Api,
 	type AssistantMessage,
@@ -56,16 +56,20 @@ import { ApprovalStore } from "./approval/approval-storage.ts";
 import type { AuthStorage } from "./auth-storage.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ResourceDiagnostic, ResourceSummary } from "./diagnostics.ts";
-import { createEnvironments, resetSandbox, stopContainer } from "./environments/index.ts";
-import { type ExtensionErrorListener, ExtensionRunner, emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { type AgentEnvironments, createEnvironments, resetSandbox, stopContainer } from "./environments/index.ts";
+import {
+	type ExtensionErrorListener,
+	ExtensionRunner,
+	emitSessionShutdownEvent,
+	type NewSessionHandler,
+} from "./extensions/runner.ts";
 import type {
 	ContextUsage,
-	ExtensionActions,
-	ExtensionCommandContextActions,
-	ExtensionContextActions,
+	Conversation as ConversationApi,
+	ConversationPromptOptions,
 	ExtensionMode,
 	ExtensionUIContext,
-	InputSource,
+	NewSessionOptions,
 	ToolCallEvent,
 	ToolInfo,
 	ToolResultEvent,
@@ -80,14 +84,13 @@ import type { ConfiguredPlugin } from "./plugin-manager.ts";
 import { type PromptTemplate, parseCommandArgs } from "./prompt-templates.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, loadProjectContextFiles } from "./resource-loader.ts";
-import { Agent } from "./sdk.ts";
 import { listAgentSessions, openAgentSession, type SessionInfo } from "./session.ts";
 import { SessionManager } from "./session-manager.ts";
 import { getEnabledModels } from "./settings.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
-import { createSyntheticSourceInfo, type PathMetadata } from "./source-info.ts";
+import { createSyntheticSourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { createDeployTool } from "./tools/deploy.ts";
 // File tools live under tools/. memory is steward's own curated-notes tool; the
@@ -121,25 +124,6 @@ export interface AgentRuntimeOptions {
 	integrationAccounts: IntegrationAccountStorage;
 }
 
-/** Options for the conversation dispatch pipeline (`Conversation.prompt()`). */
-export interface ConversationPromptOptions {
-	/** Images to attach to the user turn. An `input` transform may also inject these. */
-	images?: ImageContent[];
-	/** Where the input came from. Default: `"interactive"`. */
-	source?: InputSource;
-	/** How to deliver the message while a turn is already streaming. */
-	streamingBehavior?: "steer" | "followUp";
-	/** When false, skip extension-command + skill/template dispatch (extension-driven sends). Default true. */
-	expandPromptTemplates?: boolean;
-	/**
-	 * Fired once the prompt is accepted (handled, queued, or about to run) with `true`, or
-	 * with `false` when it is rejected before any work (a mid-stream submit with no
-	 * `streamingBehavior`). Lets a headless caller ack acceptance without waiting for the
-	 * whole turn — `prompt()` itself only resolves at turn end.
-	 */
-	preflightResult?: (success: boolean) => void;
-}
-
 /**
  * The interactive mode's extension surface, handed to the runtime once and re-applied to
  * every runner it builds (per-conversation swap and `/reload`).
@@ -147,7 +131,12 @@ export interface ConversationPromptOptions {
 export interface InteractiveContextBindings {
 	uiContext: ExtensionUIContext;
 	mode: ExtensionMode;
-	commandContextActions: ExtensionCommandContextActions;
+	/**
+	 * Host-provided new-session handler backing `conversation.newSession()` — applies the host's
+	 * policy (e.g. the forming-agent guard) then swaps to a fresh conversation. Optional: non-interactive
+	 * hosts leave it unset and `newSession()` is a no-op that reports `{ cancelled: false }`.
+	 */
+	newSession?: NewSessionHandler;
 	onError?: ExtensionErrorListener;
 	shutdownHandler?: () => void;
 }
@@ -215,26 +204,6 @@ function contentToImages(content: string | (TextContent | ImageContent)[]): Imag
 	if (typeof content === "string") return undefined;
 	const images = content.filter((c): c is ImageContent => c.type === "image");
 	return images.length > 0 ? images : undefined;
-}
-
-/** A stable `extension:<name>` label for the extension that contributed a resource. */
-function getExtensionSourceLabel(extensionPath: string): string {
-	if (extensionPath.startsWith("<")) {
-		return `extension:${extensionPath.replace(/[<>]/g, "")}`;
-	}
-	const base = basename(extensionPath);
-	const name = base.replace(/\.(ts|js)$/, "");
-	return `extension:${name}`;
-}
-
-/**
- * Source metadata for an extension-contributed skill/prompt path (fed to the resource
- * loader via `extendResources`). Attributed to the contributing extension and marked
- * `temporary` (re-derived each load), with the extension's own dir as `baseDir`.
- */
-function contributedResourceMetadata(extensionPath: string): PathMetadata {
-	const baseDir = extensionPath.startsWith("<") ? undefined : dirname(extensionPath);
-	return { source: getExtensionSourceLabel(extensionPath), scope: "temporary", origin: "top-level", baseDir };
 }
 
 /** One integration service: whether an account is configured, plus its action/event names. */
@@ -325,20 +294,23 @@ export class AgentRuntime {
 	/** The single live conversation (N=1). Undefined until `start()`. */
 	private _conversation?: Conversation;
 
-	/** The public agent façade handed to every extension runner (exposed as `steward.agent`). */
-	private readonly _agent: Agent;
+	/**
+	 * The full run-target map for the live conversation, exposed to extensions via
+	 * `steward.environments`. Rebuilt each `buildResources`; undefined until the first build.
+	 */
+	private _environments?: AgentEnvironments;
+
+	/**
+	 * Host-provided new-session handler backing `conversation.newSession()`. Default no-op (print mode);
+	 * the interactive host sets it via `bindInteractiveContext`.
+	 */
+	private _newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 
 	constructor(options: AgentRuntimeOptions) {
 		this.options = options;
 		this._modelRegistry = options.modelRegistry;
 		const agentDir = getAgentDir(options.name);
 		this._settingsManager = SettingsManager.create(agentDir, agentDir);
-		this._agent = new Agent(this);
-	}
-
-	/** The public agent façade exposed to extensions as `steward.agent`. */
-	get agent(): Agent {
-		return this._agent;
 	}
 
 	/**
@@ -347,6 +319,15 @@ export class AgentRuntime {
 	 */
 	getConversation(): Conversation | undefined {
 		return this._conversation;
+	}
+
+	/**
+	 * The live conversation's full run-target map (backs `steward.environments`). Throws before the
+	 * first `buildResources`. Delegated onto the shared extension runtime in `buildResources`.
+	 */
+	get environments(): AgentEnvironments {
+		if (!this._environments) throw new Error("AgentRuntime not started.");
+		return this._environments;
 	}
 
 	/** The config the live conversation was built from (re-read each build). */
@@ -387,13 +368,13 @@ export class AgentRuntime {
 		return this._promptTemplates;
 	}
 
-	/** Install the graceful-shutdown handler exposed to extensions via `ctx.shutdown()`. */
+	/** Install the graceful-shutdown handler exposed to extensions via `steward.shutdown()`. */
 	setShutdownHandler(handler: () => void): void {
 		this._shutdownHandler = handler;
 	}
 
-	/** Fire the graceful-shutdown handler (called by `ctx.shutdown()`). */
-	runShutdown(): void {
+	/** Fire the graceful-shutdown handler (backs `steward.shutdown()`). */
+	shutdown(): void {
 		this._shutdownHandler();
 	}
 
@@ -434,16 +415,16 @@ export class AgentRuntime {
 	}
 
 	/**
-	 * Apply the retained interactive bindings to `runner`: set its UI context + mode, bind the
-	 * command-context actions, and (re)install the error listener. No-op when no interactive
-	 * mode has bound yet (the first `createConversation()` runs before `bindInteractiveContext`, leaving the
+	 * Apply the retained interactive bindings to `runner`: set its UI context + mode, install the
+	 * host new-session handler, and (re)install the error listener. No-op when no interactive mode
+	 * has bound yet (the first `createConversation()` runs before `bindInteractiveContext`, leaving the
 	 * runner on `noOpUIContext` until the mode binds).
 	 */
 	private _applyInteractiveContext(runner: ExtensionRunner): void {
 		const bindings = this._interactiveBindings;
 		if (!bindings) return;
 		runner.setUIContext(bindings.uiContext, bindings.mode);
-		runner.bindCommandContext(bindings.commandContextActions);
+		this._newSessionHandler = bindings.newSession ?? (async () => ({ cancelled: false }));
 		this._extensionErrorUnsubscriber?.();
 		this._extensionErrorUnsubscriber = bindings.onError ? runner.onError(bindings.onError) : undefined;
 
@@ -451,6 +432,11 @@ export class AgentRuntime {
 		this._integrationErrorUnsubscriber = bindings.onError
 			? this._integrationRunner?.onError(bindings.onError)
 			: undefined;
+	}
+
+	/** Run the host-provided new-session handler backing `conversation.newSession()`. */
+	runNewSession(options?: NewSessionOptions): Promise<{ cancelled: boolean }> {
+		return this._newSessionHandler(options);
 	}
 
 	/**
@@ -625,7 +611,6 @@ export class AgentRuntime {
 			agentDir,
 			name: this.options.name,
 			sessionManager: conversation.sessionManager,
-			discoverReason: "reload",
 			seedFlagValues: previousFlagValues,
 		});
 		this._config = config;
@@ -802,8 +787,11 @@ export class AgentRuntime {
 	/**
 	 * Create a new conversation on a brand-new session and make it the live one, swapping out any
 	 * previous in place. A new session keeps the agent's configured model + default thinking level.
+	 *
+	 * `options.setup` runs against the fresh session before it goes live (seed entries); `options.withConversation`
+	 * runs against the replacement conversation once it is wired and live.
 	 */
-	async createConversation(): Promise<Conversation> {
+	async createConversation(options?: NewSessionOptions): Promise<Conversation> {
 		const { name, model } = this.options;
 		const previousConversation = this._conversation;
 		const previousRunner = this._extensionRunner;
@@ -813,6 +801,7 @@ export class AgentRuntime {
 		const { session, env } = await openAgentSession(name, { fresh: true });
 		const metadata = await session.getMetadata();
 		const sessionManager = new SessionManager(session, metadata);
+		await options?.setup?.(sessionManager);
 		const thinkingLevel = clampThinkingLevel(model, config.thinkingLevel ?? DEFAULT_THINKING_LEVEL) as ThinkingLevel;
 
 		const {
@@ -829,7 +818,6 @@ export class AgentRuntime {
 			agentDir: getAgentDir(name),
 			name,
 			sessionManager,
-			discoverReason: "reload",
 		});
 
 		// Frozen system prompt as a constant callback (prefix cache stays warm); request-time auth
@@ -871,6 +859,10 @@ export class AgentRuntime {
 		// `/scope` does NOT survive `/new` — it resets to the agent default (intended).
 		const enabledModelIds = config.enabledModels ?? getEnabledModels();
 		if (enabledModelIds && enabledModelIds.length > 0) await conversation.setScopedModels(enabledModelIds);
+
+		// Hand `withConversation` the public facade for the live conversation (now bound on the runner).
+		const liveConversation = runner.getConversation();
+		if (liveConversation) await options?.withConversation?.(liveConversation);
 		return conversation;
 	}
 
@@ -918,7 +910,6 @@ export class AgentRuntime {
 			agentDir: getAgentDir(name),
 			name,
 			sessionManager,
-			discoverReason: "startup",
 		});
 
 		const harness = new AgentHarness({
@@ -997,7 +988,6 @@ export class AgentRuntime {
 		agentDir: string;
 		name: string;
 		sessionManager: SessionManager;
-		discoverReason: "startup" | "reload";
 		seedFlagValues?: Map<string, boolean | string>;
 	}): Promise<{
 		runner: ExtensionRunner;
@@ -1010,7 +1000,7 @@ export class AgentRuntime {
 		extensionTools: AgentTool[];
 		errors: { path: string; error: string }[];
 	}> {
-		const { config, agentDir, name, sessionManager, discoverReason, seedFlagValues } = params;
+		const { config, agentDir, name, sessionManager, seedFlagValues } = params;
 		const integrationAccounts = this.options.integrationAccounts;
 		// Re-read settings from disk so a `/reload` picks up settings.json changes (plugin sources,
 		// local resource paths) — the shared manager is otherwise frozen at construction.
@@ -1062,22 +1052,31 @@ export class AgentRuntime {
 		// can't self-approve a host escalation or tamper with session history. (agent.json stays writable.)
 		const controlState = [getAgentApprovalsPath(name), getSessionsDir(name)];
 		const environments = await createEnvironments(agentDir, { gate, denyWrite: controlState });
+		this._environments = environments;
 		const defaultEnv = environments.targets[environments.default];
 		const { extensions, errors, runtime } = loader.getExtensions();
-		const runner = new ExtensionRunner(
-			extensions,
-			runtime,
-			agentDir,
-			sessionManager,
-			this._modelRegistry,
-			defaultEnv,
-			this._agent,
-		);
+		// Wire the agent-global `steward.*` delegates onto the shared extension runtime. Closures over
+		// `this` (the durable AgentRuntime) — the same bridge the per-conversation actions ride, set here
+		// where `this` is in scope rather than threaded through the runner.
+		// `steward.getConversation()/createConversation()` expose the public `Conversation` facade
+		// (built in bindExtensionCore, held by the runner), not the internal Conversation class.
+		runtime.getConversation = () => this.extensionRunner.getConversation();
+		runtime.createConversation = async () => {
+			await this.createConversation();
+			const conversation = this.extensionRunner.getConversation();
+			if (!conversation) throw new Error("createConversation produced no bound conversation");
+			return conversation;
+		};
+		runtime.listSessions = () => this.listSessions();
+		runtime.reload = () => this.reload();
+		runtime.shutdown = () => this.shutdown();
+		runtime.getModelRegistry = () => this._modelRegistry;
+		runtime.getEnvironments = () => this.environments;
+		const runner = new ExtensionRunner(extensions, runtime, this._modelRegistry);
 		this._extensionRunner = runner;
 		this._extensionCount = extensions.length;
 		this._loadErrors = errors;
-		// Carry an outgoing runner's flag values into the new runtime before any
-		// resources_discover handler can read them (reload only).
+		// Carry an outgoing runner's flag values into the new runtime (reload only).
 		if (seedFlagValues) {
 			for (const [flag, value] of seedFlagValues) runner.setFlagValue(flag, value);
 		}
@@ -1086,21 +1085,6 @@ export class AgentRuntime {
 		for (const { path, error } of errors) {
 			runner.emitError({ path, event: "load", error });
 		}
-
-		// Let extensions contribute additional skill/prompt paths before the prompt is
-		// frozen, then re-resolve skills/prompts through the loader so the contributed paths
-		// merge with the auto-discovered + package-resolved ones. Fires after the runner exists.
-		const discovered = await runner.emitResourcesDiscover(agentDir, discoverReason);
-		loader.extendResources({
-			skillPaths: discovered.skillPaths.map((s) => ({
-				path: s.path,
-				metadata: contributedResourceMetadata(s.extensionPath),
-			})),
-			promptPaths: discovered.promptPaths.map((p) => ({
-				path: p.path,
-				metadata: contributedResourceMetadata(p.extensionPath),
-			})),
-		});
 
 		// Read curated files ONCE and freeze them into the prompt. Mid-session edits
 		// (memory tool / file tools) persist to disk but only enter the prompt next conversation.
@@ -1510,7 +1494,7 @@ export class Conversation {
 		const command = runner.getCommand(commandName);
 		if (!command) return false;
 
-		const ctx = runner.createCommandContext();
+		const ctx = runner.createContext();
 		try {
 			await command.handler(args, ctx);
 			return true;
@@ -1566,151 +1550,96 @@ export class Conversation {
 	}
 
 	/**
-	 * Bind the `steward.*` actions + `ctx.*` context actions to this conversation's harness via
-	 * `runner.bindCore()`. Providers are flushed through the runtime modelRegistry (2-arg bindCore,
-	 * no providerActions), so queued `steward.registerProvider(...)` calls apply immediately. Each
-	 * action closes over `this` (the explicit target conversation) and reads the live harness /
-	 * runtime-shared resources, so a `reload()` re-binding the new runner stays tied to this
-	 * conversation with no ambient "current".
+	 * Construct the public `Conversation` object handed to every handler/tool/command and bind it to
+	 * the runner via `runner.bindConversation()`. The object is a curated facade over this conversation:
+	 * closures/getters close over `this` (the explicit target conversation) plus the captured harness /
+	 * runtime-shared resources, so a `reload()` re-binding the fresh runner stays tied to this
+	 * conversation with no ambient "current". `ui`/`mode`/`hasUI`/`model`/`signal` are getters so they
+	 * read live through the runner / harness rather than freezing at bind time. Binding also flushes any
+	 * queued `steward.registerProvider(...)` calls (see `runner.bindConversation`).
 	 */
 	bindExtensionCore(runner: ExtensionRunner): void {
+		const self = this;
 		const harness = this.harness;
 		const sessionManager = this.sessionManager;
 		const runtime = this.runtime;
 		const modelRegistry = runtime.modelRegistry;
 		const cwd = runtime.getCwd();
 
-		const actions: ExtensionActions = {
-			// Delegate to the async delivery path and route rejections to the extension error
-			// channel — a mistimed send surfaces as an extension error, not an unhandled
-			// rejection that crashes the process. `runner` is the captured local (not
-			// `runtime.extensionRunner`) so a delivery that rejects after a reload reports to the
-			// runner it was bound to.
-			sendMessage: (message, options) => {
-				this.sendCustomMessage(message, options).catch((err) =>
-					runner.emitError({
-						path: "<runtime>",
-						event: "send_message",
-						error: err instanceof Error ? err.message : String(err),
-					}),
-				);
+		const conversation: ConversationApi = {
+			get ui() {
+				return runner.getUIContext();
 			},
-			sendUserMessage: (content, options) => {
-				this.sendUserMessage(content, options).catch((err) =>
-					runner.emitError({
-						path: "<runtime>",
-						event: "send_user_message",
-						error: err instanceof Error ? err.message : String(err),
-					}),
-				);
+			get mode() {
+				return runner.getMode();
 			},
+			get hasUI() {
+				return runner.hasUI();
+			},
+			sessionManager,
+			get model() {
+				return harness.getModel();
+			},
+			get signal() {
+				return self._currentSignal;
+			},
+
+			prompt: (text, options) => this.prompt(text, options),
+			sendMessage: (message, options) => this.sendCustomMessage(message, options),
+			sendUserMessage: (content, options) => this.sendUserMessage(content, options),
 			appendEntry: (customType, data) => {
 				void sessionManager.appendCustomEntry(customType, data);
 			},
-			setSessionName: (sessionName) => {
-				void sessionManager.appendSessionInfo(sessionName);
-			},
-			getSessionName: () => sessionManager.getSessionName(),
-			setLabel: (entryId, label) => {
-				void sessionManager.appendLabelChange(entryId, label);
-			},
-			getActiveTools: () => harness.getActiveTools().map((tool) => tool.name),
-			getAllTools: (): ToolInfo[] => {
-				const registered = new Map(runner.getAllRegisteredTools().map((rt) => [rt.definition.name, rt]));
-				return harness.getTools().map((tool) => {
-					const rt = registered.get(tool.name);
-					if (rt) {
-						return {
-							name: rt.definition.name,
-							description: rt.definition.description,
-							parameters: rt.definition.parameters,
-							promptGuidelines: rt.definition.promptGuidelines,
-							sourceInfo: rt.sourceInfo,
-						};
-					}
-					// Built-in tools have no RegisteredTool/SourceInfo — synthesize one.
-					return {
-						name: tool.name,
-						description: tool.description,
-						parameters: tool.parameters,
-						promptGuidelines: undefined,
-						sourceInfo: createSyntheticSourceInfo(`<builtin:${tool.name}>`, { source: "builtin" }),
-					};
-				});
-			},
-			setActiveTools: (toolNames) => {
-				void harness.setActiveTools(toolNames);
-			},
-			refreshTools: () => {
-				const active = harness.getActiveTools().map((tool) => tool.name);
-				void harness.setTools([...runtime.baseTools, ...runtime.extensionTools], active);
-			},
-			getCommands: (): SlashCommandInfo[] => {
-				const commands: SlashCommandInfo[] = [];
-				for (const command of runner.getRegisteredCommands()) {
-					commands.push({
-						name: command.invocationName,
-						description: command.description,
-						source: "extension",
-						sourceInfo: command.sourceInfo,
-					});
-				}
-				for (const template of runtime.promptTemplates) {
-					commands.push({
-						name: template.name,
-						description: template.description,
-						source: "prompt",
-						sourceInfo: template.sourceInfo,
-					});
-				}
-				for (const skill of runtime.getSkills()) {
-					// Skills are invoked as `/skill:<name>`; kept identical to AgentRuntime.getCommands().
-					commands.push({
-						name: `skill:${skill.name}`,
-						description: skill.description,
-						source: "skill",
-						sourceInfo: skill.sourceInfo,
-					});
-				}
-				return commands;
-			},
-			setModel: async (nextModel) => {
-				if (!modelRegistry.hasConfiguredAuth(nextModel)) return false;
-				await harness.setModel(nextModel);
-				return true;
-			},
-			getThinkingLevel: () => harness.getThinkingLevel(),
-			setThinkingLevel: (level) => {
-				void this.setThinkingLevel(level);
-			},
-		};
 
-		const contextActions: ExtensionContextActions = {
-			getModel: () => harness.getModel(),
 			isIdle: () => harness.isIdle,
-			// Flagged divergence: steward has no project-trust concept (no settings store
-			// of trusted projects); the agent home is always trusted.
-			isProjectTrusted: () => true,
-			getSignal: () => this._currentSignal,
-			abort: () => {
-				void harness.abort();
-			},
+			waitForIdle: () => harness.waitForIdle(),
+			abort: () => harness.abort(),
+			getPendingMessageCount: () => this.getPendingMessageCount(),
 			hasPendingMessages: () => this._pendingMessageCount > 0,
-			shutdown: () => runtime.runShutdown(),
-			getContextUsage: () => this.computeContextUsage(),
+
 			compact: (options) => {
 				void harness
 					.compact(options?.customInstructions)
 					.then((result) => options?.onComplete?.(result))
 					.catch((error) => options?.onError?.(error instanceof Error ? error : new Error(String(error))));
 			},
+			getContextUsage: () => this.computeContextUsage(),
 			getSystemPrompt: () => this.systemPrompt,
 			getSystemPromptOptions: () => this.systemPromptOptions ?? { cwd },
+
+			getActiveTools: () => harness.getActiveTools().map((tool) => tool.name),
+			setActiveTools: (toolNames) => {
+				void harness.setActiveTools(toolNames);
+			},
+			getAllTools: () => runtime.getToolInfos(),
+			getCommands: () => runtime.getCommands(),
+			refreshTools: () => {
+				const active = harness.getActiveTools().map((tool) => tool.name);
+				void harness.setTools([...runtime.baseTools, ...runtime.extensionTools], active);
+			},
+
+			setModel: async (nextModel) => {
+				if (!modelRegistry.hasConfiguredAuth(nextModel)) return false;
+				await harness.setModel(nextModel);
+				return true;
+			},
+			setModelById: (provider, modelId) => this.setModelById(provider, modelId),
+			getThinkingLevel: () => harness.getThinkingLevel(),
+			setThinkingLevel: (level) => this.setThinkingLevel(level),
+
+			getSessionName: () => sessionManager.getSessionName(),
+			setSessionName: (sessionName) => {
+				void sessionManager.appendSessionInfo(sessionName);
+			},
+			setLabel: (entryId, label) => {
+				void sessionManager.appendLabelChange(entryId, label);
+			},
+
+			newSession: (options) => runtime.runNewSession(options),
+			reload: () => runtime.reload(),
 		};
 
-		// 2-arg bindCore: no providerActions, so queued provider registrations flush
-		// directly through the modelRegistry the runner was constructed with.
-		runner.bindCore(actions, contextActions);
+		runner.bindConversation(conversation);
 	}
 
 	/**
@@ -1725,7 +1654,6 @@ export class Conversation {
 	wireExtensionEvents(): void {
 		const harness = this.harness;
 		const runtime = this.runtime;
-		const cwd = runtime.getCwd();
 		const unsubscribe: (() => void)[] = [];
 
 		// (b) subscribe() — receives ALL events (AgentEvent + harness own-events). It
@@ -1896,12 +1824,7 @@ export class Conversation {
 			harness.on("before_agent_start", async (event) => {
 				const runner = runtime.extensionRunner;
 				if (!runner.hasHandlers("before_agent_start")) return undefined;
-				const result = await runner.emitBeforeAgentStart(
-					event.prompt,
-					event.images,
-					event.systemPrompt,
-					this.systemPromptOptions ?? { cwd },
-				);
+				const result = await runner.emitBeforeAgentStart(event.prompt, event.images, event.systemPrompt);
 				if (!result) return undefined;
 				// Convert the returned Pick<CustomMessage,...>[] into AgentMessage[].
 				const messages = result.messages?.map((m) =>

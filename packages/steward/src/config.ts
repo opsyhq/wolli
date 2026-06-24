@@ -133,11 +133,6 @@ export function getDocsPath(): string {
 	return resolve(join(getPackageDir(), "docs"));
 }
 
-/** Get path to examples directory */
-export function getExamplesPath(): string {
-	return resolve(join(getPackageDir(), "examples"));
-}
-
 /** Dir of bundled plugins shipped with the package (raw .ts, loaded via jiti once installed). */
 export function getPluginsDir(): string {
 	return resolve(join(getPackageDir(), "plugins"));

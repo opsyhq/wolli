@@ -10,23 +10,14 @@ export {
 	loadExtensionFromFactory,
 	loadExtensions,
 } from "./loader.ts";
-export type {
-	ExtensionErrorListener,
-	ForkHandler,
-	NavigateTreeHandler,
-	NewSessionHandler,
-	ShutdownHandler,
-	SwitchSessionHandler,
-} from "./runner.ts";
+export type { ExtensionErrorListener, NewSessionHandler, ShutdownHandler } from "./runner.ts";
 export { ExtensionRunner } from "./runner.ts";
 export type {
-	AfterProviderResponseEvent,
 	AgentEndEvent,
 	AgentStartEvent,
 	// Re-exports
 	AgentToolResult,
 	AgentToolUpdateCallback,
-	AppendEntryHandler,
 	// App keybindings (for custom editors)
 	AppKeybinding,
 	AutocompleteProviderFactory,
@@ -38,6 +29,8 @@ export type {
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
 	BuildSystemPromptOptions,
+	// Commands
+	CommandHandler,
 	// Context
 	CompactOptions,
 	// Events - Agent
@@ -45,6 +38,9 @@ export type {
 	// Event Results
 	ContextEventResult,
 	ContextUsage,
+	// Conversation
+	Conversation,
+	ConversationPromptOptions,
 	CustomToolCallEvent,
 	CustomToolResultEvent,
 	EditorFactory,
@@ -53,13 +49,10 @@ export type {
 	ExecOptions,
 	ExecResult,
 	Extension,
-	ExtensionActions,
 	// API
 	ExtensionAPI,
-	ExtensionCommandContext,
-	ExtensionCommandContextActions,
+	// Context
 	ExtensionContext,
-	ExtensionContextActions,
 	// Errors
 	ExtensionError,
 	ExtensionEvent,
@@ -75,10 +68,6 @@ export type {
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	FindToolResultEvent,
-	GetActiveToolsHandler,
-	GetAllToolsHandler,
-	GetCommandsHandler,
-	GetThinkingLevelHandler,
 	GrepToolCallEvent,
 	GrepToolResultEvent,
 	// Events - Input
@@ -98,44 +87,23 @@ export type {
 	MessageUpdateEvent,
 	ModelSelectEvent,
 	ModelSelectSource,
-	ProjectTrustContext,
-	ProjectTrustEvent,
-	ProjectTrustEventDecision,
-	ProjectTrustEventResult,
-	ProjectTrustHandler,
+	NewSessionOptions,
 	// Provider Registration
 	ProviderConfig,
 	ProviderModelConfig,
 	ReadToolCallEvent,
 	ReadToolResultEvent,
-	// Commands
 	RegisteredCommand,
+	RegisteredCommandOptions,
 	RegisteredTool,
-	ReplacedSessionContext,
 	ResolvedCommand,
-	// Events - Resources
-	ResourcesDiscoverEvent,
-	ResourcesDiscoverResult,
-	SendMessageHandler,
-	SendUserMessageHandler,
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,
-	SessionBeforeForkEvent,
-	SessionBeforeForkResult,
-	SessionBeforeSwitchEvent,
-	SessionBeforeSwitchResult,
-	SessionBeforeTreeEvent,
-	SessionBeforeTreeResult,
-	SessionCompactEvent,
 	SessionEvent,
 	SessionShutdownEvent,
 	// Events - Session
 	SessionStartEvent,
-	SessionTreeEvent,
-	SetActiveToolsHandler,
-	SetLabelHandler,
-	SetModelHandler,
-	SetThinkingLevelHandler,
+	ShortcutHandler,
 	TerminalInputHandler,
 	// Events - Tool
 	ToolCallEvent,
@@ -152,7 +120,6 @@ export type {
 	ToolRenderResultOptions,
 	ToolResultEvent,
 	ToolResultEventResult,
-	TreePreparation,
 	TurnEndEvent,
 	TurnStartEvent,
 	// Events - User Bash

@@ -28,7 +28,7 @@ import { type DaemonConfig, deleteDaemonConfig, loadDaemonConfig } from "./core/
 import { THINKING_LEVELS } from "./core/defaults.ts";
 import type { ResourceSummary } from "./core/diagnostics.ts";
 import type {
-	ExtensionCommandContext,
+	ExtensionContext,
 	ExtensionShortcut,
 	MessageRenderer,
 	SlashCommandInfo,
@@ -612,7 +612,7 @@ export class AgentSession {
 	}
 
 	/** Unreachable (`getShortcuts()` is always empty); fails loud rather than fabricating a context. */
-	createShortcutContext(): ExtensionCommandContext {
+	createShortcutContext(): ExtensionContext {
 		throw new Error("Extension shortcuts are not wired over the daemon.");
 	}
 

@@ -46,7 +46,6 @@ import {
 	type EditorFactory,
 	ensureTool,
 	executeBash,
-	type ExtensionCommandContextActions,
 	type ExtensionShortcut,
 	type ExtensionUIContext,
 	type ExtensionUIDialogOptions,
@@ -1689,29 +1688,6 @@ export class ChatView extends Container implements AppView {
 			},
 			getToolsExpanded: () => this.toolOutputExpanded,
 			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
-		};
-	}
-
-	/**
-	 * Session-control actions for extension command handlers. `waitForIdle`/`newSession`/
-	 * `reload` are wired to steward's host; the tree-navigation actions (fork/navigateTree/
-	 * switchSession) are out of scope here and report cancelled.
-	 */
-	private createCommandContextActions(): ExtensionCommandContextActions {
-		return {
-			waitForIdle: () => this.session.waitForIdle(),
-			newSession: async () => {
-				if (!(await this.swapToNewSession("new"))) return { cancelled: true };
-				await this.renderCurrentSessionState();
-				this.ui.requestRender();
-				return { cancelled: false };
-			},
-			fork: async () => ({ cancelled: true }),
-			navigateTree: async () => ({ cancelled: true }),
-			switchSession: async () => ({ cancelled: true }),
-			reload: async () => {
-				await this.handleReloadCommand();
-			},
 		};
 	}
 

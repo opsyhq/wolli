@@ -9,7 +9,7 @@
  *  2. an extension's registerTool reaches the harness AND its session_start
  *     lifecycle handler fires on create;
  *  3. an extension's message_end mutation is applied in place and persisted;
- *  4. createConversation() invalidates the superseded runner (its ctx goes stale).
+ *  4. createConversation() invalidates the superseded runner (a captured steward goes stale).
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -86,23 +86,36 @@ export default function commandExtension(pi) {
 }
 `;
 
-// Registers a `/facade` command that drives the agent via steward.agent: records the live
-// conversation's session id and the stored-session count to the marker dir.
+// Registers a `/cap` command whose handler closes over the agent-global `steward`; calling a steward
+// method after the runner is superseded throws stale (the captured-handle guard).
+const STALE_CAPTURE_EXTENSION_SOURCE = `
+export default function staleExtension(pi) {
+	pi.registerCommand("cap", {
+		description: "Calls a steward method; throws once the runner is superseded.",
+		async handler() {
+			await pi.listSessions();
+		},
+	});
+}
+`;
+
+// Registers a `/facade` command that drives the agent via the agent-global steward API: records the
+// live conversation's session id and the stored-session count to the marker dir.
 const AGENT_FACADE_EXTENSION_SOURCE = `
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export default function facadeExtension(pi) {
 	pi.registerCommand("facade", {
-		description: "Records the live conversation id + session count via steward.agent.",
+		description: "Records the live conversation id + session count via steward.getConversation()/listSessions().",
 		async handler() {
 			const dir = process.env.STEWARD_TEST_MARKER_DIR;
-			const convo = pi.agent.getConversation();
-			const sessions = await pi.agent.listSessions();
+			const convo = pi.getConversation();
+			const sessions = await pi.listSessions();
 			if (dir) {
 				writeFileSync(
 					join(dir, "facade.json"),
-					JSON.stringify({ sessionId: convo ? convo.getSessionId() : null, sessionCount: sessions.length }),
+					JSON.stringify({ sessionId: convo ? convo.sessionManager.getSessionId() : null, sessionCount: sessions.length }),
 				);
 			}
 		},
@@ -249,22 +262,26 @@ describe("extension subsystem wiring", () => {
 		expect(text).toBe("MUTATED_BY_EXTENSION");
 	});
 
-	it("invalidates the previous runner's ctx on createConversation", async () => {
+	it("invalidates a captured steward on createConversation", async () => {
+		writeFileSync(join(getAgentDir(AGENT), "extensions", "cap-ext.ts"), STALE_CAPTURE_EXTENSION_SOURCE, "utf-8");
 		const { runtime } = makeRuntime();
 		await runtime.createConversation();
 
 		const previousRunner = runtime.extensionRunner;
-		// Live ctx works before the swap.
-		expect(() => previousRunner.createContext().cwd).not.toThrow();
+		const captured = previousRunner.getCommand("cap");
+		expect(captured).toBeDefined();
+		const runCaptured = () => captured?.handler("", previousRunner.createContext());
 
-		// Creating another conversation swaps the runner in place.
+		// The captured steward works before the swap.
+		await expect(runCaptured()).resolves.toBeUndefined();
+
+		// Creating another conversation swaps the runner in place and invalidates the previous one.
 		await runtime.createConversation();
 
-		// After the swap the superseded runner is invalidated: any captured ctx goes stale.
-		expect(() => previousRunner.createContext().cwd).toThrow(/stale/);
+		// Any steward captured from the superseded runner now throws stale.
+		await expect(runCaptured()).rejects.toThrow(/stale/);
 		// The runtime now exposes a fresh, live runner.
 		expect(runtime.extensionRunner).not.toBe(previousRunner);
-		expect(() => runtime.extensionRunner.createContext().cwd).not.toThrow();
 		await runtime.cleanup();
 	});
 
@@ -282,7 +299,7 @@ describe("extension subsystem wiring", () => {
 		await runtime.cleanup();
 	});
 
-	it("exposes steward.agent so a command resolves the live conversation and lists sessions", async () => {
+	it("exposes steward.getConversation()/listSessions() so a command resolves the live conversation and lists sessions", async () => {
 		writeFileSync(join(getAgentDir(AGENT), "extensions", "facade-ext.ts"), AGENT_FACADE_EXTENSION_SOURCE, "utf-8");
 		const { runtime } = makeRuntime();
 		const conversation = await runtime.createConversation();
@@ -290,9 +307,9 @@ describe("extension subsystem wiring", () => {
 		await conversation.prompt("/facade");
 
 		const marker = JSON.parse(readFileSync(join(markerDir, "facade.json"), "utf-8"));
-		// steward.agent.getConversation() resolved the SAME live conversation the runtime built.
+		// steward.getConversation() resolved the SAME live conversation the runtime built.
 		expect(marker.sessionId).toBe(conversation.getSessionId());
-		// steward.agent.listSessions() surfaced the stored session create() wrote eagerly.
+		// steward.listSessions() surfaced the stored session create() wrote eagerly.
 		expect(marker.sessionCount).toBeGreaterThanOrEqual(1);
 		await runtime.cleanup();
 	});
@@ -441,10 +458,10 @@ describe("extension subsystem wiring", () => {
 		await runtime.cleanup();
 	});
 
-	it("ships docs and examples in the published package", () => {
+	it("ships docs and plugins in the published package", () => {
 		const pkg = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf-8"));
 		expect(pkg.files).toContain("docs");
-		expect(pkg.files).toContain("examples");
+		expect(pkg.files).toContain("plugins");
 	});
 
 	it("queues a mid-stream sendUserMessage as a follow-up and answers in order", async () => {

@@ -25,6 +25,7 @@ import type {
 // is defined there but NOT re-exported, so it is defined locally below (structurally
 // identical to the engine's `harness/compaction/compaction.ts`).
 import type {
+	AbortResult,
 	AgentMessage,
 	AgentToolResult,
 	AgentToolUpdateCallback,
@@ -46,22 +47,15 @@ import type {
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../theme/theme.ts";
 import type { BashResult } from "../bash-executor.ts";
-import type { Environment } from "../environments/types.ts";
+import type { AgentEnvironments, Environment } from "../environments/types.ts";
 import type { EventBus } from "../event-bus.ts";
-import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { IntegrationHandle } from "../integrations/types.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
-import type { Agent } from "../sdk.ts";
-import type {
-	BranchSummaryEntry,
-	CompactionEntry,
-	ReadonlySessionManager,
-	SessionEntry,
-	SessionManager,
-} from "../session-manager.ts";
+import type { SessionInfo } from "../session.ts";
+import type { ReadonlySessionManager, SessionEntry, SessionManager } from "../session-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
@@ -307,103 +301,147 @@ export interface CompactOptions {
 	onError?: (error: Error) => void;
 }
 
-/**
- * Context passed to extension event handlers.
- */
+/** Run mode the agent is hosted in. Use "tui" to guard terminal-only UI such as custom components. */
 export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
-export interface ExtensionContext {
-	/** UI methods for user interaction */
-	ui: ExtensionUIContext;
-	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */
-	mode: ExtensionMode;
-	/** Whether dialog-capable UI is available (true in TUI and RPC modes) */
-	hasUI: boolean;
-	/** Current working directory */
-	cwd: string;
-	/** The environment that backs the file/shell tools (the silent sandbox default). */
-	environment: Environment;
-	/** Session manager (read-only) */
-	sessionManager: ReadonlySessionManager;
-	/** Model registry for API key resolution */
-	modelRegistry: ModelRegistry;
-	/** Current model (may be undefined) */
-	model: Model<any> | undefined;
-	/** Whether the agent is idle (not streaming) */
-	isIdle(): boolean;
-	/** Whether project-local trust is active for this context. */
-	isProjectTrusted(): boolean;
-	/** The current abort signal, or undefined when the agent is not streaming. */
-	signal: AbortSignal | undefined;
-	/** Abort the current agent operation */
-	abort(): void;
-	/** Whether there are queued messages waiting */
-	hasPendingMessages(): boolean;
-	/** Gracefully shutdown steward and exit. Available in all contexts. */
-	shutdown(): void;
-	/** Get current context usage for the active model. */
-	getContextUsage(): ContextUsage | undefined;
-	/** Trigger compaction without awaiting completion. */
-	compact(options?: CompactOptions): void;
-	/** Get the current effective system prompt. */
-	getSystemPrompt(): string;
+/** Source of a `Conversation.prompt()` submission. */
+export type InputSource = "interactive" | "rpc" | "extension";
+
+/** Options for the conversation dispatch pipeline (`Conversation.prompt()`). */
+export interface ConversationPromptOptions {
+	/** Images to attach to the user turn. An `input` transform may also inject these. */
+	images?: ImageContent[];
+	/** Where the input came from. Default: `"interactive"`. */
+	source?: InputSource;
+	/** How to deliver the message while a turn is already streaming. */
+	streamingBehavior?: "steer" | "followUp";
+	/** When false, skip extension-command + skill/template dispatch (extension-driven sends). Default true. */
+	expandPromptTemplates?: boolean;
+	/**
+	 * Fired once the prompt is accepted (handled, queued, or about to run) with `true`, or
+	 * with `false` when it is rejected before any work. Lets a headless caller ack acceptance
+	 * without waiting for the whole turn — `prompt()` itself only resolves at turn end.
+	 */
+	preflightResult?: (success: boolean) => void;
+}
+
+/** Options for `Conversation.newSession()`. */
+export interface NewSessionOptions {
+	/** Initialize the fresh session before it goes live (seed entries, etc.). */
+	setup?: (sessionManager: SessionManager) => Promise<void>;
+	/** Run against the replacement conversation once it is live. */
+	withConversation?: (conversation: Conversation) => Promise<void>;
 }
 
 /**
- * Extended context for command handlers.
- * Includes session control methods only safe in user-initiated commands.
- */
-export interface ExtensionCommandContext extends ExtensionContext {
-	/** Get the current base system-prompt construction options. */
-	getSystemPromptOptions(): BuildSystemPromptOptions;
-
-	/** Wait for the agent to finish streaming */
-	waitForIdle(): Promise<void>;
-
-	/** Start a new session, optionally with initialization. */
-	newSession(options?: {
-		parentSession?: string;
-		setup?: (sessionManager: SessionManager) => Promise<void>;
-		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-	}): Promise<{ cancelled: boolean }>;
-
-	/** Fork from a specific entry, creating a new session file. */
-	fork(
-		entryId: string,
-		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-	): Promise<{ cancelled: boolean }>;
-
-	/** Navigate to a different point in the session tree. */
-	navigateTree(
-		targetId: string,
-		options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
-	): Promise<{ cancelled: boolean }>;
-
-	/** Switch to a different session file. */
-	switchSession(
-		sessionPath: string,
-		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-	): Promise<{ cancelled: boolean }>;
-
-	/** Reload extensions, skills, prompts, and themes. */
-	reload(): Promise<void>;
-}
-
-/**
- * Fresh command-capable context bound to the replacement session after a session switch.
+ * A live conversation — the per-conversation surface extensions act on. Handed to every event,
+ * command, shortcut, and custom-tool handler, and returned from `steward.getConversation()`.
  *
- * This is passed to `withSession()` callbacks on `newSession()`, `fork()`, and `switchSession()`.
+ * Holds session/harness/UI state plus the actions that operate on a single running conversation.
+ * Agent-global capabilities (cwd, environments, model registry, integrations, reload, shutdown)
+ * live on `ExtensionAPI`, not here.
+ *
+ * `ui` exposes the full client-global UI surface for the N=1 case; future multi-conversation work
+ * may split dialog UI from app-global UI.
  */
-export interface ReplacedSessionContext extends ExtensionCommandContext {
+export interface Conversation {
+	/** UI methods for user interaction. */
+	readonly ui: ExtensionUIContext;
+	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */
+	readonly mode: ExtensionMode;
+	/** Whether dialog-capable UI is available (true in TUI and RPC modes). */
+	readonly hasUI: boolean;
+	/** Session manager (read-only). */
+	readonly sessionManager: ReadonlySessionManager;
+	/** Current model (may be undefined). */
+	readonly model: Model<any> | undefined;
+	/** The current run's abort signal, or undefined when the agent is not streaming. */
+	readonly signal: AbortSignal | undefined;
+
+	/** Submit user input through the full command/skill/prompt pipeline, then hand off to the harness. */
+	prompt(text: string, options?: ConversationPromptOptions): Promise<void>;
+
+	/** Send a custom message to the conversation. */
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): Promise<void>;
 
+	/**
+	 * Send a user message to the agent. Always triggers a turn. When the agent is streaming,
+	 * use `deliverAs` to specify how to queue the message.
+	 */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
 		options?: { deliverAs?: "steer" | "followUp" },
 	): Promise<void>;
+
+	/** Append a custom entry to the session for state persistence (not sent to the LLM). */
+	appendEntry<T = unknown>(customType: string, data?: T): void;
+
+	/** Whether the agent is idle (not streaming). */
+	isIdle(): boolean;
+	/** Wait for the agent to finish streaming. */
+	waitForIdle(): Promise<void>;
+	/** Abort the current agent operation. */
+	abort(): Promise<AbortResult>;
+	/** Number of queued messages (steer + follow-up + next-turn). */
+	getPendingMessageCount(): number;
+	/** Whether there are queued messages waiting. */
+	hasPendingMessages(): boolean;
+
+	/** Trigger compaction without awaiting completion. */
+	compact(options?: CompactOptions): void;
+	/** Get current context usage for the active model. */
+	getContextUsage(): ContextUsage | undefined;
+	/** Get the current effective system prompt. */
+	getSystemPrompt(): string;
+	/** Get the base system-prompt construction options. */
+	getSystemPromptOptions(): BuildSystemPromptOptions;
+
+	/** Get the list of currently active tool names. */
+	getActiveTools(): string[];
+	/** Set the active tools by name. */
+	setActiveTools(names: string[]): void;
+	/** Get all configured tools with parameter schema, prompt guidelines, and source metadata. */
+	getAllTools(): ToolInfo[];
+	/** Get available slash commands in the current session. */
+	getCommands(): SlashCommandInfo[];
+	/** Re-apply the base + extension tool set (picks up tools registered mid-session). */
+	refreshTools(): void;
+
+	/** Set the current model. Returns false if no API key is available. */
+	setModel(model: Model<any>): Promise<boolean>;
+	/** Resolve a model by `{provider, modelId}` and switch to it. Throws if unknown/unauthenticated. */
+	setModelById(provider: string, modelId: string): Promise<Model<any>>;
+	/** Get current thinking level. */
+	getThinkingLevel(): ThinkingLevel;
+	/** Set thinking level (clamped to model capabilities). */
+	setThinkingLevel(level: ThinkingLevel): Promise<void>;
+
+	/** Get the current session name, if set. */
+	getSessionName(): string | undefined;
+	/** Set the session display name (shown in the session selector). */
+	setSessionName(name: string): void;
+	/** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
+	setLabel(entryId: string, label: string | undefined): void;
+
+	/** Start a new session, optionally with initialization, and make it the live conversation. */
+	newSession(options?: NewSessionOptions): Promise<{ cancelled: boolean }>;
+
+	/** Reload extensions, skills, prompts, and themes against this conversation. */
+	reload(): Promise<void>;
+}
+
+/**
+ * Context handed to every extension event handler, command, shortcut, and custom tool.
+ *
+ * Currently just the live `conversation`; kept as a bag so additional per-invocation context can be
+ * added later without changing every handler signature.
+ */
+export interface ExtensionContext {
+	/** The live conversation this handler/tool/command is acting on. */
+	conversation: Conversation;
 }
 
 // ============================================================================
@@ -483,7 +521,7 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 		params: Static<TParams>,
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<TDetails> | undefined,
-		ctx: ExtensionContext,
+		context: ExtensionContext,
 	): Promise<AgentToolResult<TDetails>>;
 
 	/** Custom rendering for tool call display */
@@ -514,48 +552,6 @@ export function defineTool<TParams extends TSchema, TDetails = unknown, TState =
 }
 
 // ============================================================================
-// Startup/Resource Events
-// ============================================================================
-
-export interface ProjectTrustEvent {
-	type: "project_trust";
-	cwd: string;
-}
-
-export type ProjectTrustEventDecision = "yes" | "no" | "undecided";
-
-export interface ProjectTrustEventResult {
-	trusted: ProjectTrustEventDecision;
-	remember?: boolean;
-}
-
-export interface ProjectTrustContext {
-	cwd: string;
-	mode: ExtensionMode;
-	hasUI: boolean;
-	ui: Pick<ExtensionUIContext, "select" | "confirm" | "input" | "notify">;
-}
-
-export type ProjectTrustHandler = (
-	event: ProjectTrustEvent,
-	ctx: ProjectTrustContext,
-) => Promise<ProjectTrustEventResult> | ProjectTrustEventResult;
-
-/** Fired after session_start to allow extensions to provide additional resource paths. */
-export interface ResourcesDiscoverEvent {
-	type: "resources_discover";
-	cwd: string;
-	reason: "startup" | "reload";
-}
-
-/** Result from resources_discover event handler */
-export interface ResourcesDiscoverResult {
-	skillPaths?: string[];
-	promptPaths?: string[];
-	themePaths?: string[];
-}
-
-// ============================================================================
 // Session Events
 // ============================================================================
 
@@ -568,20 +564,6 @@ export interface SessionStartEvent {
 	previousSessionFile?: string;
 }
 
-/** Fired before switching to another session (can be cancelled) */
-export interface SessionBeforeSwitchEvent {
-	type: "session_before_switch";
-	reason: "new" | "resume";
-	targetSessionFile?: string;
-}
-
-/** Fired before forking a session (can be cancelled) */
-export interface SessionBeforeForkEvent {
-	type: "session_before_fork";
-	entryId: string;
-	position: "before" | "at";
-}
-
 /** Fired before context compaction (can be cancelled or customized) */
 export interface SessionBeforeCompactEvent {
 	type: "session_before_compact";
@@ -589,13 +571,6 @@ export interface SessionBeforeCompactEvent {
 	branchEntries: SessionEntry[];
 	customInstructions?: string;
 	signal: AbortSignal;
-}
-
-/** Fired after context compaction */
-export interface SessionCompactEvent {
-	type: "session_compact";
-	compactionEntry: CompactionEntry;
-	fromExtension: boolean;
 }
 
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
@@ -606,46 +581,7 @@ export interface SessionShutdownEvent {
 	targetSessionFile?: string;
 }
 
-/** Preparation data for tree navigation */
-export interface TreePreparation {
-	targetId: string;
-	oldLeafId: string | null;
-	commonAncestorId: string | null;
-	entriesToSummarize: SessionEntry[];
-	userWantsSummary: boolean;
-	/** Custom instructions for summarization */
-	customInstructions?: string;
-	/** If true, customInstructions replaces the default prompt instead of being appended */
-	replaceInstructions?: boolean;
-	/** Label to attach to the branch summary entry */
-	label?: string;
-}
-
-/** Fired before navigating in the session tree (can be cancelled) */
-export interface SessionBeforeTreeEvent {
-	type: "session_before_tree";
-	preparation: TreePreparation;
-	signal: AbortSignal;
-}
-
-/** Fired after navigating in the session tree */
-export interface SessionTreeEvent {
-	type: "session_tree";
-	newLeafId: string | null;
-	oldLeafId: string | null;
-	summaryEntry?: BranchSummaryEntry;
-	fromExtension?: boolean;
-}
-
-export type SessionEvent =
-	| SessionStartEvent
-	| SessionBeforeSwitchEvent
-	| SessionBeforeForkEvent
-	| SessionBeforeCompactEvent
-	| SessionCompactEvent
-	| SessionShutdownEvent
-	| SessionBeforeTreeEvent
-	| SessionTreeEvent;
+export type SessionEvent = SessionStartEvent | SessionBeforeCompactEvent | SessionShutdownEvent;
 
 // ============================================================================
 // Agent Events
@@ -661,13 +597,6 @@ export interface ContextEvent {
 export interface BeforeProviderRequestEvent {
 	type: "before_provider_request";
 	payload: unknown;
-}
-
-/** Fired after a provider response is received and before the response stream is consumed. */
-export interface AfterProviderResponseEvent {
-	type: "after_provider_response";
-	status: number;
-	headers: Record<string, string>;
 }
 
 /** Fired after user submits prompt but before agent loop. */
@@ -793,9 +722,6 @@ export interface UserBashEvent {
 // ============================================================================
 // Input Events
 // ============================================================================
-
-/** Source of user input */
-export type InputSource = "interactive" | "rpc" | "extension";
 
 /** Fired when user input is received, before agent processing */
 export interface InputEvent {
@@ -1000,12 +926,9 @@ export function isToolCallEventType(toolName: string, event: ToolCallEvent): boo
 
 /** Union of all event types */
 export type ExtensionEvent =
-	| ProjectTrustEvent
-	| ResourcesDiscoverEvent
 	| SessionEvent
 	| ContextEvent
 	| BeforeProviderRequestEvent
-	| AfterProviderResponseEvent
 	| BeforeAgentStartEvent
 	| AgentStartEvent
 	| AgentEndEvent
@@ -1065,32 +988,9 @@ export interface BeforeAgentStartEventResult {
 	systemPrompt?: string;
 }
 
-export interface SessionBeforeSwitchResult {
-	cancel?: boolean;
-}
-
-export interface SessionBeforeForkResult {
-	cancel?: boolean;
-	skipConversationRestore?: boolean;
-}
-
 export interface SessionBeforeCompactResult {
 	cancel?: boolean;
 	compaction?: CompactionResult;
-}
-
-export interface SessionBeforeTreeResult {
-	cancel?: boolean;
-	summary?: {
-		summary: string;
-		details?: unknown;
-	};
-	/** Override custom instructions for summarization */
-	customInstructions?: string;
-	/** Override whether customInstructions replaces the default prompt */
-	replaceInstructions?: boolean;
-	/** Override label to attach to the branch summary entry */
-	label?: string;
 }
 
 // ============================================================================
@@ -1111,25 +1011,34 @@ export type MessageRenderer<T = unknown> = (
 // Command Registration
 // ============================================================================
 
+/** Command handler — receives the raw argument string and the extension context. */
+export type CommandHandler = (args: string, context: ExtensionContext) => Promise<void>;
+
+/** Keyboard-shortcut handler — receives the extension context. */
+export type ShortcutHandler = (context: ExtensionContext) => Promise<void> | void;
+
 export interface RegisteredCommand {
 	name: string;
 	sourceInfo: SourceInfo;
 	description?: string;
 	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
-	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
+	handler: CommandHandler;
 }
 
 export interface ResolvedCommand extends RegisteredCommand {
 	invocationName: string;
 }
 
+/** Options accepted by `steward.registerCommand`. */
+export type RegisteredCommandOptions = Omit<RegisteredCommand, "name" | "sourceInfo">;
+
 // ============================================================================
 // Extension API
 // ============================================================================
 
-/** Handler function type for events */
+/** Handler function type for events. Receives the event and the extension context. */
 // biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements
-export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContext) => Promise<R | void> | R | void;
+export type ExtensionHandler<E, R = undefined> = (event: E, context: ExtensionContext) => Promise<R | void> | R | void;
 
 /**
  * ExtensionAPI passed to extension factory functions.
@@ -1139,28 +1048,17 @@ export interface ExtensionAPI {
 	// Event Subscription
 	// =========================================================================
 
-	on(event: "project_trust", handler: ProjectTrustHandler): void;
-	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
-	on(
-		event: "session_before_switch",
-		handler: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>,
-	): void;
-	on(event: "session_before_fork", handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>): void;
 	on(
 		event: "session_before_compact",
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
 	): void;
-	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
-	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
-	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
 	on(
 		event: "before_provider_request",
 		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,
 	): void;
-	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): void;
 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
@@ -1193,7 +1091,7 @@ export interface ExtensionAPI {
 	// =========================================================================
 
 	/** Register a custom command. */
-	registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void;
+	registerCommand(name: string, options: RegisteredCommandOptions): void;
 
 	/** Register a keyboard shortcut. */
 	registerShortcut(
@@ -1225,67 +1123,36 @@ export interface ExtensionAPI {
 	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
 
 	// =========================================================================
-	// Actions
+	// Agent (durable / shared) state
 	// =========================================================================
 
-	/** Send a custom message to the session. */
-	sendMessage<T = unknown>(
-		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
-	): void;
+	/** The agent's home directory — where its files and the file/shell tools operate. */
+	readonly cwd: string;
 
 	/**
-	 * Send a user message to the agent. Always triggers a turn.
-	 * When the agent is streaming, use deliverAs to specify how to queue the message.
+	 * The full run-target map, including the unconfined `host` target. This intentionally gives
+	 * extensions direct access to host target file/exec capabilities; use
+	 * `steward.environments.targets[...]` to reach a specific target.
 	 */
-	sendUserMessage(
-		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
-	): void;
+	readonly environments: AgentEnvironments;
 
-	/** Append a custom entry to the session for state persistence (not sent to LLM). */
-	appendEntry<T = unknown>(customType: string, data?: T): void;
+	/** Model registry for API key resolution and provider registration. */
+	readonly modelRegistry: ModelRegistry;
 
-	// =========================================================================
-	// Session Metadata
-	// =========================================================================
+	/** The live conversation, or undefined if the agent has not started one. Find-only — never creates. */
+	getConversation(): Conversation | undefined;
 
-	/** Set the session display name (shown in session selector). */
-	setSessionName(name: string): void;
+	/** Start a fresh conversation (new stored session) and make it the live one. */
+	createConversation(): Promise<Conversation>;
 
-	/** Get the current session name, if set. */
-	getSessionName(): string | undefined;
+	/** Stored sessions for this agent (newest first). */
+	listSessions(): Promise<SessionInfo[]>;
 
-	/** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
-	setLabel(entryId: string, label: string | undefined): void;
+	/** Reload extensions, skills, prompts, and themes. */
+	reload(): Promise<void>;
 
-	/** Execute a shell command. */
-	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
-
-	/** Get the list of currently active tool names. */
-	getActiveTools(): string[];
-
-	/** Get all configured tools with parameter schema, prompt guidelines, and source metadata. */
-	getAllTools(): ToolInfo[];
-
-	/** Set the active tools by name. */
-	setActiveTools(toolNames: string[]): void;
-
-	/** Get available slash commands in the current session. */
-	getCommands(): SlashCommandInfo[];
-
-	// =========================================================================
-	// Model and Thinking Level
-	// =========================================================================
-
-	/** Set the current model. Returns false if no API key available. */
-	setModel(model: Model<any>): Promise<boolean>;
-
-	/** Get current thinking level. */
-	getThinkingLevel(): ThinkingLevel;
-
-	/** Set thinking level (clamped to model capabilities). */
-	setThinkingLevel(level: ThinkingLevel): void;
+	/** Gracefully shut down steward and exit. */
+	shutdown(): void;
 
 	// =========================================================================
 	// Provider Registration
@@ -1371,24 +1238,10 @@ export interface ExtensionAPI {
 	 *
 	 * @example
 	 * const telegram = steward.getIntegration("telegram", "default");
-	 * telegram.on("message", (msg) => steward.appendEntry("tg_message", msg));
+	 * telegram.on("message", (msg) => steward.getConversation()?.appendEntry("tg_message", msg));
 	 * await telegram.call("sendMessage", { chatId, text: "hi" });
 	 */
 	getIntegration(name: string, account?: string): IntegrationHandle;
-
-	// =========================================================================
-	// Agent
-	// =========================================================================
-
-	/**
-	 * The agent this extension runs inside — find, create, or resume conversations and drive them.
-	 *
-	 * `getConversation()` returns the live conversation (or undefined); `createConversation()` starts a
-	 * fresh one; `resumeConversation(id)` reopens a stored session by id; `listSessions()` lists the
-	 * stored sessions you can resume. Driving a returned conversation (`prompt`/`sendUserMessage`) streams
-	 * to every attached client exactly as a user turn would.
-	 */
-	agent: Agent;
 
 	/** Shared event bus for extension communication. */
 	events: EventBus;
@@ -1482,62 +1335,34 @@ export interface ExtensionFlag {
 export interface ExtensionShortcut {
 	shortcut: KeyId;
 	description?: string;
-	handler: (ctx: ExtensionContext) => Promise<void> | void;
+	handler: ShortcutHandler;
 	extensionPath: string;
 }
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
-
-export type SendMessageHandler = <T = unknown>(
-	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
-) => void;
-
-export type SendUserMessageHandler = (
-	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp" },
-) => void;
-
-export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
-
-export type SetSessionNameHandler = (name: string) => void;
-
-export type GetSessionNameHandler = () => string | undefined;
-
-export type GetActiveToolsHandler = () => string[];
 
 /** Tool info with name, description, parameter schema, prompt guidelines, and source metadata. */
 export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters" | "promptGuidelines"> & {
 	sourceInfo: SourceInfo;
 };
 
-export type GetAllToolsHandler = () => ToolInfo[];
-
-export type GetCommandsHandler = () => SlashCommandInfo[];
-
-export type SetActiveToolsHandler = (toolNames: string[]) => void;
-
-export type RefreshToolsHandler = () => void;
-
-export type SetModelHandler = (model: Model<any>) => Promise<boolean>;
-
-export type GetThinkingLevelHandler = () => ThinkingLevel;
-
-export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
-
-export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
-
 /**
  * Shared state created by loader, used during registration and runtime.
  * Contains flag values (defaults set during registration, CLI values set after).
  */
 export interface ExtensionRuntimeState {
-	/**
-	 * The public agent façade (`steward.agent`). Optional here because the runtime is created with
-	 * throwing action stubs during extension load and only the runner sets this — by the time any
-	 * command/handler runs it is populated.
-	 */
-	agent?: Agent;
+	// Agent-global capabilities backing the `steward.*` methods. Throwing stubs during extension load;
+	// the runtime overrides them (closures over the AgentRuntime) once resources are built — so accessing
+	// them during load throws (mirrors the old `steward.agent` resolution).
+	getConversation: () => Conversation | undefined;
+	createConversation: () => Promise<Conversation>;
+	listSessions: () => Promise<SessionInfo[]>;
+	reload: () => Promise<void>;
+	shutdown: () => void;
+	getModelRegistry: () => ModelRegistry;
+	getEnvironments: () => AgentEnvironments;
+	/** Re-apply the base + extension tool set; set by the runner so `registerTool()` can refresh mid-session. */
+	refreshTools: () => void;
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
@@ -1548,83 +1373,18 @@ export interface ExtensionRuntimeState {
 	/**
 	 * Register or unregister a provider.
 	 *
-	 * Before bindCore(): queues registrations / removes from queue.
-	 * After bindCore(): calls ModelRegistry directly for immediate effect.
+	 * Before the runner flushes: queues registrations / removes from queue.
+	 * After the runner flushes: calls ModelRegistry directly for immediate effect.
 	 */
 	registerProvider: (name: string, config: ProviderConfig, extensionPath?: string) => void;
 	unregisterProvider: (name: string, extensionPath?: string) => void;
 }
 
 /**
- * Action implementations for steward.* API methods.
- * Provided to runner.initialize(), copied into the shared runtime.
+ * Full extension runtime. Created by loader during load; the runner sets `host` + `refreshTools`
+ * and flushes queued provider registrations once a conversation is live.
  */
-export interface ExtensionActions {
-	sendMessage: SendMessageHandler;
-	sendUserMessage: SendUserMessageHandler;
-	appendEntry: AppendEntryHandler;
-	setSessionName: SetSessionNameHandler;
-	getSessionName: GetSessionNameHandler;
-	setLabel: SetLabelHandler;
-	getActiveTools: GetActiveToolsHandler;
-	getAllTools: GetAllToolsHandler;
-	setActiveTools: SetActiveToolsHandler;
-	refreshTools: RefreshToolsHandler;
-	getCommands: GetCommandsHandler;
-	setModel: SetModelHandler;
-	getThinkingLevel: GetThinkingLevelHandler;
-	setThinkingLevel: SetThinkingLevelHandler;
-}
-
-/**
- * Actions for ExtensionContext (ctx.* in event handlers).
- * Required by all modes.
- */
-export interface ExtensionContextActions {
-	getModel: () => Model<any> | undefined;
-	isIdle: () => boolean;
-	isProjectTrusted: () => boolean;
-	getSignal: () => AbortSignal | undefined;
-	abort: () => void;
-	hasPendingMessages: () => boolean;
-	shutdown: () => void;
-	getContextUsage: () => ContextUsage | undefined;
-	compact: (options?: CompactOptions) => void;
-	getSystemPrompt: () => string;
-	getSystemPromptOptions?: () => BuildSystemPromptOptions;
-}
-
-/**
- * Actions for ExtensionCommandContext (ctx.* in command handlers).
- * Only needed for interactive mode where extension commands are invokable.
- */
-export interface ExtensionCommandContextActions {
-	waitForIdle: () => Promise<void>;
-	newSession: (options?: {
-		parentSession?: string;
-		setup?: (sessionManager: SessionManager) => Promise<void>;
-		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-	}) => Promise<{ cancelled: boolean }>;
-	fork: (
-		entryId: string,
-		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-	) => Promise<{ cancelled: boolean }>;
-	navigateTree: (
-		targetId: string,
-		options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
-	) => Promise<{ cancelled: boolean }>;
-	switchSession: (
-		sessionPath: string,
-		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
-	) => Promise<{ cancelled: boolean }>;
-	reload: () => Promise<void>;
-}
-
-/**
- * Full runtime = state + actions.
- * Created by loader with throwing action stubs, completed by runner.initialize().
- */
-export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {}
+export interface ExtensionRuntime extends ExtensionRuntimeState {}
 
 /** Loaded extension with all registered items. */
 export interface Extension {

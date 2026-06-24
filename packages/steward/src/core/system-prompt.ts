@@ -5,7 +5,7 @@
  * snapshot of curated memory (read once at session start — see core/memory.ts).
  */
 
-import { APP_NAME, getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
+import { APP_NAME, getDocsPath, getReadmePath } from "../config.ts";
 import type { AgentConfig } from "./agent-config.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
@@ -79,20 +79,18 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		parts.push("", BIRTH_INSTRUCTION);
 	}
 
-	// Docs-guidance block: point the agent at the packaged README/docs/examples so it
+	// Docs-guidance block: point the agent at the packaged README/docs so it
 	// reads them before authoring extensions/skills/prompt-templates/themes for itself.
 	const readmePath = getReadmePath();
 	const docsPath = getDocsPath();
-	const examplesPath = getExamplesPath();
 	parts.push(
 		"",
 		`## ${APP_NAME} documentation (read only when the user asks about ${APP_NAME} itself, its extensions, themes, skills, or prompt templates)`,
 		`- Main documentation: ${readmePath}`,
 		`- Additional docs: ${docsPath}`,
-		`- Examples: ${examplesPath} (extensions, custom tools, SDK)`,
-		`- When reading ${APP_NAME} docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory`,
-		`- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md)`,
-		`- When working on ${APP_NAME} topics, read the docs and examples, and follow .md cross-references before implementing`,
+		`- When reading ${APP_NAME} docs, resolve docs/... under Additional docs, not the current working directory`,
+		`- When asked about: extensions (docs/extensions.md), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md)`,
+		`- When working on ${APP_NAME} topics, read the docs and follow .md cross-references before implementing`,
 		`- Always read ${APP_NAME} .md files completely and follow links to related docs`,
 	);
 

@@ -11,9 +11,3 @@ SDK usage, see the [package README](../README.md).
 - [Skills](skills.md) — Agent Skills for reusable on-demand capabilities.
 - [Prompt templates](prompt-templates.md) — reusable prompts that expand from slash commands.
 - [Themes](themes.md) — built-in and custom terminal themes.
-
-## Examples
-
-- [examples/](../examples/) — runnable extension and SDK examples.
-- [examples/extensions/](../examples/extensions/) — example extensions.
-- [examples/sdk/](../examples/sdk/) — programmatic usage via the SDK.

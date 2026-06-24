@@ -4,7 +4,7 @@
  * The integration (`index.ts`) is the transport (long-poll, token, `message` events);
  * this extension maps that transport onto a Steward session:
  *
- *   - inbound:  `telegram.on("message")` → `steward.sendUserMessage(text)` (one turn)
+ *   - inbound:  `telegram.on("message")` → `steward.getConversation()?.sendUserMessage(text)` (one turn)
  *   - outbound: `steward.on("agent_end")` → final assistant text → `sendMessage`
  *   - typing:   `agent_start`/`agent_end` toggle the Telegram "typing…" indicator
  *   - commands: `/new`, `/status`, `/help` are handled here, not sent to the model
@@ -79,12 +79,13 @@ export default function (steward: ExtensionAPI) {
 		const command = text.slice(1).split(/\s+/)[0].split("@")[0].toLowerCase();
 		switch (command) {
 			case "new": {
-				const { cancelled } = await steward.newSession();
+				const conversation = steward.getConversation();
+				const cancelled = conversation ? (await conversation.newSession()).cancelled : true;
 				await reply(chatId, cancelled ? "Could not start a new session." : "Started a fresh session.");
 				return;
 			}
 			case "status": {
-				const name = steward.getSessionName() ?? "(unnamed)";
+				const name = steward.getConversation()?.getSessionName() ?? "(unnamed)";
 				const model = lastModel ?? "(unknown until first reply)";
 				await reply(chatId, `Session: ${name}\nModel: ${model}`);
 				return;
@@ -109,7 +110,7 @@ export default function (steward: ExtensionAPI) {
 		}
 
 		// followUp so a message arriving mid-stream queues cleanly instead of interrupting.
-		steward.sendUserMessage(m.text, { deliverAs: "followUp" });
+		void steward.getConversation()?.sendUserMessage(m.text, { deliverAs: "followUp" });
 	});
 
 	// Typing indicator: kept alive on a timer while a turn runs (Telegram clears the
