@@ -51,7 +51,7 @@ export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, isValidThinkingLevel } from "./c
 export type { ResourceDiagnostic, ResourceSummary } from "./core/diagnostics.ts";
 // The Environment seam: the single backend every file/shell tool consumes. Extensions reach the
 // session's instance via ctx.environment; createHostEnvironment builds the unconfined host backend
-// (the CLI `!` path uses it). The session host builds the full target map via createEnvironments.
+// (the CLI `!` path uses it). The agent runtime builds the full target map via createEnvironments.
 export { createHostEnvironment, type Environment, type FileStat } from "./core/environments/index.ts";
 // Extension system
 export type {
@@ -237,11 +237,13 @@ export {
 	openAgentSession,
 } from "./core/session.ts";
 export {
+	AgentRuntime,
+	type AgentRuntimeOptions,
 	type ContextInfo,
+	Conversation,
+	type ConversationPromptOptions,
 	type IntegrationInfo,
-	SessionHost,
-	type SessionHostOptions,
-} from "./core/session-host.ts";
+} from "./core/agent-runtime.ts";
 export type {
 	BranchSummaryEntry,
 	CompactionEntry,

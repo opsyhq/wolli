@@ -197,7 +197,7 @@ function createExtensionAPI(
 	eventBus: EventBus,
 	integrationRunner?: IntegrationRunner,
 ): ExtensionAPI {
-	// When no integration runner is wired (extension loaded outside a SessionHost), hand
+	// When no integration runner is wired (extension loaded outside an AgentRuntime), hand
 	// back a deferred handle so `getIntegration(...)` itself doesn't throw at load time —
 	// only its `.on`/`.call` throw if actually used.
 	const deferredIntegrationHandle = (name: string): IntegrationHandle => ({

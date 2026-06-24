@@ -1,15 +1,15 @@
 /**
  * Extension-subsystem integration: the four functional checks the Tier 5 wiring
- * (SessionHost.build) exists to deliver. Each builds a REAL SessionHost against a
+ * (AgentRuntime) exists to deliver. Each builds a REAL AgentRuntime against a
  * temp agent home + a faux pi-ai provider (no network), so the whole seam runs:
  * discovery → load → runner → frozen prompt → tool registration → core binding →
  * event translation.
  *
  *  1. discovered skills are frozen into the system prompt the harness sends;
  *  2. an extension's registerTool reaches the harness AND its session_start
- *     lifecycle handler fires during build;
+ *     lifecycle handler fires on create;
  *  3. an extension's message_end mutation is applied in place and persisted;
- *  4. newSession() invalidates the superseded runner (its ctx goes stale).
+ *  4. createConversation() invalidates the superseded runner (its ctx goes stale).
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -22,8 +22,9 @@ import { createAgent } from "../src/core/agent-config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { convertToLlm, createBashExecutionMessage } from "../src/core/messages.ts";
+import { ModelRegistry } from "../src/core/model-registry.ts";
 import { openAgentSession } from "../src/core/session.ts";
-import { SessionHost } from "../src/core/session-host.ts";
+import { AgentRuntime } from "../src/core/agent-runtime.ts";
 
 const AGENT = "scribe";
 
@@ -117,10 +118,10 @@ let sharedDir: string;
 let markerDir: string;
 const registrations: Array<{ unregister(): void }> = [];
 
-function makeHost(): { host: SessionHost; registration: ReturnType<typeof registerFauxProvider> } {
+function makeRuntime(): { runtime: AgentRuntime; registration: ReturnType<typeof registerFauxProvider> } {
 	const registration = registerFauxProvider();
 	registrations.push(registration);
-	// Faux models are typed Model<string>; the host wants Model<Api> (Api is a
+	// Faux models are typed Model<string>; the runtime wants Model<Api> (Api is a
 	// string supertype) — the cast bridges the faux test double to the real shape.
 	const model = registration.getModel() as unknown as Model<Api>;
 	const authStorage = AuthStorage.create(join(sharedDir, "auth.json"));
@@ -128,13 +129,14 @@ function makeHost(): { host: SessionHost; registration: ReturnType<typeof regist
 	// key; the faux provider has none, so inject a runtime override (stands in for a
 	// real provider being authed).
 	authStorage.setRuntimeApiKey(model.provider, "faux-test-key");
-	const host = new SessionHost({
+	const runtime = new AgentRuntime({
 		name: AGENT,
 		model,
 		authStorage,
+		modelRegistry: ModelRegistry.create(authStorage),
 		integrationAccounts: IntegrationAccountStorage.inMemory(),
 	});
-	return { host, registration };
+	return { runtime, registration };
 }
 
 beforeEach(() => {
@@ -170,7 +172,7 @@ afterEach(async () => {
 
 describe("extension subsystem wiring", () => {
 	it("freezes discovered skills into the system prompt the harness sends", async () => {
-		const { host, registration } = makeHost();
+		const { runtime, registration } = makeRuntime();
 		let capturedSystemPrompt = "";
 		registration.setResponses([
 			(context) => {
@@ -179,35 +181,35 @@ describe("extension subsystem wiring", () => {
 			},
 		]);
 
-		await host.start({ fresh: true });
-		await host.harness.prompt("hello");
+		const conversation = await runtime.createConversation();
+		await conversation.harness.prompt("hello");
 
 		expect(capturedSystemPrompt).toContain("<available_skills>");
 		expect(capturedSystemPrompt).toContain("note-taking");
-		await host.cleanup();
+		await runtime.cleanup();
 	});
 
-	it("registers extension tools on the harness and fires session_start during build", async () => {
-		const { host } = makeHost();
+	it("registers extension tools on the harness and fires session_start on create", async () => {
+		const { runtime } = makeRuntime();
 
-		await host.start({ fresh: true });
+		const conversation = await runtime.createConversation();
 
 		// registerTool reached the harness alongside the built-ins.
-		expect(host.harness.getTools().map((tool) => tool.name)).toContain("test_echo");
+		expect(conversation.harness.getTools().map((tool) => tool.name)).toContain("test_echo");
 
 		// session_start fired with reason "new" (fresh build) — recorded by the extension.
 		const marker = JSON.parse(readFileSync(join(markerDir, "session_start.json"), "utf-8"));
 		expect(marker).toEqual({ reason: "new" });
-		await host.cleanup();
+		await runtime.cleanup();
 	});
 
 	it("applies and persists a message_end mutation", async () => {
-		const { host, registration } = makeHost();
+		const { runtime, registration } = makeRuntime();
 		registration.setResponses([() => fauxAssistantMessage("original assistant text")]);
 
-		await host.start({ fresh: true });
-		await host.harness.prompt("hello");
-		await host.cleanup();
+		const conversation = await runtime.createConversation();
+		await conversation.harness.prompt("hello");
+		await runtime.cleanup();
 
 		// Re-open the session from disk: the persisted assistant message must carry the
 		// extension's in-place replacement, proving the mutation survived to durable state.
@@ -223,43 +225,42 @@ describe("extension subsystem wiring", () => {
 		expect(text).toBe("MUTATED_BY_EXTENSION");
 	});
 
-	it("invalidates the previous runner's ctx on newSession", async () => {
-		const { host } = makeHost();
-		await host.start({ fresh: true });
+	it("invalidates the previous runner's ctx on createConversation", async () => {
+		const { runtime } = makeRuntime();
+		await runtime.createConversation();
 
-		const previousRunner = host.extensionRunner;
+		const previousRunner = runtime.extensionRunner;
 		// Live ctx works before the swap.
 		expect(() => previousRunner.createContext().cwd).not.toThrow();
 
-		// "deploy" reason: this test exercises the runner swap, not the forming guard,
-		// so it uses the intent that is always permitted out of any session.
-		await host.newSession({ reason: "deploy" });
+		// Creating another conversation swaps the runner in place.
+		await runtime.createConversation();
 
 		// After the swap the superseded runner is invalidated: any captured ctx goes stale.
 		expect(() => previousRunner.createContext().cwd).toThrow(/stale/);
-		// The host now exposes a fresh, live runner.
-		expect(host.extensionRunner).not.toBe(previousRunner);
-		expect(() => host.extensionRunner.createContext().cwd).not.toThrow();
-		await host.cleanup();
+		// The runtime now exposes a fresh, live runner.
+		expect(runtime.extensionRunner).not.toBe(previousRunner);
+		expect(() => runtime.extensionRunner.createContext().cwd).not.toThrow();
+		await runtime.cleanup();
 	});
 
 	it("runs an extension command and does not reach the model", async () => {
 		writeFileSync(join(getAgentDir(AGENT), "extensions", "cmd-ext.ts"), COMMAND_EXTENSION_SOURCE, "utf-8");
-		const { host, registration } = makeHost();
-		await host.start({ fresh: true });
+		const { runtime, registration } = makeRuntime();
+		const conversation = await runtime.createConversation();
 
-		await host.prompt("/greet there");
+		await conversation.prompt("/greet there");
 
 		const marker = JSON.parse(readFileSync(join(markerDir, "command.json"), "utf-8"));
 		expect(marker).toEqual({ args: "there" });
 		// The command handled the input itself — no model turn ran.
 		expect(registration.state.callCount).toBe(0);
-		await host.cleanup();
+		await runtime.cleanup();
 	});
 
 	it("applies an input transform and short-circuits a handled input", async () => {
 		writeFileSync(join(getAgentDir(AGENT), "extensions", "input-ext.ts"), INPUT_EXTENSION_SOURCE, "utf-8");
-		const { host, registration } = makeHost();
+		const { runtime, registration } = makeRuntime();
 		let capturedUserText = "";
 		registration.setResponses([
 			(context) => {
@@ -269,33 +270,33 @@ describe("extension subsystem wiring", () => {
 			},
 		]);
 
-		await host.start({ fresh: true });
+		const conversation = await runtime.createConversation();
 
 		// "raw" is rewritten before reaching the model.
-		await host.prompt("raw");
+		await conversation.prompt("raw");
 		expect(capturedUserText).toBe("transformed");
 
 		// "skipme" is fully handled by the extension — no further model turn.
 		const callsBefore = registration.state.callCount;
-		await host.prompt("skipme");
+		await conversation.prompt("skipme");
 		expect(registration.state.callCount).toBe(callsBefore);
-		await host.cleanup();
+		await runtime.cleanup();
 	});
 
 	it("lets an extension handle user_bash and returns its result", async () => {
 		writeFileSync(join(getAgentDir(AGENT), "extensions", "bash-ext.ts"), USER_BASH_EXTENSION_SOURCE, "utf-8");
-		const { host } = makeHost();
-		await host.start({ fresh: true });
+		const { runtime } = makeRuntime();
+		await runtime.createConversation();
 
-		const result = await host.extensionRunner.emitUserBash({
+		const result = await runtime.extensionRunner.emitUserBash({
 			type: "user_bash",
 			command: "echo hi",
 			excludeFromContext: false,
-			cwd: host.getCwd(),
+			cwd: runtime.getCwd(),
 		});
 
 		expect(result?.result?.output).toBe("intercepted:echo hi");
-		await host.cleanup();
+		await runtime.cleanup();
 	});
 
 	it("records ! bash output into context and excludes !!", () => {
@@ -315,12 +316,12 @@ describe("extension subsystem wiring", () => {
 	});
 
 	it("reload picks up new resources and preserves the transcript", async () => {
-		const { host, registration } = makeHost();
+		const { runtime, registration } = makeRuntime();
 		registration.setResponses([() => fauxAssistantMessage("hi there")]);
-		await host.start({ fresh: true });
-		await host.prompt("hello");
+		const conversation = await runtime.createConversation();
+		await conversation.prompt("hello");
 
-		const messagesBefore = host.getEntries().filter((e) => e.type === "message").length;
+		const messagesBefore = conversation.getEntries().filter((e) => e.type === "message").length;
 		expect(messagesBefore).toBeGreaterThan(0);
 
 		const agentDir = getAgentDir(AGENT);
@@ -339,32 +340,32 @@ describe("extension subsystem wiring", () => {
 		);
 		writeFileSync(join(agentDir, "extensions", "cmd-ext.ts"), COMMAND_EXTENSION_SOURCE, "utf-8");
 
-		await host.reload();
+		await runtime.reload();
 
-		const commandNames = host.getCommands().map((c) => c.name);
+		const commandNames = runtime.getCommands().map((c) => c.name);
 		expect(commandNames).toContain("skill:research");
 		expect(commandNames).toContain("summarize");
 		expect(commandNames).toContain("greet");
 		// No new harness on reload — the conversation survives.
-		expect(host.getEntries().filter((e) => e.type === "message").length).toBe(messagesBefore);
-		await host.cleanup();
+		expect(conversation.getEntries().filter((e) => e.type === "message").length).toBe(messagesBefore);
+		await runtime.cleanup();
 	});
 
 	it("reports resource counts and load errors in the resource summary", async () => {
-		const { host } = makeHost();
-		await host.start({ fresh: true });
+		const { runtime } = makeRuntime();
+		await runtime.createConversation();
 
-		const summary = host.getResourceSummary();
+		const summary = runtime.getResourceSummary();
 		expect(summary.extensions).toBeGreaterThanOrEqual(1);
 		expect(summary.skills).toBeGreaterThanOrEqual(1);
 		expect(summary.diagnostics).toEqual([]);
 
 		writeFileSync(join(getAgentDir(AGENT), "extensions", "broken.ts"), BROKEN_EXTENSION_SOURCE, "utf-8");
-		await host.reload();
+		await runtime.reload();
 
-		const afterReload = host.getResourceSummary();
+		const afterReload = runtime.getResourceSummary();
 		expect(afterReload.diagnostics.some((d) => d.type === "error" && d.message.includes("boom"))).toBe(true);
-		await host.cleanup();
+		await runtime.cleanup();
 	});
 
 	it("ships docs and examples in the published package", () => {
@@ -374,7 +375,7 @@ describe("extension subsystem wiring", () => {
 	});
 
 	it("queues a mid-stream sendUserMessage as a follow-up and answers in order", async () => {
-		const { host, registration } = makeHost();
+		const { runtime, registration } = makeRuntime();
 		const firstEntered = deferred();
 		const releaseFirst = deferred();
 		const secondTurnUserText: string[] = [];
@@ -396,19 +397,19 @@ describe("extension subsystem wiring", () => {
 		const onUnhandled = (err: unknown) => unhandled.push(err);
 		process.on("unhandledRejection", onUnhandled);
 		try {
-			await host.start({ fresh: true });
+			const conversation = await runtime.createConversation();
 
 			// An idle send starts a turn.
-			const firstTurn = host.sendUserMessage("first");
+			const firstTurn = conversation.sendUserMessage("first");
 			await firstEntered.promise;
-			expect(host.harness.isIdle).toBe(false);
+			expect(conversation.harness.isIdle).toBe(false);
 
 			// The mid-stream send routes to followUp — it must resolve, not throw "busy".
-			await expect(host.sendUserMessage("second", { deliverAs: "followUp" })).resolves.toBeUndefined();
+			await expect(conversation.sendUserMessage("second", { deliverAs: "followUp" })).resolves.toBeUndefined();
 
 			releaseFirst.resolve();
 			await firstTurn;
-			await host.harness.waitForIdle();
+			await conversation.harness.waitForIdle();
 
 			// Both turns ran, in order: the follow-up "second" was delivered to a later turn.
 			expect(registration.state.callCount).toBe(2);
@@ -417,7 +418,7 @@ describe("extension subsystem wiring", () => {
 			process.off("unhandledRejection", onUnhandled);
 		}
 		expect(unhandled).toEqual([]);
-		await host.cleanup();
+		await runtime.cleanup();
 	});
 });
 

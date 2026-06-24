@@ -1,5 +1,5 @@
 /**
- * Daemon mode (HTTP/SSE server) integration — against a REAL `SessionHost` + a faux
+ * Daemon mode (HTTP/SSE server) integration — against a REAL `AgentRuntime` + a faux
  * provider (no network), so the whole transport runs: bearer auth, the `POST /control`
  * command switch, the curated `GET /events` SSE stream, `Last-Event-ID` replay, and the
  * rebind-on-`new_session` re-subscribe.
@@ -14,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgent, deployAgent, isDeployed, loadAgentConfig } from "../src/core/agent-config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
-import { SessionHost } from "../src/core/session-host.ts";
+import { ModelRegistry } from "../src/core/model-registry.ts";
+import { AgentRuntime } from "../src/core/agent-runtime.ts";
 import { runDaemonMode } from "../src/server.ts";
 import { FORWARDED_EVENT_TYPES } from "../src/types.ts";
 
@@ -25,35 +26,36 @@ let home: string;
 let sharedDir: string;
 const registrations: Array<{ unregister(): void }> = [];
 const sseClients: SseClient[] = [];
-let activeHost: SessionHost | undefined;
+let activeRuntime: AgentRuntime | undefined;
 let activeServer: ServerType | undefined;
 
-function makeHost(): { host: SessionHost; registration: ReturnType<typeof registerFauxProvider> } {
+function makeRuntime(): { runtime: AgentRuntime; registration: ReturnType<typeof registerFauxProvider> } {
 	const registration = registerFauxProvider();
 	registrations.push(registration);
-	// Faux models are typed Model<string>; the host wants Model<Api>.
+	// Faux models are typed Model<string>; the runtime wants Model<Api>.
 	const model = registration.getModel() as unknown as Model<Api>;
 	const authStorage = AuthStorage.create(join(sharedDir, "auth.json"));
 	// Request-time auth routes through ModelRegistry, which requires a resolvable API
 	// key; the faux provider has none, so inject a runtime override (stands in for a
 	// real provider being authed).
 	authStorage.setRuntimeApiKey(model.provider, "faux-test-key");
-	const host = new SessionHost({
+	const runtime = new AgentRuntime({
 		name: AGENT,
 		model,
 		authStorage,
+		modelRegistry: ModelRegistry.create(authStorage),
 		integrationAccounts: IntegrationAccountStorage.inMemory(),
 	});
-	return { host, registration };
+	return { runtime, registration };
 }
 
-/** Build + start a host, wrap it in a daemon on an ephemeral port. Returns the faux provider. */
+/** Build + start a runtime, wrap it in a daemon on an ephemeral port. Returns the faux provider. */
 async function startDaemon(opts: { deploy?: boolean } = {}): Promise<ReturnType<typeof registerFauxProvider>> {
 	if (opts.deploy) deployAgent(AGENT);
-	const { host, registration } = makeHost();
-	activeHost = host;
-	await host.start({ fresh: true });
-	activeServer = await runDaemonMode(host, { port: 0, token: TOKEN });
+	const { runtime, registration } = makeRuntime();
+	activeRuntime = runtime;
+	await runtime.createConversation();
+	activeServer = await runDaemonMode(runtime, { port: 0, token: TOKEN });
 	return registration;
 }
 
@@ -220,9 +222,9 @@ afterEach(async () => {
 		await new Promise<void>((resolve) => activeServer?.close(() => resolve()));
 		activeServer = undefined;
 	}
-	if (activeHost) {
-		await activeHost.cleanup();
-		activeHost = undefined;
+	if (activeRuntime) {
+		await activeRuntime.cleanup();
+		activeRuntime = undefined;
 	}
 	for (const registration of registrations.splice(0)) registration.unregister();
 	delete process.env.STEWARD_HOME;
@@ -519,7 +521,7 @@ describe("daemon plugin/onboarding consistency", () => {
 		expect(res).toMatchObject({ command: "onboard_plugin", success: true });
 		expect(res.data.results).toEqual([{ service: "fakesvc", status: "connected" }]);
 
-		// Onboarding wrote through the host's LIVE account store — no cross-process refresh path.
-		expect(activeHost?.integrationAccounts.get("fakesvc", "default")).toEqual({ token: "secret-token" });
+		// Onboarding wrote through the runtime's LIVE account store — no cross-process refresh path.
+		expect(activeRuntime?.integrationAccounts.get("fakesvc", "default")).toEqual({ token: "secret-token" });
 	});
 });

@@ -1,14 +1,14 @@
 /**
  * Daemon server + runner.
  *
- * `runDaemon(name, opts)` resolves the agent's model/auth, starts its `SessionHost`, then binds a
+ * `runDaemon(name, opts)` resolves the agent's model/auth, starts its `AgentRuntime`, then binds a
  * long-running loopback HTTP/SSE server around it and blocks until a signal tears it down:
  *
  *   - `GET /events`  (SSE)  — the curated event stream + async prompt acks;
  *   - `POST /control`       — commands, whose sync response is the HTTP body;
  *   - `GET /health`         — liveness, no auth.
  *
- * `SessionHost` owns every lifecycle concern (start/newSession/reload/cleanup); the server is a
+ * `AgentRuntime` owns every lifecycle concern (create/resume/reload/cleanup); the server is a
  * thin wrapper that calls into it. The `@opsyhq/cli` client's hidden `daemon` subcommand and every
  * OS service unit invoke `runDaemon`.
  */
@@ -21,7 +21,7 @@ import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
 import { APP_NAME, ENV_DAEMON_TOKEN, getAgentDir, VERSION } from "./config.ts";
-import { agentExists, deployAgent, loadAgentConfig } from "./core/agent-config.ts";
+import { agentExists, deployAgent, isDeployed, loadAgentConfig } from "./core/agent-config.ts";
 import { createAgentPluginManager } from "./core/agent-plugin-manager.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { loadDaemonConfig, saveDaemonConfig } from "./core/daemon-config.ts";
@@ -39,8 +39,8 @@ import { ModelRegistry } from "./core/model-registry.ts";
 import { findInitialModel } from "./core/model-resolver.ts";
 import type { DefaultPluginManager } from "./core/plugin-manager.ts";
 import { getServiceManager } from "./core/service/service-manager.ts";
-import { SessionHost } from "./core/session-host.ts";
-import { getDefaultModel, getDefaultProvider, getEnabledModels } from "./core/settings.ts";
+import { AgentRuntime, type Conversation } from "./core/agent-runtime.ts";
+import { getDefaultModel, getDefaultProvider } from "./core/settings.ts";
 import { type Theme, theme } from "./theme/theme.ts";
 import {
 	type DaemonCommand,
@@ -84,35 +84,40 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 	return { promise, resolve, reject };
 }
 
-/** The `get_state` / `hello` snapshot — only the fields the host actually surfaces. */
-function snapshot(host: SessionHost): DaemonSessionState {
-	const harness = host.harness;
+/**
+ * The `get_state` / `hello` snapshot. Config/cwd come from the runtime; model/thinking/scope/
+ * streaming + session ids/counts come from the live conversation.
+ */
+function snapshot(runtime: AgentRuntime): DaemonSessionState {
+	const conversation = runtime.getConversation();
+	if (!conversation) throw new Error("AgentRuntime not started.");
+	const harness = conversation.harness;
 	return {
 		model: harness.getModel(),
 		thinkingLevel: harness.getThinkingLevel(),
-		scopedModels: host.getScopedModels(),
+		scopedModels: conversation.getScopedModels(),
 		isStreaming: !harness.isIdle,
-		sessionId: host.getSessionId(),
-		sessionName: host.getSessionName(),
-		sessionFile: host.getSessionFile(),
-		messageCount: host.buildSessionContext().messages.length,
-		pendingMessageCount: host.getPendingMessageCount(),
-		config: host.config,
-		cwd: host.getCwd(),
+		sessionId: conversation.getSessionId(),
+		sessionName: conversation.getSessionName(),
+		sessionFile: conversation.getSessionFile(),
+		messageCount: conversation.buildSessionContext().messages.length,
+		pendingMessageCount: conversation.getPendingMessageCount(),
+		config: runtime.config,
+		cwd: runtime.getCwd(),
 	};
 }
 
 /**
- * Drive `host.prompt()` and ack the instant the prompt is accepted (handled, queued, or
- * about to run) rather than when the whole turn ends — `host.prompt()` only resolves at
- * turn end. The turn itself streams over SSE; `agent_end` marks completion.
+ * Drive the conversation's `prompt()` and ack the instant the prompt is accepted (handled, queued,
+ * or about to run) rather than when the whole turn ends — `prompt()` only resolves at turn end.
+ * The turn itself streams over SSE; `agent_end` marks completion.
  */
 async function handlePrompt(
-	host: SessionHost,
+	conversation: Conversation,
 	cmd: Extract<DaemonCommand, { type: "prompt" }>,
 ): Promise<DaemonResponse> {
 	const accepted = deferred<void>();
-	void host
+	void conversation
 		.prompt(cmd.message, {
 			images: cmd.images,
 			source: "rpc",
@@ -139,16 +144,16 @@ function pluginRootForSpec(pluginManager: DefaultPluginManager, spec: string): s
 }
 
 /**
- * Drive integration onboarding for the selected services, writing each credential through the host's
+ * Drive integration onboarding for the selected services, writing each credential through the runtime's
  * live account store (no cross-process staleness) and rendering `onboard(ctx)`'s dialogs via the
  * runner's bound `uiContext` (which emits them to attached clients). Returns structured per-service
  * results for the client to print.
  */
 async function runDaemonOnboarding(
-	host: SessionHost,
+	runtime: AgentRuntime,
 	selectServices: (input: { integrations: Integration[]; pluginManager: DefaultPluginManager }) => string[],
 ): Promise<OnboardServiceResult[]> {
-	const name = host.config.name;
+	const name = runtime.config.name;
 	const agentDir = getAgentDir(name);
 	const { pluginManager } = createAgentPluginManager(name);
 	const resolved = await pluginManager.resolve();
@@ -156,9 +161,9 @@ async function runDaemonOnboarding(
 	const { integrations } = await loadIntegrations(integrationPaths, agentDir);
 
 	const services = selectServices({ integrations, pluginManager });
-	// The host's live account store is the single writer; its bound uiContext renders dialogs over the wire.
-	const accounts = host.integrationAccounts;
-	const ui: IntegrationOnboardUI = host.extensionRunner.getUIContext();
+	// The runtime's live account store is the single writer; its bound uiContext renders dialogs over the wire.
+	const accounts = runtime.integrationAccounts;
+	const ui: IntegrationOnboardUI = runtime.extensionRunner.getUIContext();
 
 	const results: OnboardServiceResult[] = [];
 	for (const service of services) {
@@ -176,14 +181,16 @@ async function runDaemonOnboarding(
  * The command dispatch switch. Throws on command-level failure (caught by the `/control`
  * route, surfaced as `err`).
  */
-async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<DaemonResponse> {
+async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise<DaemonResponse> {
 	const id = cmd.id;
-	const harness = host.harness;
+	const conversation = runtime.getConversation();
+	if (!conversation) throw new Error("AgentRuntime not started.");
+	const harness = conversation.harness;
 
 	switch (cmd.type) {
 		// Prompting
 		case "prompt":
-			return handlePrompt(host, cmd);
+			return handlePrompt(conversation, cmd);
 		case "steer":
 			await harness.steer(cmd.message, { images: cmd.images });
 			return ok(id, "steer");
@@ -198,13 +205,18 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 			await harness.waitForIdle();
 			return ok(id, "wait_for_idle");
 		case "clear_queue":
-			return ok(id, "clear_queue", await host.clearQueue());
-		case "new_session":
-			// Return the fresh snapshot — never the harness the swap returns.
-			await host.newSession({ reason: cmd.reason ?? "new" });
-			return ok(id, "new_session", snapshot(host));
+			return ok(id, "clear_queue", await conversation.clearQueue());
+		case "new_session": {
+			// A forming (undeployed) agent stays in its birth session; only a deploy-reason swap may
+			// replace it. snapshot() re-resolves the new conversation after the swap.
+			if (cmd.reason !== "deploy" && !isDeployed(loadAgentConfig(runtime.config.name))) {
+				throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
+			}
+			await runtime.createConversation();
+			return ok(id, "new_session", snapshot(runtime));
+		}
 		case "reload":
-			await host.reload();
+			await runtime.reload();
 			return ok(id, "reload");
 		case "deploy": {
 			// The human's single Yes. Flip the latch, register the OS service unit, and swap to a fresh
@@ -213,70 +225,71 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 			// binds its own ephemeral port while this birth daemon keeps serving its own (two ephemeral
 			// binds never collide). The client then reconnects to it and stops this daemon. With the `none`
 			// backend there is no supervisor, so this daemon stays on the fresh session.
-			const name = host.config.name;
+			const name = runtime.config.name;
 			const serviceManager = getServiceManager();
 			deployAgent(name);
 			serviceManager.install(name);
-			await host.newSession({ reason: "deploy" });
+			// Latch already flipped, so swap unguarded to the fresh deployed session.
+			await runtime.createConversation();
 			if (serviceManager.kind !== "none") {
 				serviceManager.start(name);
 			}
-			return ok(id, "deploy", snapshot(host));
+			return ok(id, "deploy", snapshot(runtime));
 		}
 
 		// Model / thinking
 		case "set_thinking_level":
-			await host.setThinkingLevel(cmd.level);
+			await conversation.setThinkingLevel(cmd.level);
 			return ok(id, "set_thinking_level");
 		case "set_model":
-			return ok(id, "set_model", await host.setModelById(cmd.provider, cmd.modelId));
+			return ok(id, "set_model", await conversation.setModelById(cmd.provider, cmd.modelId));
 		case "get_available_models":
-			return ok(id, "get_available_models", { models: host.getAvailableModels() });
+			return ok(id, "get_available_models", { models: runtime.getAvailableModels() });
 		case "set_scoped_models":
-			await host.setScopedModels(cmd.enabledModelIds);
+			await conversation.setScopedModels(cmd.enabledModelIds);
 			return ok(id, "set_scoped_models");
 		case "set_enabled_models":
-			host.setEnabledModels(cmd.enabledModels);
+			runtime.setEnabledModels(cmd.enabledModels);
 			return ok(id, "set_enabled_models");
 
 		// Provider login — runs daemon-side; OAuth prompts ride the uiContext dialog seam.
 		case "login":
-			return ok(id, "login", await host.login(cmd.provider, cmd.authType));
+			return ok(id, "login", await runtime.login(cmd.provider, cmd.authType));
 		case "logout":
-			return ok(id, "logout", host.logout(cmd.provider));
+			return ok(id, "logout", runtime.logout(cmd.provider));
 		case "get_login_providers":
-			return ok(id, "get_login_providers", { providers: host.getLoginProviderOptions(cmd.authType) });
+			return ok(id, "get_login_providers", { providers: runtime.getLoginProviderOptions(cmd.authType) });
 		case "get_logout_providers":
-			return ok(id, "get_logout_providers", { providers: host.getLogoutProviderOptions() });
+			return ok(id, "get_logout_providers", { providers: runtime.getLogoutProviderOptions() });
 
 		// State
 		case "get_state":
-			return ok(id, "get_state", snapshot(host));
+			return ok(id, "get_state", snapshot(runtime));
 		case "get_messages":
-			return ok(id, "get_messages", { messages: host.buildSessionContext().messages });
+			return ok(id, "get_messages", { messages: conversation.buildSessionContext().messages });
 		case "get_commands":
-			return ok(id, "get_commands", { commands: host.getCommands() });
+			return ok(id, "get_commands", { commands: runtime.getCommands() });
 		case "get_entries":
-			return ok(id, "get_entries", { entries: host.getEntries() });
+			return ok(id, "get_entries", { entries: conversation.getEntries() });
 		case "get_resource_summary":
-			return ok(id, "get_resource_summary", host.getResourceSummary());
+			return ok(id, "get_resource_summary", runtime.getResourceSummary());
 		case "get_tool_info":
 			return ok(id, "get_tool_info", {
-				tools: host.getToolInfos(),
+				tools: runtime.getToolInfos(),
 				activeToolNames: harness.getActiveTools().map((tool) => tool.name),
 			});
 		case "get_integration_info":
-			return ok(id, "get_integration_info", { integrations: host.getIntegrationInfos() });
+			return ok(id, "get_integration_info", { integrations: runtime.getIntegrationInfos() });
 		case "get_skills":
-			return ok(id, "get_skills", { skills: host.getSkills() });
+			return ok(id, "get_skills", { skills: runtime.getSkills() });
 		case "get_plugins":
-			return ok(id, "get_plugins", { plugins: host.getPlugins() });
+			return ok(id, "get_plugins", { plugins: runtime.getPlugins() });
 		case "get_context_info":
-			return ok(id, "get_context_info", { contexts: host.getContextInfos() });
+			return ok(id, "get_context_info", { contexts: runtime.getContextInfos() });
 
 		// Session-mutation helpers
 		case "seed_assistant_message":
-			return ok(id, "seed_assistant_message", await host.seedAssistantMessage(cmd.text));
+			return ok(id, "seed_assistant_message", await conversation.seedAssistantMessage(cmd.text));
 		case "append_message":
 			await harness.appendMessage(cmd.message);
 			return ok(id, "append_message");
@@ -284,29 +297,29 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 		// Plugins — single-writer mutations: run the persist primitive in-process, then reload so
 		// the daemon's own resources/accounts are never stale.
 		case "install_plugin": {
-			const { pluginManager } = createAgentPluginManager(host.config.name);
+			const { pluginManager } = createAgentPluginManager(runtime.config.name);
 			await pluginManager.installAndPersist(cmd.source);
-			await host.reload();
+			await runtime.reload();
 			return ok(id, "install_plugin");
 		}
 		case "remove_plugin": {
-			const { pluginManager } = createAgentPluginManager(host.config.name);
+			const { pluginManager } = createAgentPluginManager(runtime.config.name);
 			const removed = await pluginManager.removeAndPersist(cmd.source);
-			await host.reload();
+			await runtime.reload();
 			return ok(id, "remove_plugin", { removed });
 		}
 		case "update_plugins": {
-			const { pluginManager } = createAgentPluginManager(host.config.name);
+			const { pluginManager } = createAgentPluginManager(runtime.config.name);
 			await pluginManager.update(cmd.source);
-			await host.reload();
+			await runtime.reload();
 			return ok(id, "update_plugins");
 		}
-		// Onboarding writes through the host's live account store, so no second reload is needed
+		// Onboarding writes through the runtime's live account store, so no second reload is needed
 		// (the credential is already in-memory-consistent); `install_plugin` did the reload. The
 		// source scopes onboarding to the just-installed plugin's integrations that declare `onboard`.
 		case "onboard_plugin":
 			return ok(id, "onboard_plugin", {
-				results: await runDaemonOnboarding(host, ({ integrations, pluginManager }) => {
+				results: await runDaemonOnboarding(runtime, ({ integrations, pluginManager }) => {
 					const root = pluginRootForSpec(pluginManager, cmd.source);
 					const services: string[] = [];
 					for (const integration of integrations) {
@@ -327,11 +340,11 @@ async function handleCommand(host: SessionHost, cmd: DaemonCommand): Promise<Dae
 }
 
 /**
- * Resolve model/auth once and construct the `SessionHost` — the front half of the daemon runner.
- * Returns the unstarted `host`, or an `{ error }` for the model/auth failures that should print to
+ * Resolve model/auth once and construct the `AgentRuntime` — the front half of the daemon runner.
+ * Returns the unstarted `runtime`, or an `{ error }` for the model/auth failures that should print to
  * stderr and exit 1.
  */
-async function createAgentSessionHost(name: string): Promise<{ host: SessionHost } | { error: string }> {
+async function createAgentRuntime(name: string): Promise<{ runtime: AgentRuntime } | { error: string }> {
 	const config = loadAgentConfig(name);
 
 	const authStorage = AuthStorage.create();
@@ -364,8 +377,8 @@ async function createAgentSessionHost(name: string): Promise<{ host: SessionHost
 		return { error: `No credentials found for provider "${model.provider}". Log in with the steward CLI.` };
 	}
 
-	const host = new SessionHost({ name, model, authStorage, integrationAccounts });
-	return { host };
+	const runtime = new AgentRuntime({ name, model, authStorage, modelRegistry, integrationAccounts });
+	return { runtime };
 }
 
 export interface RunDaemonOptions {
@@ -374,7 +387,7 @@ export interface RunDaemonOptions {
 }
 
 /**
- * The `daemon <name>` runner: start the agent's `SessionHost`, then wrap it in a long-running
+ * The `daemon <name>` runner: start the agent's `AgentRuntime`, then wrap it in a long-running
  * HTTP/SSE server clients attach to. Binds an OS-assigned ephemeral port (unless `--port` overrides),
  * writes the pid/port/token to the temp-dir config so clients can find it, and blocks on the listening
  * server until a signal tears it down. The `@opsyhq/cli` client's hidden `daemon` subcommand and every
@@ -386,22 +399,15 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
 		return 1;
 	}
 
-	const built = await createAgentSessionHost(name);
+	const built = await createAgentRuntime(name);
 	if ("error" in built) {
 		process.stderr.write(`${built.error}\n`);
 		return 1;
 	}
-	const { host } = built;
+	const { runtime } = built;
 
-	await host.start();
-
-	// Seed the session scope by the same read-through chain as the model: agent.json → shared
-	// global. A new agent with no own enabledModels transparently inherits the global shortlist.
-	// Resolved here (post-start) because the scope resolves against the host's live registry.
-	const enabledModelIds = host.config.enabledModels ?? getEnabledModels();
-	if (enabledModelIds && enabledModelIds.length > 0) {
-		await host.setScopedModels(enabledModelIds);
-	}
+	// Resume the agent's most-recent session. Scope is seeded from config inside the runtime.
+	await runtime.resumeConversation();
 
 	// Every daemon binds an OS-assigned ephemeral port and writes it back to the temp config, where
 	// clients discover it — no port is reserved up front. This is also what lets deploy stand up the
@@ -419,20 +425,20 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
 		version: VERSION,
 	});
 
-	const server = await runDaemonMode(host, { port, token });
+	const server = await runDaemonMode(runtime, { port, token });
 
 	// serve()'s callback patched the config with the OS-assigned port once listening.
 	const boundPort = loadDaemonConfig(name)?.port ?? port;
 	console.log(`${APP_NAME} daemon for "${name}" listening on http://127.0.0.1:${boundPort}`);
 
 	// server.close() drops the broadcaster subscription (via the server's "close" listener); we then
-	// release the host + config.
+	// release the runtime + config.
 	let shuttingDown = false;
 	const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
 		if (shuttingDown) return;
 		shuttingDown = true;
 		server.close();
-		await host.cleanup();
+		await runtime.cleanup();
 		// No deleteDaemonConfig here: the config is a health-validated discovery hint, and a deploy
 		// handoff's supervised successor may already own it.
 		process.exit(signal === "SIGINT" ? 130 : 143);
@@ -445,15 +451,15 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
 }
 
 /**
- * Bind a loopback HTTP/SSE server wrapping `host`, subscribe the broadcaster to the live harness
+ * Bind a loopback HTTP/SSE server wrapping `runtime`, subscribe the broadcaster to the live harness
  * (re-subscribing after every swap), and resolve once it is listening. Returns the `serve()` server
  * so `runDaemon` can `server.close()` on shutdown — closing the server drops the broadcaster
- * subscription (via the `close` listener below), the leak `host.cleanup()` does not cover. Exported
- * for the daemon integration test, which drives it directly against a faux host; not part of the SDK
+ * subscription (via the `close` listener below), the leak `runtime.cleanup()` does not cover. Exported
+ * for the daemon integration test, which drives it directly against a faux runtime; not part of the SDK
  * barrel.
  */
 export async function runDaemonMode(
-	host: SessionHost,
+	runtime: AgentRuntime,
 	{ port, token }: { port: number; token: string },
 ): Promise<ServerType> {
 	const startedAt = new Date().toISOString();
@@ -500,12 +506,14 @@ export async function runDaemonMode(
 		unsubscribe?.();
 		unsubscribe = harness.subscribe(broadcast);
 	};
-	resubscribe(host.harness);
+	// Subscribe to the live conversation's harness; rebind re-points after every swap.
+	const initialConversation = runtime.getConversation();
+	if (initialConversation) resubscribe(initialConversation.harness);
 	// Re-fire after every harness swap (build/newSession) and after reload.
-	host.setRebindHandler(resubscribe);
-	// Scoped-model scope changes are host-originated (not harness own-events), so bridge them
+	runtime.setRebindHandler(resubscribe);
+	// Scoped-model scope changes are runtime-originated (not harness own-events), so bridge them
 	// onto the same broadcaster the harness events ride.
-	host.setScopedModelsHandler((scopedModels) => void broadcast({ type: "scoped_models_update", scopedModels }));
+	runtime.setScopedModelsHandler((scopedModels) => void broadcast({ type: "scoped_models_update", scopedModels }));
 
 	// ---- Extension-UI bridge ----------------------------------------------
 	// Swap the runner's noOpUIContext for one whose dialogs ride the SSE stream (via `output`) and
@@ -724,22 +732,25 @@ export async function runDaemonMode(
 		},
 	};
 
-	host.bindInteractiveContext({
+	runtime.bindInteractiveContext({
 		uiContext,
 		mode: "rpc",
 		// Surface runner errors (extension + integration) to clients as error notifies.
 		onError: (e) => uiContext.notify(`${e.path}: ${e.error}`, "error"),
 		commandContextActions: {
-			waitForIdle: () => host.harness.waitForIdle(),
+			waitForIdle: () => runtime.getConversation()?.harness.waitForIdle() ?? Promise.resolve(),
 			newSession: async () => {
-				await host.newSession({ reason: "new" });
+				if (!isDeployed(loadAgentConfig(runtime.config.name))) {
+					throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
+				}
+				await runtime.createConversation();
 				return { cancelled: false };
 			},
 			// Tree navigation is not a daemon concern — report cancelled.
 			fork: async () => ({ cancelled: true }),
 			navigateTree: async () => ({ cancelled: true }),
 			switchSession: async () => ({ cancelled: true }),
-			reload: () => host.reload(),
+			reload: () => runtime.reload(),
 		},
 	});
 
@@ -749,7 +760,7 @@ export async function runDaemonMode(
 	app.use("/control", bearerAuth({ token }));
 	app.use("/ui-response", bearerAuth({ token }));
 
-	app.get("/health", (c) => c.json({ status: "ok", agent: host.config.name, pid: process.pid, startedAt }));
+	app.get("/health", (c) => c.json({ status: "ok", agent: runtime.config.name, pid: process.pid, startedAt }));
 
 	app.get("/events", (c) =>
 		streamSSE(c, async (stream) => {
@@ -783,7 +794,7 @@ export async function runDaemonMode(
 			}
 
 			// hello = the get_state snapshot, so a fresh attach knows the current state at once.
-			await stream.writeSSE({ event: "hello", data: JSON.stringify(snapshot(host)) });
+			await stream.writeSSE({ event: "hello", data: JSON.stringify(snapshot(runtime)) });
 
 			// Mandatory keepalive: Hono closes the stream when this callback returns, so the
 			// loop must run for the connection's lifetime (Hono issue #2993). The heartbeat
@@ -806,7 +817,7 @@ export async function runDaemonMode(
 			return c.json(err(undefined, "unknown", "Malformed JSON body."));
 		}
 		try {
-			return c.json(await handleCommand(host, cmd));
+			return c.json(await handleCommand(runtime, cmd));
 		} catch (e) {
 			return c.json(err(cmd.id, cmd.type, e instanceof Error ? e.message : String(e)));
 		}
@@ -832,8 +843,8 @@ export async function runDaemonMode(
 	// Patch the resolved port back into the config — for `port: 0` the real port is only
 	// known once the OS assigns it (read off serve()'s `info.port`).
 	const writePortBack = (port: number): void => {
-		const existing = loadDaemonConfig(host.config.name);
-		if (existing) saveDaemonConfig(host.config.name, { ...existing, port });
+		const existing = loadDaemonConfig(runtime.config.name);
+		if (existing) saveDaemonConfig(runtime.config.name, { ...existing, port });
 	};
 
 	const server = await new Promise<ServerType>((resolve) => {
@@ -843,7 +854,7 @@ export async function runDaemonMode(
 		});
 	});
 
-	// host.cleanup() does NOT drop the broadcaster subscription, so tie it to server close.
+	// runtime.cleanup() does NOT drop the broadcaster subscription, so tie it to server close.
 	server.on("close", () => {
 		try {
 			unsubscribe?.();
