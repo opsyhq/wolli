@@ -30,23 +30,16 @@ export interface SessionInfo {
 	createdAt: string;
 }
 
-/**
- * Build the per-agent session repo. Key-by-agent: always use the agent's own workspace
- * as cwd, so the repo's encodeCwd() resolves to one constant subdir per agent — sessions
- * never scatter by whatever directory the user happened to run `steward` from.
- */
-function agentRepo(name: string): { repo: JsonlSessionRepo; env: NodeExecutionEnv; cwd: string } {
-	const cwd = getWorkspaceDir(name);
-	const env = new NodeExecutionEnv({ cwd });
-	const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: getSessionsDir(name) });
-	return { repo, env, cwd };
-}
-
 export async function openAgentSession(
 	name: string,
 	options: OpenAgentSessionOptions = {},
 ): Promise<OpenAgentSessionResult> {
-	const { repo, env, cwd } = agentRepo(name);
+	// Key-by-agent: always use the agent's own workspace as cwd, so the repo's
+	// encodeCwd() resolves to one constant subdir per agent — sessions never
+	// scatter by whatever directory the user happened to run `steward` from.
+	const cwd = getWorkspaceDir(name);
+	const env = new NodeExecutionEnv({ cwd });
+	const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: getSessionsDir(name) });
 
 	// Resume a specific stored session by id, matched off the repo's listing.
 	if (options.id) {
@@ -70,7 +63,9 @@ export async function openAgentSession(
 
 /** Stored sessions for an agent, as `repo.list` returns them (newest first). */
 export async function listAgentSessions(name: string): Promise<SessionInfo[]> {
-	const { repo, cwd } = agentRepo(name);
+	const cwd = getWorkspaceDir(name);
+	const env = new NodeExecutionEnv({ cwd });
+	const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: getSessionsDir(name) });
 	const metadatas = await repo.list({ cwd });
 	return metadatas.map((metadata) => ({ id: metadata.id, createdAt: metadata.createdAt }));
 }
