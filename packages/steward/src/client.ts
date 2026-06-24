@@ -159,6 +159,36 @@ export class Agent {
 		if (result.ok) deleteDaemonConfig(this.name);
 		return result;
 	}
+
+	/**
+	 * Restart the agent's daemon so it picks up code changes (the in-process reload rebuilds only
+	 * resources, not the running binary). A supervised daemon (launchd/systemd unit) is bounced via the
+	 * service manager so its supervisor relaunches it; an unsupervised dev/birth daemon spawned by
+	 * `open()` is SIGTERMed and respawned here. Resolves once the replacement daemon (a new pid) is
+	 * healthy; the session resumes from disk, so in-memory turn state is lost.
+	 */
+	async restart(): Promise<void> {
+		const existing = loadDaemonConfig(this.name);
+		const service = getServiceManager();
+
+		if (service.kind !== "none" && service.isRunning(this.name)) {
+			service.stop(this.name);
+			service.start(this.name);
+		} else {
+			if (existing) {
+				try {
+					process.kill(existing.pid, "SIGTERM");
+				} catch {
+					// Already gone.
+				}
+			}
+			const [command, ...commandArgs] = daemonLaunchCommand(this.name);
+			const child = spawn(command, commandArgs, { detached: true, stdio: "ignore" });
+			child.unref();
+		}
+
+		await waitForHealth(this.name, (cfg) => cfg.pid !== existing?.pid);
+	}
 }
 
 /**

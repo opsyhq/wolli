@@ -53,6 +53,7 @@ Usage:
   ${APP_NAME} new <name>                                   Create an agent, then start its birth conversation
   ${APP_NAME} list                                         List agents
   ${APP_NAME} delete <name>                                Delete an agent (type-the-name confirm)
+  ${APP_NAME} restart <name>                               Restart an agent's daemon (picks up code changes)
   ${APP_NAME} <name> plugins <install|remove|list|update|configure> [source]   Manage an agent's plugins
   ${APP_NAME} <name> [message] [--print]                   Talk to an agent
 

@@ -18,6 +18,7 @@ import { runDelete } from "./commands/delete.ts";
 import { runList } from "./commands/list.ts";
 import { runNew } from "./commands/new.ts";
 import { runPlugins } from "./commands/plugins.ts";
+import { runRestart } from "./commands/restart.ts";
 import { App } from "./modes/interactive/app.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
 
@@ -53,6 +54,7 @@ export async function main(argv: string[]): Promise<number> {
 	if (command === "new") return runNew(args.positionals.slice(1));
 	if (command === "list") return runList();
 	if (command === "delete") return runDelete(args.positionals.slice(1));
+	if (command === "restart") return runRestart(args.positionals.slice(1));
 
 	// Hidden `daemon <name>`: the long-running HTTP/SSE server. Both the OS service unit and
 	// `Agent.open`'s detached spawn invoke this same subcommand.
