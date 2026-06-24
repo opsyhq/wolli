@@ -34,7 +34,7 @@ export interface ResourceLoaderReloadOptions {
 	 * Build the integration producer runner from the loaded integrations + runtime.
 	 * Injected so the loader can construct the (unbound) runner — and thread it into
 	 * the extension loader so extensions wire `getIntegration` at load time — without
-	 * importing the account store. The caller (session-host) owns the runner's
+	 * importing the account store. The caller (agent-runtime) owns the runner's
 	 * bind/start/stop lifecycle.
 	 */
 	buildIntegrationRunner?: (input: { integrations: Integration[]; runtime: IntegrationRuntime }) => IntegrationRunner;

@@ -41,7 +41,7 @@ function firstText(result: { content: ReadonlyArray<{ type: string; text?: strin
 	return block && block.type === "text" ? (block.text ?? "") : "";
 }
 
-// The file tools are bound to the agent's home dir — the same wiring SessionHost
+// The file tools are bound to the agent's home dir — the same wiring AgentRuntime
 // uses. We assert they reach the agent's own files (SOUL.md) so a regression in
 // cwd binding is caught.
 describe("file tools bound to the agent home", () => {

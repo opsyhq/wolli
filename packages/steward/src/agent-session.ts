@@ -35,7 +35,7 @@ import type { KeyId } from "./core/keybindings.ts";
 import type { ScopedModel } from "./core/model-resolver.ts";
 import type { ConfiguredPlugin } from "./core/plugin-manager.ts";
 import { getServiceManager } from "./core/service/service-manager.ts";
-import type { ContextInfo, IntegrationInfo } from "./core/session-host.ts";
+import type { ContextInfo, IntegrationInfo } from "./core/agent-runtime.ts";
 import type { Skill } from "./core/skills.ts";
 import type {
 	AuthSelectorProvider,
@@ -216,7 +216,7 @@ export class AgentSession {
 		await this.refreshResources();
 	}
 
-	// ---- What InteractiveMode calls (was sessionHost.* / harness.*) ----
+	// ---- What InteractiveMode calls (was AgentRuntime.* / harness.*) ----
 	subscribe(cb: (e: AgentHarnessEvent) => void): () => void {
 		this.handlers.add(cb);
 		return () => this.handlers.delete(cb);
