@@ -6,10 +6,10 @@
  */
 
 export { serializeConversation } from "@opsyhq/agent";
-// The client surface: the agent collection (`Steward`), one agent (`Agent`), and the live per-agent
-// daemon connection (`AgentSession`) the interactive TUI + `--print` drive.
-export { AgentSession } from "./agent-session.ts";
-export { Agent, Steward } from "./client.ts";
+// The client surface: the agent collection (`Steward`), one agent (`Agent`), and the per-conversation
+// proxy (`AgentSession`) the interactive TUI + `--print` drive. `Connection` (the transport) stays
+// private to `Agent` and is intentionally not re-exported here.
+export { Agent, AgentSession, Steward } from "./client.ts";
 // Shared UI components + keybinding-hint helpers imported by the @opsyhq/cli daemon client (the
 // interactive TUI lives in apps/cli); DynamicBorder and the keyHint/keyText helpers are also part
 // of the extension SDK surface.
