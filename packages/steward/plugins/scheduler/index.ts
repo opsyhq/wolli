@@ -38,18 +38,14 @@ const Schedule = Type.Union([
 ]);
 type Schedule = Static<typeof Schedule>;
 
-const Target = Type.Union([Type.Literal("isolated"), Type.Literal("current")]);
-type Target = Static<typeof Target>;
-
 interface Job {
 	id: string;
 	name?: string;
 	prompt: string;
 	schedule: Schedule;
 	enabled: boolean;
-	/** Where the woken session lands: a fresh tagged session ("isolated") or the creating one ("current"). */
-	target: Target;
-	createdSessionId?: string;
+	/** Tags of the session that scheduled the job; the fired result is delivered to the newest session matching these. */
+	originTags?: Record<string, string>;
 	/** Epoch ms; advanced before firing. */
 	nextRunAt: number;
 	lastRunAt?: number;
@@ -95,8 +91,7 @@ export default function (steward: IntegrationsAPI) {
 			due: Type.Object({
 				id: Type.String(),
 				prompt: Type.String(),
-				target: Target,
-				createdSessionId: Type.Optional(Type.String()),
+				originTags: Type.Optional(Type.Record(Type.String(), Type.String())),
 				name: Type.Optional(Type.String()),
 			}),
 		},
@@ -108,16 +103,14 @@ export default function (steward: IntegrationsAPI) {
 					prompt: Type.String(),
 					name: Type.Optional(Type.String()),
 					schedule: Schedule,
-					target: Type.Optional(Target),
-					createdSessionId: Type.Optional(Type.String()),
+					originTags: Type.Optional(Type.Record(Type.String(), Type.String())),
 				}),
 				execute: async (params, ctx) => {
 					const p = params as {
 						prompt: string;
 						name?: string;
 						schedule: Schedule;
-						target?: Target;
-						createdSessionId?: string;
+						originTags?: Record<string, string>;
 					};
 					const now = Date.now();
 					const seeded = computeNextRunAt(p.schedule, now);
@@ -127,8 +120,7 @@ export default function (steward: IntegrationsAPI) {
 						prompt: p.prompt,
 						schedule: p.schedule,
 						enabled: seeded !== null,
-						target: p.target ?? "isolated",
-						createdSessionId: p.createdSessionId,
+						originTags: p.originTags,
 						nextRunAt: seeded ?? 0,
 					};
 					const jobs = loadJobs(ctx.store);
@@ -152,8 +144,6 @@ export default function (steward: IntegrationsAPI) {
 					name: Type.Optional(Type.String()),
 					schedule: Type.Optional(Schedule),
 					enabled: Type.Optional(Type.Boolean()),
-					target: Type.Optional(Target),
-					createdSessionId: Type.Optional(Type.String()),
 				}),
 				execute: async (params, ctx) => {
 					const p = params as {
@@ -162,8 +152,6 @@ export default function (steward: IntegrationsAPI) {
 						name?: string;
 						schedule?: Schedule;
 						enabled?: boolean;
-						target?: Target;
-						createdSessionId?: string;
 					};
 					const jobs = loadJobs(ctx.store);
 					const job = jobs[p.id];
@@ -172,8 +160,6 @@ export default function (steward: IntegrationsAPI) {
 					if (p.prompt !== undefined) job.prompt = p.prompt;
 					if (p.name !== undefined) job.name = p.name;
 					if (p.enabled !== undefined) job.enabled = p.enabled;
-					if (p.target !== undefined) job.target = p.target;
-					if (p.createdSessionId !== undefined) job.createdSessionId = p.createdSessionId;
 					if (p.schedule !== undefined) {
 						job.schedule = p.schedule;
 						const next = computeNextRunAt(p.schedule, Date.now());
@@ -240,8 +226,7 @@ export default function (steward: IntegrationsAPI) {
 					ctx.emit("due", {
 						id: job.id,
 						prompt: job.prompt,
-						target: job.target,
-						createdSessionId: job.createdSessionId,
+						originTags: job.originTags,
 						name: job.name,
 					});
 				}
