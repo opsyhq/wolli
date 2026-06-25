@@ -780,7 +780,13 @@ export class DefaultPluginManager implements PluginManager {
 			return existsSync(path) ? path : undefined;
 		}
 		if (parsed.type === "local") {
-			const path = this.getLocalInstallPath(parsed, "user");
+			// Key the lookup exactly like install/remove do: normalize the source against the cwd first
+			// (normalizePluginSourceForSettings), so a relative source like "./plugins/x" resolves to the
+			// managed dir it was installed into — not one keyed off the agent home, which never exists.
+			const path = this.getLocalInstallPath(
+				{ type: "local", path: this.normalizePluginSourceForSettings(source) },
+				"user",
+			);
 			return existsSync(path) ? path : undefined;
 		}
 		return undefined;

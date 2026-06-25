@@ -137,6 +137,26 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		expect(existsSync(join(ext!.path, "index.ts"))).toBe(true);
 	});
 
+	it("getInstalledPath finds a local source installed by a relative path (resolves against cwd, not the agent home)", async () => {
+		// A plugin dir under the cwd, installed the way a user types it: "./rel-ext" (relative to cwd).
+		// install keys the managed copy off the cwd-resolved origin; getInstalledPath must do the same,
+		// or plugin-scoped onboarding can't match the installed integration and silently configures nothing.
+		const pkgDir = join(tempDir, "rel-ext");
+		mkdirSync(pkgDir, { recursive: true });
+		writeFileSync(join(pkgDir, "index.ts"), "export default function () {}");
+
+		const settingsManager = AgentSettingsManager.create("alice");
+		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
+
+		await pm.installAndPersist("./rel-ext");
+
+		const localRoot = join(agentDir, ".plugins", "local");
+		const installedPath = pm.getInstalledPath("./rel-ext");
+		expect(installedPath).toBeDefined();
+		expect(installedPath?.startsWith(localRoot)).toBe(true);
+		expect(existsSync(join(installedPath!, "index.ts"))).toBe(true);
+	});
+
 	it("auto-discovers integrations from <agentDir>/integrations/", async () => {
 		const intDir = join(agentDir, "integrations");
 		mkdirSync(intDir, { recursive: true });
