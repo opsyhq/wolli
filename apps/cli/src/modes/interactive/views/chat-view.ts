@@ -538,12 +538,6 @@ export class ChatView extends Container implements AppView {
 			await this.handleNewCommand();
 			return;
 		}
-		// `/sessions` — switch to another of this agent's sessions.
-		if (trimmed === "/sessions") {
-			this.editor.setText("");
-			await this.handleSessionsCommand();
-			return;
-		}
 		// `/compact [instructions]` — compact the session history.
 		if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
 			const customInstructions = trimmed.startsWith("/compact ") ? trimmed.slice(9).trim() || undefined : undefined;
@@ -695,13 +689,12 @@ export class ChatView extends Container implements AppView {
 	/**
 	 * Commit the deploy. The daemon flips the latch, registers the OS service unit, and creates a fresh
 	 * deployed session (with a real backend it also stands up the supervised daemon and re-points the
-	 * client transport onto it). The App then switches to the new session — `reset` drops the now-stale
-	 * views bound to the old transport.
+	 * client transport onto it). The App then replaces this chat with the new session's.
 	 */
 	private async doDeploy(): Promise<void> {
 		try {
 			const snapshot = await this.session.deploy();
-			await this.ctx.switchSession(snapshot.sessionId, { reset: true });
+			await this.ctx.switchSession(snapshot.sessionId);
 		} catch (error) {
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
 			this.ui.requestRender();
@@ -728,23 +721,6 @@ export class ChatView extends Container implements AppView {
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
 			this.ui.requestRender();
 		}
-	}
-
-	/** `/sessions` — pick another of this agent's sessions and switch the chat to it. */
-	private async handleSessionsCommand(): Promise<void> {
-		const sessions = await this.ctx.listSessions();
-		if (sessions.length <= 1) {
-			this.showStatus("No other sessions to switch to.");
-			return;
-		}
-		const labels = sessions.map(
-			(s) =>
-				`${s.sessionName ?? "untitled"} · ${s.sessionId.slice(0, 8)}${s.isStreaming ? " (streaming)" : ""}${s.sessionId === this.session.sessionId ? " (current)" : ""}`,
-		);
-		const choice = await this.showExtensionSelector("Switch session", labels);
-		if (!choice) return;
-		const picked = sessions[labels.indexOf(choice)];
-		if (picked && picked.sessionId !== this.session.sessionId) await this.ctx.switchSession(picked.sessionId);
 	}
 
 	/**

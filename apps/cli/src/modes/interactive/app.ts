@@ -1,12 +1,12 @@
 /**
  * The interactive TUI shell. `App` owns the terminal and swaps between pages (dashboard, agent
- * detail, chat). It also owns the open-session list for an agent: one `ChatView` per resident session,
- * shown one at a time via `switchSession(id)` (the others stay mounted + subscribed, just hidden).
- * Navigation is flat: `home()` (←/Esc) returns to the dashboard, `navigate()` opens a page, `quit()`
- * (Ctrl+C) exits. Global init and the sole `tui.start()`/`stop()` live here.
+ * detail, chat). A chat is 1:1 with a session: the shell shows exactly one `ChatView` at a time, and
+ * `switchSession(id)` replaces it (used by `/new` and deploy). Navigation is flat: `home()` (←/Esc)
+ * returns to the dashboard, `navigate()` opens a page, `quit()` (Ctrl+C) exits. Global init and the
+ * sole `tui.start()`/`stop()` live here.
  */
 
-import { type Agent, type DaemonSessionSummary, initTheme, type SessionHandle, type Steward } from "@opsyhq/steward";
+import { type Agent, initTheme, type SessionHandle, type Steward } from "@opsyhq/steward";
 import { type Component, Container, ProcessTerminal, setKeybindings, TUI } from "@opsyhq/tui";
 import { KeybindingsManager } from "../../keybindings-manager.ts";
 import { AgentView } from "./views/agent-view.ts";
@@ -34,13 +34,8 @@ export interface ViewContext {
 	home: () => void;
 	/** Quit the whole process from anywhere — what Ctrl+C / `/quit` map to. */
 	quit: () => void;
-	/** The current agent's stored sessions (resident + idle), newest first — backs the session switcher. */
-	listSessions: () => Promise<DaemonSessionSummary[]>;
-	/**
-	 * Show the chat for another session of the current agent, mounting it on first switch. `reset` drops
-	 * every open `ChatView` first (used after a deploy reconnect re-points the transport).
-	 */
-	switchSession: (sessionId: string, options?: { reset?: boolean }) => Promise<void>;
+	/** Replace the visible chat with another session of the current agent (used by `/new` and deploy). */
+	switchSession: (sessionId: string) => Promise<void>;
 }
 
 /** A page in the shell. Every view is a `Container` so it gets `render`/`addChild`/`clear` for free. */
@@ -57,9 +52,8 @@ export class App {
 	private readonly root: Container;
 	private readonly ctx: ViewContext;
 	private current?: AppView;
-	// Chat state: the connected agent plus one ChatView per resident session, shown one at a time.
+	// Chat state: the connected agent backing the visible chat (the ChatView itself is `current`).
 	private chatAgent?: Agent;
-	private readonly chatViews = new Map<string, ChatView>();
 	private resolveExit?: () => void;
 	private stopped = false;
 
@@ -78,8 +72,7 @@ export class App {
 			navigate: (route) => this.openView(route),
 			home: () => void this.openView({ to: "dashboard" }),
 			quit: () => this.stop(),
-			listSessions: () => this.chatAgent?.listSessions() ?? Promise.resolve([]),
-			switchSession: (sessionId, options) => this.switchSession(sessionId, options),
+			switchSession: (sessionId) => this.switchSession(sessionId),
 		};
 	}
 
@@ -141,11 +134,10 @@ export class App {
 		this.tui.requestRender(true);
 	}
 
-	/** Mount a fresh ChatView for `handle` and make it the visible page. */
+	/** Mount a fresh ChatView for `handle` as the visible page, unmounting whatever was shown. */
 	private async mountChat(handle: SessionHandle, options: { initialAssistantMessage?: string }): Promise<void> {
 		this.current?.onUnmount();
 		const view = new ChatView(handle, options, this.keybindings);
-		this.chatViews.set(handle.sessionId, view);
 		this.current = view;
 		this.root.clear();
 		this.root.addChild(view);
@@ -155,45 +147,22 @@ export class App {
 	}
 
 	/**
-	 * Show another session's chat, mounting its `ChatView` on first switch. The previously visible chat
-	 * view stays mounted + subscribed (just removed from the root), so switching back is instant and its
-	 * session stays resident on the daemon. `reset` tears every open view down first.
+	 * Replace the visible chat with another session's. The old `ChatView` is unmounted (its stream
+	 * closes, so the idle session evicts on the daemon); a fresh one is mounted for `sessionId`. Used by
+	 * `/new` and deploy — after a deploy reconnect, `agent.session()` resolves the handle on the new
+	 * transport.
 	 */
-	private async switchSession(sessionId: string, options?: { reset?: boolean }): Promise<void> {
+	private async switchSession(sessionId: string): Promise<void> {
 		if (!this.chatAgent) return;
-		if (options?.reset) {
-			for (const view of this.chatViews.values()) view.onUnmount();
-			this.chatViews.clear();
-		}
-
-		const existing = this.chatViews.get(sessionId);
-		if (existing) {
-			if (this.current === existing) return;
-			this.root.clear();
-			this.root.addChild(existing);
-			this.current = existing;
-			this.tui.setFocus(existing.focusTarget());
-			this.tui.requestRender(true);
-			return;
-		}
-
 		const handle = await this.chatAgent.session(sessionId);
-		const view = new ChatView(handle, {}, this.keybindings);
-		this.chatViews.set(sessionId, view);
-		this.current = view;
-		this.root.clear();
-		this.root.addChild(view);
-		await view.onMount(this.ctx);
-		this.tui.setFocus(view.focusTarget());
-		this.tui.requestRender(true);
+		await this.mountChat(handle, {});
 	}
 
-	/** Tear down every open ChatView + the agent transport when leaving chat for another page. */
+	/** Tear down the visible chat + the agent transport when leaving chat for another page. */
 	private closeChat(): void {
-		if (this.chatViews.size === 0 && !this.chatAgent) return;
-		for (const view of this.chatViews.values()) view.onUnmount();
-		this.chatViews.clear();
-		this.chatAgent?.close();
+		if (!this.chatAgent) return;
+		this.current?.onUnmount();
+		this.chatAgent.close();
 		this.chatAgent = undefined;
 		this.current = undefined;
 	}
