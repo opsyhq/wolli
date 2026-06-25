@@ -43,7 +43,14 @@ export function saveDaemonConfig(name: string, cfg: DaemonConfig): void {
 export function loadDaemonConfig(name: string): DaemonConfig | undefined {
 	const path = getAgentDaemonPath(name);
 	if (!existsSync(path)) return undefined;
-	return JSON.parse(readFileSync(path, "utf-8")) as DaemonConfig;
+	try {
+		return JSON.parse(readFileSync(path, "utf-8")) as DaemonConfig;
+	} catch {
+		// A corrupt descriptor (truncated/partial write, leftover from a crash) is as harmless as a
+		// stale one: callers respawn the daemon, which atomically overwrites it. Never let a bad temp
+		// file abort every command for the agent.
+		return undefined;
+	}
 }
 
 /** Remove an agent's daemon config (best-effort; no-op when absent). */
