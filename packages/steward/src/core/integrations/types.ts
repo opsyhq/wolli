@@ -50,11 +50,12 @@ export interface IntegrationOnboardContext {
 }
 
 /**
- * Per-integration runtime state handle (`ctx.store`), scoped to one service. Backed by
- * `~/.steward/agents/<name>/store/<service>.json`, process-scoped, and survives `/reload` —
- * the place an integration keeps machine-written state (e.g. the scheduler's jobs).
+ * A string-keyed store an integration uses for its durable runtime state (`ctx.store`),
+ * scoped to one service. Backed by `~/.steward/agents/<name>/store/<service>.json`,
+ * process-scoped, and survives `/reload` — where an integration keeps machine-written
+ * state (e.g. the scheduler's jobs).
  */
-export interface IntegrationStoreHandle {
+export interface KeyValueStore {
 	get(key: string): unknown;
 	set(key: string, value: unknown): void;
 	getAll(): Record<string, unknown>;
@@ -94,7 +95,7 @@ export interface IntegrationRunContext {
 	/** Validated against `config.events[event]`. */
 	emit(event: string, data: unknown): void;
 	/** Durable per-service runtime state. */
-	store: IntegrationStoreHandle;
+	store: KeyValueStore;
 	/** Aborted on `stop()`; one `run()` per (service, account). */
 	signal: AbortSignal;
 }
@@ -102,7 +103,7 @@ export interface IntegrationRunContext {
 export interface IntegrationActionContext {
 	account: unknown;
 	/** Durable per-service runtime state. */
-	store: IntegrationStoreHandle;
+	store: KeyValueStore;
 	signal: AbortSignal;
 }
 

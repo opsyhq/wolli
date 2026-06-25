@@ -21,7 +21,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { IntegrationOnboardContext, IntegrationsAPI, IntegrationStoreHandle } from "@opsyhq/steward";
+import type { IntegrationOnboardContext, IntegrationsAPI, KeyValueStore } from "@opsyhq/steward";
 import { Cron } from "croner";
 import { type Static, Type } from "typebox";
 
@@ -60,10 +60,10 @@ interface SchedulerAccount {
 }
 
 /** Jobs live under the single store key `"jobs"`, keyed by id. */
-function loadJobs(store: IntegrationStoreHandle): Record<string, Job> {
+function loadJobs(store: KeyValueStore): Record<string, Job> {
 	return (store.get("jobs") as Record<string, Job> | undefined) ?? {};
 }
-function saveJobs(store: IntegrationStoreHandle, jobs: Record<string, Job>): void {
+function saveJobs(store: KeyValueStore, jobs: Record<string, Job>): void {
 	store.set("jobs", jobs);
 }
 

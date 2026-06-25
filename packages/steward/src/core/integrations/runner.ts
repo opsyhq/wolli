@@ -16,7 +16,7 @@ import type {
 	IntegrationHandle,
 	IntegrationRunContext,
 	IntegrationRuntime,
-	IntegrationStoreHandle,
+	KeyValueStore,
 } from "./types.ts";
 
 type Validator = ReturnType<typeof Compile>;
@@ -164,7 +164,7 @@ export class IntegrationRunner {
 	}
 
 	/** Per-service `ctx.store` handle, closing over the service so the integration sees only its own file. */
-	private storeHandle(service: string): IntegrationStoreHandle {
+	private storeHandle(service: string): KeyValueStore {
 		return {
 			get: (key) => this.store.get(service, key),
 			set: (key, value) => this.store.set(service, key, value),

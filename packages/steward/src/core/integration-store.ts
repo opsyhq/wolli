@@ -146,7 +146,7 @@ export class IntegrationStore {
 		return store;
 	}
 
-	private backendFor(service: string): IntegrationStoreBackend {
+	private getBackend(service: string): IntegrationStoreBackend {
 		let backend = this.backends.get(service);
 		if (!backend) {
 			backend =
@@ -165,7 +165,7 @@ export class IntegrationStore {
 	/** A service's parsed state, read fresh under lock; `{}` on a missing or unreadable file. */
 	private read(service: string): IntegrationStoreData {
 		try {
-			return this.backendFor(service).withLock((current) => ({
+			return this.getBackend(service).withLock((current) => ({
 				result: current ? (JSON.parse(current) as IntegrationStoreData) : {},
 			}));
 		} catch (error) {
@@ -177,7 +177,7 @@ export class IntegrationStore {
 	/** Read-modify-write a service's file under lock, merging the change against the fresh copy. */
 	private write(service: string, mutate: (data: IntegrationStoreData) => void): void {
 		try {
-			this.backendFor(service).withLock((current) => {
+			this.getBackend(service).withLock((current) => {
 				const data = current ? (JSON.parse(current) as IntegrationStoreData) : {};
 				mutate(data);
 				return { result: undefined, next: JSON.stringify(data, null, 2) };
