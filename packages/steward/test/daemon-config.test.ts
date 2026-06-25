@@ -2,7 +2,8 @@
  * Daemon config — round-trip and owner-only (600) atomic write.
  */
 
-import { statSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { getAgentDaemonPath } from "../src/config.ts";
 import {
@@ -40,6 +41,20 @@ describe("daemon config", () => {
 	it("deleteDaemonConfig removes the config", () => {
 		saveDaemonConfig(AGENT, cfg());
 		deleteDaemonConfig(AGENT);
+		expect(loadDaemonConfig(AGENT)).toBeUndefined();
+	});
+
+	// A corrupt descriptor (truncated/partial write, leftover from a crash) must read as "no daemon"
+	// so callers respawn — never throw and abort every command for the agent.
+	it.each([
+		["valid prefix + trailing junk", "truex"],
+		["two concatenated values", "{}{}"],
+		["empty file", ""],
+		["non-json garbage", "not json"],
+	])("returns undefined for a corrupt descriptor (%s)", (_label, content) => {
+		const path = getAgentDaemonPath(AGENT);
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, content, "utf-8");
 		expect(loadDaemonConfig(AGENT)).toBeUndefined();
 	});
 });
