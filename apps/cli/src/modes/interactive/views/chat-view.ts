@@ -693,8 +693,8 @@ export class ChatView extends Container implements AppView {
 	 */
 	private async doDeploy(): Promise<void> {
 		try {
-			const snapshot = await this.session.deploy();
-			await this.ctx.switchSession(snapshot.sessionId);
+			const sessionId = await this.ctx.deploy();
+			await this.ctx.switchSession(sessionId);
 		} catch (error) {
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
 			this.ui.requestRender();
@@ -715,8 +715,8 @@ export class ChatView extends Container implements AppView {
 			return;
 		}
 		try {
-			const snapshot = await this.session.createSession();
-			await this.ctx.switchSession(snapshot.sessionId);
+			const sessionId = await this.ctx.createSession();
+			await this.ctx.switchSession(sessionId);
 		} catch (error) {
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));
 			this.ui.requestRender();

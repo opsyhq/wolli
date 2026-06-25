@@ -283,7 +283,7 @@ export async function runPlugins(agent: string, rest: string[], help = false): P
 	}
 
 	await handle.connect();
-	const session = await handle.openLatestSession();
+	const session = await handle.getLatestSession();
 	try {
 		switch (options.command) {
 			case "install": {

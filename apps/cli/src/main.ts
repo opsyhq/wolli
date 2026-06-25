@@ -78,7 +78,7 @@ export async function main(argv: string[]): Promise<number> {
 			return 1;
 		}
 		await agent.connect();
-		return runPrintMode(await agent.openLatestSession(), message);
+		return runPrintMode(await agent.getLatestSession(), message);
 	}
 	// Deep-link straight to the chat page.
 	const app = new App(steward);

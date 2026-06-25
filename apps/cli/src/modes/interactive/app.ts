@@ -34,6 +34,10 @@ export interface ViewContext {
 	home: () => void;
 	/** Quit the whole process from anywhere — what Ctrl+C / `/quit` map to. */
 	quit: () => void;
+	/** Create a fresh session on the daemon (additive) and return its id. */
+	createSession: () => Promise<string>;
+	/** Commit the agent's deploy and return the fresh deployed session's id. */
+	deploy: () => Promise<string>;
 	/** Replace the visible chat with another session of the current agent (used by `/new` and deploy). */
 	switchSession: (sessionId: string) => Promise<void>;
 }
@@ -72,6 +76,8 @@ export class App {
 			navigate: (route) => this.openView(route),
 			home: () => void this.openView({ to: "dashboard" }),
 			quit: () => this.stop(),
+			createSession: async () => (await this.requireChatAgent().createSession()).sessionId,
+			deploy: async () => (await this.requireChatAgent().deploy()).sessionId,
 			switchSession: (sessionId) => this.switchSession(sessionId),
 		};
 	}
@@ -99,7 +105,7 @@ export class App {
 				let session: SessionHandle | undefined;
 				try {
 					await agent.connect();
-					session = await agent.openLatestSession();
+					session = await agent.getLatestSession();
 				} catch {
 					// Daemon unreachable — still show the page, just without the capability sections.
 					session = undefined;
@@ -115,7 +121,7 @@ export class App {
 				}
 				await agent.connect();
 				this.chatAgent = agent;
-				const handle = route.sessionId ? await agent.session(route.sessionId) : await agent.openLatestSession();
+				const handle = route.sessionId ? await agent.getSession(route.sessionId) : await agent.getLatestSession();
 				await this.mountChat(handle, { initialAssistantMessage: route.initialAssistantMessage });
 				return;
 			}
@@ -146,15 +152,21 @@ export class App {
 		this.tui.requestRender(true);
 	}
 
+	/** The agent backing the current chat, or throw — used by the chat-lifecycle `ViewContext` actions. */
+	private requireChatAgent(): Agent {
+		if (!this.chatAgent) throw new Error("No connected agent for the current chat.");
+		return this.chatAgent;
+	}
+
 	/**
 	 * Replace the visible chat with another session's. The old `ChatView` is unmounted (its stream
 	 * closes, so the idle session evicts on the daemon); a fresh one is mounted for `sessionId`. Used by
-	 * `/new` and deploy — after a deploy reconnect, `agent.session()` resolves the handle on the new
+	 * `/new` and deploy — after a deploy reconnect, `agent.getSession()` resolves the handle on the new
 	 * transport.
 	 */
 	private async switchSession(sessionId: string): Promise<void> {
 		if (!this.chatAgent) return;
-		const handle = await this.chatAgent.session(sessionId);
+		const handle = await this.chatAgent.getSession(sessionId);
 		await this.mountChat(handle, {});
 	}
 
