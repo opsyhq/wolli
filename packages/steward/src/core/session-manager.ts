@@ -18,7 +18,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
-import type { JsonlSessionMetadata, LeafEntry, Session, SessionTreeEntry } from "@opsyhq/agent";
+import type { JsonlSessionMetadata, LeafEntry, Session, SessionTreeEntry, TagsEntry } from "@opsyhq/agent";
 
 // The names `extensions/types.ts` imports from "../session-manager.ts".
 // SessionEntry/CompactionEntry/BranchSummaryEntry are the engine's structurally
@@ -54,6 +54,7 @@ interface SessionSnapshot {
 	byId: Map<string, SessionTreeEntry>;
 	labelsById: Map<string, string>;
 	labelTimestampsById: Map<string, string>;
+	tags: Record<string, string>;
 	leafId: string | null;
 }
 
@@ -68,6 +69,7 @@ const EMPTY_SNAPSHOT: SessionSnapshot = {
 	byId: new Map(),
 	labelsById: new Map(),
 	labelTimestampsById: new Map(),
+	tags: {},
 	leafId: null,
 };
 
@@ -101,6 +103,7 @@ export class SessionManager {
 			byId: new Map(),
 			labelsById: new Map(),
 			labelTimestampsById: new Map(),
+			tags: {},
 			leafId: null,
 		};
 
@@ -133,6 +136,7 @@ export class SessionManager {
 					snapshot.labelTimestampsById.delete(entry.targetId);
 				}
 			}
+			if (entry.type === "tags") Object.assign(snapshot.tags, (entry as TagsEntry).tags);
 		}
 
 		this.cache = { mtimeMs, snapshot };
@@ -185,6 +189,11 @@ export class SessionManager {
 
 	getLabel(id: string): string | undefined {
 		return this._load().labelsById.get(id);
+	}
+
+	/** The session's folded tags — the merge of every `tags` entry written to it. */
+	getTags(): Record<string, string> {
+		return { ...this._load().tags };
 	}
 
 	/**
@@ -286,6 +295,10 @@ export class SessionManager {
 	appendLabelChange(targetId: string, label: string | undefined): Promise<string> {
 		return this.session.appendLabel(targetId, label);
 	}
+
+	appendTags(tags: Record<string, string>): Promise<string> {
+		return this.session.appendTags(tags);
+	}
 }
 
 /** Read-only view exposed to extensions via `ctx.sessionManager`. */
@@ -299,6 +312,7 @@ export type ReadonlySessionManager = Pick<
 	| "getLeafEntry"
 	| "getEntry"
 	| "getLabel"
+	| "getTags"
 	| "getBranch"
 	| "getHeader"
 	| "getEntries"

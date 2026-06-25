@@ -952,6 +952,21 @@ export class AgentRuntime {
 	}
 
 	/**
+	 * Stored sessions whose folded tags subset-match `filter`, each with its `tags` populated. Opens
+	 * every session to read tags (fine for the handful per agent). The returned `SessionInfo` is a
+	 * locator — injecting into one needs it to be the live conversation or a future `resumeConversation`.
+	 */
+	async findSessions(filter: Record<string, string>): Promise<SessionInfo[]> {
+		const matches: SessionInfo[] = [];
+		for (const info of await this.listSessions()) {
+			const { session } = await openAgentSession(this.options.name, { id: info.id });
+			const tags = new SessionManager(session, await session.getMetadata()).getTags();
+			if (Object.entries(filter).every(([key, value]) => tags[key] === value)) matches.push({ ...info, tags });
+		}
+		return matches;
+	}
+
+	/**
 	 * Resolve request-time auth + provider-attribution headers via the model registry (not straight off
 	 * AuthStorage — this path carries custom models.json keys + per-model/provider headers). The harness
 	 * contract is `apiKey: string`, so a keyless provider is rejected. `sessionId` rides the headers.
@@ -1066,6 +1081,7 @@ export class AgentRuntime {
 			return conversation;
 		};
 		runtime.listSessions = () => this.listSessions();
+		runtime.findSessions = (filter) => this.findSessions(filter);
 		runtime.reload = () => this.reload();
 		runtime.shutdown = () => this.shutdown();
 		runtime.getModelRegistry = () => this._modelRegistry;
@@ -1631,6 +1647,10 @@ export class Conversation {
 			},
 			setLabel: (entryId, label) => {
 				void sessionManager.appendLabelChange(entryId, label);
+			},
+			getTags: () => sessionManager.getTags(),
+			setTags: (tags) => {
+				void sessionManager.appendTags(tags);
 			},
 
 			newSession: (options) => runtime.runNewSession(options),

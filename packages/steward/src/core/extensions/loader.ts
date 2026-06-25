@@ -152,6 +152,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		getConversation: notInitialized,
 		createConversation: notInitialized,
 		listSessions: notInitialized,
+		findSessions: notInitialized,
 		reload: notInitialized,
 		shutdown: notInitialized,
 		getModelRegistry: notInitialized,
@@ -292,6 +293,11 @@ function createExtensionAPI(
 		listSessions() {
 			runtime.assertActive();
 			return runtime.listSessions();
+		},
+
+		findSessions(filter: Record<string, string>) {
+			runtime.assertActive();
+			return runtime.findSessions(filter);
 		},
 
 		reload() {

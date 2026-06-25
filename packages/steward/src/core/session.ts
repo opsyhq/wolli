@@ -28,6 +28,8 @@ export interface OpenAgentSessionResult {
 export interface SessionInfo {
 	id: string;
 	createdAt: string;
+	/** The session's folded tags. Populated by `findSessions`; `{}` from the plain `listSessions` listing. */
+	tags: Record<string, string>;
 }
 
 export async function openAgentSession(
@@ -67,5 +69,5 @@ export async function listAgentSessions(name: string): Promise<SessionInfo[]> {
 	const env = new NodeExecutionEnv({ cwd });
 	const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: getSessionsDir(name) });
 	const metadatas = await repo.list({ cwd });
-	return metadatas.map((metadata) => ({ id: metadata.id, createdAt: metadata.createdAt }));
+	return metadatas.map((metadata) => ({ id: metadata.id, createdAt: metadata.createdAt, tags: {} }));
 }

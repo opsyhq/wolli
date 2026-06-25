@@ -15,6 +15,7 @@ import type {
 	SessionMetadata,
 	SessionStorage,
 	SessionTreeEntry,
+	TagsEntry,
 	ThinkingLevelChangeEntry,
 } from "../types.ts";
 import { SessionError } from "../types.ts";
@@ -241,6 +242,16 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> {
 			timestamp: new Date().toISOString(),
 			name: name.trim(),
 		} satisfies SessionInfoEntry);
+	}
+
+	async appendTags(tags: Record<string, string>): Promise<string> {
+		return this.appendTypedEntry({
+			type: "tags",
+			id: await this.storage.createEntryId(),
+			parentId: await this.storage.getLeafId(),
+			timestamp: new Date().toISOString(),
+			tags,
+		} satisfies TagsEntry);
 	}
 
 	async moveTo(

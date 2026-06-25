@@ -401,6 +401,11 @@ export interface SessionInfoEntry extends SessionTreeEntryBase {
 	name?: string;
 }
 
+export interface TagsEntry extends SessionTreeEntryBase {
+	type: "tags";
+	tags: Record<string, string>;
+}
+
 export interface LeafEntry extends SessionTreeEntryBase {
 	type: "leaf";
 	targetId: string | null;
@@ -417,6 +422,7 @@ export type SessionTreeEntry =
 	| CustomMessageEntry
 	| LabelEntry
 	| SessionInfoEntry
+	| TagsEntry
 	| LeafEntry;
 
 export interface SessionContext {

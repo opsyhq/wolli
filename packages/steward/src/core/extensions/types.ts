@@ -426,6 +426,14 @@ export interface Conversation {
 	/** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
 	setLabel(entryId: string, label: string | undefined): void;
 
+	/**
+	 * The session's folded tags — a durable, append-only k/v binding an extension owns (e.g. to an
+	 * external chat). Core never interprets the keys; query across sessions via `steward.findSessions`.
+	 */
+	getTags(): Record<string, string>;
+	/** Merge tags into this session (later writes win per key). */
+	setTags(tags: Record<string, string>): void;
+
 	/** Start a new session, optionally with initialization, and make it the live conversation. */
 	newSession(options?: NewSessionOptions): Promise<{ cancelled: boolean }>;
 
@@ -1148,6 +1156,12 @@ export interface ExtensionAPI {
 	/** Stored sessions for this agent (newest first). */
 	listSessions(): Promise<SessionInfo[]>;
 
+	/**
+	 * Locate stored sessions whose folded tags subset-match `filter` (each with `tags` populated) — e.g.
+	 * the session another extension bound to an external conversation via `conversation.setTags(...)`.
+	 */
+	findSessions(filter: Record<string, string>): Promise<SessionInfo[]>;
+
 	/** Reload extensions, skills, prompts, and themes. */
 	reload(): Promise<void>;
 
@@ -1357,6 +1371,7 @@ export interface ExtensionRuntimeState {
 	getConversation: () => Conversation | undefined;
 	createConversation: () => Promise<Conversation>;
 	listSessions: () => Promise<SessionInfo[]>;
+	findSessions: (filter: Record<string, string>) => Promise<SessionInfo[]>;
 	reload: () => Promise<void>;
 	shutdown: () => void;
 	getModelRegistry: () => ModelRegistry;
