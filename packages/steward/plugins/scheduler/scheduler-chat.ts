@@ -6,15 +6,13 @@
  *
  *   - tool:   registers the `cron` tool so the agent schedules its own jobs
  *             (add / list / update / remove / run) via the integration's CRUD actions.
- *   - inbound: `scheduler.on("due")` wakes a session with the job's prompt.
+ *   - inbound: `scheduler.on("due")` runs the job's prompt in the session it was scheduled from.
  *
- * Session binding via tags: an "isolated" job (the default) gets its OWN session bound by
- * a `{ "scheduler:job": <id> }` tag, so repeated runs of the same job land in one session
- * and any extension can find it with `steward.findSessions({ "scheduler:job": <id> })`.
- *
- * `target: "current"` (deliver into the session that created the job) is honored only when
- * the job carries a `createdSessionId`; the public `Session` facade exposes no id today, so
- * the `cron` tool can't capture it and a "current" job falls back to an isolated session.
+ * Delivery via tags: `add` snapshots the scheduling session's tags onto the job (`originTags`).
+ * When the job fires, the prompt runs as a turn in the newest session matching those tags, so
+ * whatever extension owns that surface delivers the answer onward with no scheduler-side
+ * special-casing — a telegram-tagged origin means telegram's own `agent_end` ships the reply
+ * back to that chat. An untagged origin falls back to the newest session.
  *
  * This file is declared under the package's `steward.extensions` and is copied into
  * `<agent>/extensions/` when the integration is onboarded.
@@ -37,7 +35,6 @@ const CronParams = Type.Object({
 	everyMs: Type.Optional(Type.Number({ description: "Fixed interval in ms." })),
 	cron: Type.Optional(Type.String({ description: "Cron expression (5/6-field)." })),
 	tz: Type.Optional(Type.String({ description: "Timezone for the cron expression (host local if omitted)." })),
-	target: Type.Optional(Type.Union([Type.Literal("isolated"), Type.Literal("current")])),
 	id: Type.Optional(Type.String({ description: "Job id, for update / remove / run." })),
 	enabled: Type.Optional(Type.Boolean({ description: "Enable or disable the job (update)." })),
 });
@@ -83,7 +80,7 @@ export default function (steward: ExtensionAPI) {
 		description:
 			"Schedule prompts to run later. Actions: add (prompt + at/everyMs/cron), list, update (id), remove (id), run (id).",
 		parameters: CronParams,
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				switch (params.action) {
 					case "add": {
@@ -92,11 +89,12 @@ export default function (steward: ExtensionAPI) {
 						if (!schedule) {
 							return text("Error: provide one of at, everyMs, or cron.", { error: "schedule required" });
 						}
+						// Snapshot the scheduling session's tags so the fired result returns to this surface.
 						const result = (await sched.call("addJob", {
 							prompt: params.prompt,
 							name: params.name,
 							schedule,
-							target: params.target,
+							originTags: ctx.session.getTags(),
 						})) as { id: string; nextRunAt: number };
 						return text(
 							`Scheduled job ${result.id} — ${describeSchedule(schedule)} — next ${new Date(result.nextRunAt).toISOString()}.`,
@@ -124,7 +122,6 @@ export default function (steward: ExtensionAPI) {
 							name: params.name,
 							schedule: buildSchedule(params),
 							enabled: params.enabled,
-							target: params.target,
 						});
 						return text(`Updated job ${params.id}.`, result);
 					}
@@ -147,22 +144,19 @@ export default function (steward: ExtensionAPI) {
 	});
 
 	sched.on("due", async (data) => {
-		const job = data as { id: string; prompt: string; target: "isolated" | "current"; createdSessionId?: string };
+		const job = data as { id: string; prompt: string; originTags?: Record<string, string> };
 
-		if (job.target === "current" && job.createdSessionId) {
-			const session = steward.getSession(job.createdSessionId) ?? (await steward.openSession(job.createdSessionId));
-			await session.sendUserMessage(job.prompt, { deliverAs: "followUp" });
-			return;
-		}
-
-		// Isolated (default): rehydrate this job's tag-bound session, or create + tag a fresh one.
-		const tag = { "scheduler:job": job.id };
-		const [match] = await steward.findSessions(tag);
+		// Run the prompt as a turn in the session the job was scheduled from (newest match for its
+		// origin tags). A telegram-tagged origin → telegram's own agent_end ships the reply to that
+		// chat; no scheduler-side channel handling. followUp queues cleanly if a turn is in flight.
+		// If no session matches (e.g. the origin was pruned), create one carrying the SAME origin tags
+		// so it stays bound to that surface — never an untagged session, which would deliver nowhere.
+		const [match] = await steward.findSessions(job.originTags ?? {});
 		const session = match
 			? await steward.openSession(match.id)
 			: await steward.createSession({
 					setup: async (sessionManager) => {
-						await sessionManager.appendTags(tag);
+						await sessionManager.appendTags(job.originTags ?? {});
 					},
 				});
 		await session.sendUserMessage(job.prompt, { deliverAs: "followUp" });
