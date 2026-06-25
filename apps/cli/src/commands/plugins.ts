@@ -7,12 +7,12 @@
  */
 
 import {
-	type AgentSession,
 	AgentSettingsManager,
 	APP_NAME,
 	createAgentPluginManager,
 	type ExtensionUIRequest,
 	type OnboardServiceResult,
+	type SessionHandle,
 	Steward,
 } from "@opsyhq/steward";
 import chalk from "chalk";
@@ -125,7 +125,7 @@ function parsePluginsCommand(rest: string[]): PluginsCommandOptions | undefined 
 
 /** Render one daemon-side onboarding dialog in the startup TUI and answer it over `/ui-response`. */
 async function dispatchUiRequest(
-	session: AgentSession,
+	session: SessionHandle,
 	settingsManager: AgentSettingsManager,
 	req: ExtensionUIRequest,
 ): Promise<void> {
@@ -282,7 +282,8 @@ export async function runPlugins(agent: string, rest: string[], help = false): P
 		return 1;
 	}
 
-	const session = await handle.open();
+	await handle.connect();
+	const session = await handle.getLatestSession();
 	try {
 		switch (options.command) {
 			case "install": {

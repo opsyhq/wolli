@@ -99,23 +99,22 @@ export default function staleExtension(pi) {
 }
 `;
 
-// Registers a `/facade` command that drives the agent via the agent-global steward API: records the
-// live conversation's session id and the stored-session count to the marker dir.
+// Registers a `/facade` command that records the acting session's id (off `ctx.session`) and the
+// stored-session count (off `steward.listSessions()`) to the marker dir.
 const AGENT_FACADE_EXTENSION_SOURCE = `
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export default function facadeExtension(pi) {
 	pi.registerCommand("facade", {
-		description: "Records the live conversation id + session count via steward.getConversation()/listSessions().",
-		async handler() {
+		description: "Records the acting session id + session count via ctx.session/steward.listSessions().",
+		async handler(_args, ctx) {
 			const dir = process.env.STEWARD_TEST_MARKER_DIR;
-			const convo = pi.getConversation();
 			const sessions = await pi.listSessions();
 			if (dir) {
 				writeFileSync(
 					join(dir, "facade.json"),
-					JSON.stringify({ sessionId: convo ? convo.sessionManager.getSessionId() : null, sessionCount: sessions.length }),
+					JSON.stringify({ sessionId: ctx.session.sessionManager.getSessionId(), sessionCount: sessions.length }),
 				);
 			}
 		},
@@ -210,6 +209,7 @@ afterEach(async () => {
 describe("extension subsystem wiring", () => {
 	it("freezes discovered skills into the system prompt the harness sends", async () => {
 		const { runtime, registration } = makeRuntime();
+		await runtime.start();
 		let capturedSystemPrompt = "";
 		registration.setResponses([
 			(context) => {
@@ -218,7 +218,7 @@ describe("extension subsystem wiring", () => {
 			},
 		]);
 
-		const conversation = await runtime.createConversation();
+		const conversation = await runtime.createSession();
 		await conversation.harness.prompt("hello");
 
 		expect(capturedSystemPrompt).toContain("<available_skills>");
@@ -228,8 +228,9 @@ describe("extension subsystem wiring", () => {
 
 	it("registers extension tools on the harness and fires session_start on create", async () => {
 		const { runtime } = makeRuntime();
+		await runtime.start();
 
-		const conversation = await runtime.createConversation();
+		const conversation = await runtime.createSession();
 
 		// registerTool reached the harness alongside the built-ins.
 		expect(conversation.harness.getTools().map((tool) => tool.name)).toContain("test_echo");
@@ -242,9 +243,10 @@ describe("extension subsystem wiring", () => {
 
 	it("applies and persists a message_end mutation", async () => {
 		const { runtime, registration } = makeRuntime();
+		await runtime.start();
 		registration.setResponses([() => fauxAssistantMessage("original assistant text")]);
 
-		const conversation = await runtime.createConversation();
+		const conversation = await runtime.createSession();
 		await conversation.harness.prompt("hello");
 		await runtime.cleanup();
 
@@ -262,21 +264,23 @@ describe("extension subsystem wiring", () => {
 		expect(text).toBe("MUTATED_BY_EXTENSION");
 	});
 
-	it("invalidates a captured steward on createConversation", async () => {
+	it("invalidates a captured steward on reload", async () => {
 		writeFileSync(join(getAgentDir(AGENT), "extensions", "cap-ext.ts"), STALE_CAPTURE_EXTENSION_SOURCE, "utf-8");
 		const { runtime } = makeRuntime();
-		await runtime.createConversation();
+		await runtime.start();
+		const session = await runtime.createSession();
 
 		const previousRunner = runtime.extensionRunner;
 		const captured = previousRunner.getCommand("cap");
 		expect(captured).toBeDefined();
-		const runCaptured = () => captured?.handler("", previousRunner.createContext());
+		const runCaptured = () => captured?.handler("", previousRunner.createContext(session));
 
-		// The captured steward works before the swap.
+		// The captured steward works before the reload.
 		await expect(runCaptured()).resolves.toBeUndefined();
 
-		// Creating another conversation swaps the runner in place and invalidates the previous one.
-		await runtime.createConversation();
+		// Reload rebuilds the agent-global runner and invalidates the previous one (creating sessions is
+		// additive under Option A and does NOT swap the runner).
+		await runtime.reload();
 
 		// Any steward captured from the superseded runner now throws stale.
 		await expect(runCaptured()).rejects.toThrow(/stale/);
@@ -288,7 +292,8 @@ describe("extension subsystem wiring", () => {
 	it("runs an extension command and does not reach the model", async () => {
 		writeFileSync(join(getAgentDir(AGENT), "extensions", "cmd-ext.ts"), COMMAND_EXTENSION_SOURCE, "utf-8");
 		const { runtime, registration } = makeRuntime();
-		const conversation = await runtime.createConversation();
+		await runtime.start();
+		const conversation = await runtime.createSession();
 
 		await conversation.prompt("/greet there");
 
@@ -299,16 +304,17 @@ describe("extension subsystem wiring", () => {
 		await runtime.cleanup();
 	});
 
-	it("exposes steward.getConversation()/listSessions() so a command resolves the live conversation and lists sessions", async () => {
+	it("exposes ctx.session/steward.listSessions() so a command resolves the acting session and lists sessions", async () => {
 		writeFileSync(join(getAgentDir(AGENT), "extensions", "facade-ext.ts"), AGENT_FACADE_EXTENSION_SOURCE, "utf-8");
 		const { runtime } = makeRuntime();
-		const conversation = await runtime.createConversation();
+		await runtime.start();
+		const session = await runtime.createSession();
 
-		await conversation.prompt("/facade");
+		await session.prompt("/facade");
 
 		const marker = JSON.parse(readFileSync(join(markerDir, "facade.json"), "utf-8"));
-		// steward.getConversation() resolved the SAME live conversation the runtime built.
-		expect(marker.sessionId).toBe(conversation.getSessionId());
+		// ctx.session resolved the SAME session the command ran on.
+		expect(marker.sessionId).toBe(session.getSessionId());
 		// steward.listSessions() surfaced the stored session create() wrote eagerly.
 		expect(marker.sessionCount).toBeGreaterThanOrEqual(1);
 		await runtime.cleanup();
@@ -316,15 +322,16 @@ describe("extension subsystem wiring", () => {
 
 	it("resumes a stored session by id and lists stored sessions", async () => {
 		const { runtime, registration } = makeRuntime();
+		await runtime.start();
 		registration.setResponses([() => fauxAssistantMessage("a"), () => fauxAssistantMessage("b")]);
 
 		// Session A gets some history, then capture its id.
-		const a = await runtime.createConversation();
+		const a = await runtime.createSession();
 		await a.harness.prompt("hello from A");
 		const idA = a.getSessionId();
 
 		// Session B becomes the live conversation.
-		const b = await runtime.createConversation();
+		const b = await runtime.createSession();
 		await b.harness.prompt("hello from B");
 		expect(b.getSessionId()).not.toBe(idA);
 
@@ -333,24 +340,26 @@ describe("extension subsystem wiring", () => {
 		expect(ids).toContain(idA);
 		expect(ids).toContain(b.getSessionId());
 
-		// Resume A by id → it becomes the live conversation again, carrying its persisted history.
-		const resumed = await runtime.resumeConversation(idA);
+		// Re-open A by id → it is the same resident session (idempotent), carrying its persisted history.
+		const resumed = await runtime.openSession(idA);
 		expect(resumed.getSessionId()).toBe(idA);
-		expect(runtime.getConversation()?.getSessionId()).toBe(idA);
+		expect(runtime.getSession(idA)?.getSessionId()).toBe(idA);
 		expect(resumed.getEntries().some((entry) => entry.type === "message")).toBe(true);
 		await runtime.cleanup();
 	});
 
 	it("throws resuming an unknown session id", async () => {
 		const { runtime } = makeRuntime();
-		await runtime.createConversation();
-		await expect(runtime.resumeConversation("does-not-exist")).rejects.toThrow(/No session/);
+		await runtime.start();
+		await runtime.createSession();
+		await expect(runtime.openSession("does-not-exist")).rejects.toThrow(/No session/);
 		await runtime.cleanup();
 	});
 
 	it("applies an input transform and short-circuits a handled input", async () => {
 		writeFileSync(join(getAgentDir(AGENT), "extensions", "input-ext.ts"), INPUT_EXTENSION_SOURCE, "utf-8");
 		const { runtime, registration } = makeRuntime();
+		await runtime.start();
 		let capturedUserText = "";
 		registration.setResponses([
 			(context) => {
@@ -360,7 +369,7 @@ describe("extension subsystem wiring", () => {
 			},
 		]);
 
-		const conversation = await runtime.createConversation();
+		const conversation = await runtime.createSession();
 
 		// "raw" is rewritten before reaching the model.
 		await conversation.prompt("raw");
@@ -376,14 +385,18 @@ describe("extension subsystem wiring", () => {
 	it("lets an extension handle user_bash and returns its result", async () => {
 		writeFileSync(join(getAgentDir(AGENT), "extensions", "bash-ext.ts"), USER_BASH_EXTENSION_SOURCE, "utf-8");
 		const { runtime } = makeRuntime();
-		await runtime.createConversation();
+		await runtime.start();
+		const session = await runtime.createSession();
 
-		const result = await runtime.extensionRunner.emitUserBash({
-			type: "user_bash",
-			command: "echo hi",
-			excludeFromContext: false,
-			cwd: runtime.getCwd(),
-		});
+		const result = await runtime.extensionRunner.emitUserBash(
+			{
+				type: "user_bash",
+				command: "echo hi",
+				excludeFromContext: false,
+				cwd: runtime.getCwd(),
+			},
+			session,
+		);
 
 		expect(result?.result?.output).toBe("intercepted:echo hi");
 		await runtime.cleanup();
@@ -407,8 +420,9 @@ describe("extension subsystem wiring", () => {
 
 	it("reload picks up new resources and preserves the transcript", async () => {
 		const { runtime, registration } = makeRuntime();
+		await runtime.start();
 		registration.setResponses([() => fauxAssistantMessage("hi there")]);
-		const conversation = await runtime.createConversation();
+		const conversation = await runtime.createSession();
 		await conversation.prompt("hello");
 
 		const messagesBefore = conversation.getEntries().filter((e) => e.type === "message").length;
@@ -443,7 +457,8 @@ describe("extension subsystem wiring", () => {
 
 	it("reports resource counts and load errors in the resource summary", async () => {
 		const { runtime } = makeRuntime();
-		await runtime.createConversation();
+		await runtime.start();
+		await runtime.createSession();
 
 		const summary = runtime.getResourceSummary();
 		expect(summary.extensions).toBeGreaterThanOrEqual(1);
@@ -466,6 +481,7 @@ describe("extension subsystem wiring", () => {
 
 	it("queues a mid-stream sendUserMessage as a follow-up and answers in order", async () => {
 		const { runtime, registration } = makeRuntime();
+		await runtime.start();
 		const firstEntered = deferred();
 		const releaseFirst = deferred();
 		const secondTurnUserText: string[] = [];
@@ -487,7 +503,7 @@ describe("extension subsystem wiring", () => {
 		const onUnhandled = (err: unknown) => unhandled.push(err);
 		process.on("unhandledRejection", onUnhandled);
 		try {
-			const conversation = await runtime.createConversation();
+			const conversation = await runtime.createSession();
 
 			// An idle send starts a turn.
 			const firstTurn = conversation.sendUserMessage("first");
@@ -508,6 +524,43 @@ describe("extension subsystem wiring", () => {
 			process.off("unhandledRejection", onUnhandled);
 		}
 		expect(unhandled).toEqual([]);
+		await runtime.cleanup();
+	});
+
+	it("createSession is additive — both sessions stay resident and independently addressable", async () => {
+		const { runtime } = makeRuntime();
+		await runtime.start();
+
+		const a = await runtime.createSession();
+		const b = await runtime.createSession();
+		expect(a.getSessionId()).not.toBe(b.getSessionId());
+
+		// Both are resident and addressable by id (creating B did not evict A).
+		expect(runtime.getSession(a.getSessionId())).toBe(a);
+		expect(runtime.getSession(b.getSessionId())).toBe(b);
+		expect(runtime.listLiveSessions()).toHaveLength(2);
+		await runtime.cleanup();
+	});
+
+	it("closeSession evicts a session that openSession rehydrates with identical content", async () => {
+		const { runtime, registration } = makeRuntime();
+		await runtime.start();
+		registration.setResponses([() => fauxAssistantMessage("remembered")]);
+
+		const session = await runtime.createSession();
+		await session.harness.prompt("hello");
+		const id = session.getSessionId();
+		const messageCount = session.buildSessionContext().messages.length;
+		expect(messageCount).toBeGreaterThan(0);
+
+		// Evict (driver gone) — the durable JSONL stays intact.
+		await runtime.closeSession(id);
+		expect(runtime.getSession(id)).toBeUndefined();
+
+		// Rehydrate by id → same session id, same message count reconstructed from disk.
+		const rehydrated = await runtime.openSession(id);
+		expect(rehydrated.getSessionId()).toBe(id);
+		expect(rehydrated.buildSessionContext().messages.length).toBe(messageCount);
 		await runtime.cleanup();
 	});
 });

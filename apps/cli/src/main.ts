@@ -2,8 +2,8 @@
  * `@opsyhq/cli` dispatch.
  *
  * Agent surfaces are daemon clients: interactive `<name>`, the one-shot `--print`/inline-message
- * path, and `new` (birth chat) attach an `AgentSession` to the agent's daemon (spawning one if
- * needed) — the CLI never builds a `SessionHost`. `new`/`list`/`delete` are local commands; the
+ * path, and `new` (birth chat) connect to the agent's daemon (spawning one if needed) and drive a
+ * `SessionHandle` — the CLI never builds a `SessionHost`. `new`/`list`/`delete` are local commands; the
  * agent-scoped `<name> plugins ...` subcommand routes its mutating arms to the daemon (the single
  * writer); the hidden `daemon` subcommand runs the engine's `runDaemon` in-process (the
  * long-running server). `--help`/`--version` and the no-command usage are handled locally here.
@@ -77,7 +77,8 @@ export async function main(argv: string[]): Promise<number> {
 			process.stderr.write(`Print mode needs a message: ${APP_NAME} ${command} --print "<message>"\n`);
 			return 1;
 		}
-		return runPrintMode(await agent.open(), message);
+		await agent.connect();
+		return runPrintMode(await agent.getLatestSession(), message);
 	}
 	// Deep-link straight to the chat page.
 	const app = new App(steward);

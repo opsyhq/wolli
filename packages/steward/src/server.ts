@@ -2,27 +2,31 @@
  * Daemon server + runner.
  *
  * `runDaemon(name, opts)` resolves the agent's model/auth, starts its `AgentRuntime`, then binds a
- * long-running loopback HTTP/SSE server around it and blocks until a signal tears it down:
+ * long-running loopback HTTP/SSE server around it and blocks until a signal tears it down. The wire is
+ * session-namespaced:
  *
- *   - `GET /events`  (SSE)  — the curated event stream + async prompt acks;
- *   - `POST /control`       — commands, whose sync response is the HTTP body;
- *   - `GET /health`         — liveness, no auth.
+ *   - `GET /events`              (SSE) — the root control stream: agent snapshot + session lifecycle;
+ *   - `GET /sessions`                  — the session list;
+ *   - `GET /sessions/:id/events` (SSE) — one session's curated event stream (subscribing makes it live);
+ *   - `POST /sessions/:id/control`     — a command for that session, whose sync response is the body;
+ *   - `POST /sessions/:id/ui-response` — a client's answer to that session's parked dialog;
+ *   - `GET /health`                    — liveness, no auth.
  *
- * `AgentRuntime` owns every lifecycle concern (create/resume/reload/cleanup); the server is a
- * thin wrapper that calls into it. The `@opsyhq/cli` client's hidden `daemon` subcommand and every
- * OS service unit invoke `runDaemon`.
+ * `AgentRuntime` owns every lifecycle concern (start/create/open/close/reload/cleanup); the server is a
+ * thin wrapper that calls into it. The `@opsyhq/cli` client's hidden `daemon` subcommand and every OS
+ * service unit invoke `runDaemon`.
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { type ServerType, serve } from "@hono/node-server";
-import type { AgentHarness, AgentHarnessEvent } from "@opsyhq/agent";
+import type { AgentHarnessEvent } from "@opsyhq/agent";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
 import { APP_NAME, ENV_DAEMON_TOKEN, getAgentDir, VERSION } from "./config.ts";
 import { createAgentPluginManager } from "./core/agent-plugin-manager.ts";
-import { AgentRuntime, type Conversation } from "./core/agent-runtime.ts";
+import { AgentRuntime, type AgentSession } from "./core/agent-runtime.ts";
 import { AgentSettingsManager } from "./core/agent-settings-manager.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { loadDaemonConfig, saveDaemonConfig } from "./core/daemon-config.ts";
@@ -42,11 +46,14 @@ import type { DefaultPluginManager } from "./core/plugin-manager.ts";
 import { getServiceManager } from "./core/service/service-manager.ts";
 import { type Theme, theme } from "./theme/theme.ts";
 import {
+	type DaemonAgentState,
 	type DaemonCommand,
 	type DaemonCommandType,
+	type DaemonControlEvent,
 	type DaemonEvent,
 	type DaemonResponse,
 	type DaemonSessionState,
+	type DaemonSessionSummary,
 	type ExtensionUIRequest,
 	type ExtensionUIResponse,
 	FORWARDED_EVENT_TYPES,
@@ -55,7 +62,7 @@ import {
 } from "./types.ts";
 import { getCwdRelativePath, resolvePath } from "./utils/paths.ts";
 
-/** How many recent events the broadcaster keeps for `Last-Event-ID` replay. */
+/** How many recent events each session's broadcaster keeps for `Last-Event-ID` replay. */
 const RING_SIZE = 256;
 /** Keepalive comment interval — without periodic traffic idle SSE connections drop. */
 const KEEPALIVE_MS = 15_000;
@@ -83,40 +90,59 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 	return { promise, resolve, reject };
 }
 
-/**
- * The `get_state` / `hello` snapshot. Config/cwd come from the runtime; model/thinking/scope/
- * streaming + session ids/counts come from the live conversation.
- */
-function snapshot(runtime: AgentRuntime): DaemonSessionState {
-	const conversation = runtime.getConversation();
-	if (!conversation) throw new Error("AgentRuntime not started.");
-	const harness = conversation.harness;
+/** One session's summary for the list / lifecycle frames. */
+function sessionSummary(session: AgentSession): DaemonSessionSummary {
 	return {
-		model: harness.getModel(),
-		thinkingLevel: harness.getThinkingLevel(),
-		scopedModels: conversation.getScopedModels(),
-		isStreaming: !harness.isIdle,
-		sessionId: conversation.getSessionId(),
-		sessionName: conversation.getSessionName(),
-		sessionFile: conversation.getSessionFile(),
-		messageCount: conversation.buildSessionContext().messages.length,
-		pendingMessageCount: conversation.getPendingMessageCount(),
-		config: runtime.config,
-		cwd: runtime.getCwd(),
+		sessionId: session.getSessionId(),
+		sessionName: session.getSessionName(),
+		isStreaming: session.isStreaming(),
+		live: true,
 	};
 }
 
+/** The per-session `get_state` / session-stream `hello` snapshot. */
+function sessionSnapshot(session: AgentSession): DaemonSessionState {
+	const harness = session.harness;
+	return {
+		sessionId: session.getSessionId(),
+		model: harness.getModel(),
+		thinkingLevel: harness.getThinkingLevel(),
+		scopedModels: session.getScopedModels(),
+		isStreaming: !harness.isIdle,
+		sessionName: session.getSessionName(),
+		sessionFile: session.getSessionFile(),
+		messageCount: session.buildSessionContext().messages.length,
+		pendingMessageCount: session.getPendingMessageCount(),
+	};
+}
+
+/** The agent-global snapshot — config/cwd plus the merged (durable + resident) session list. */
+async function agentSnapshot(runtime: AgentRuntime): Promise<DaemonAgentState> {
+	const durable = await runtime.listSessions();
+	const sessions: DaemonSessionSummary[] = durable.map((info) => {
+		const live = runtime.getSession(info.id);
+		return {
+			sessionId: info.id,
+			sessionName: live?.getSessionName(),
+			createdAt: info.createdAt,
+			isStreaming: live ? live.isStreaming() : false,
+			live: !!live,
+		};
+	});
+	return { config: runtime.config, cwd: runtime.getCwd(), sessions };
+}
+
 /**
- * Drive the conversation's `prompt()` and ack the instant the prompt is accepted (handled, queued,
- * or about to run) rather than when the whole turn ends — `prompt()` only resolves at turn end.
- * The turn itself streams over SSE; `agent_end` marks completion.
+ * Drive a session's `prompt()` and ack the instant the prompt is accepted (handled, queued, or about
+ * to run) rather than when the whole turn ends — `prompt()` only resolves at turn end. The turn itself
+ * streams over the session's SSE; `agent_end` marks completion.
  */
 async function handlePrompt(
-	conversation: Conversation,
+	session: AgentSession,
 	cmd: Extract<DaemonCommand, { type: "prompt" }>,
 ): Promise<DaemonResponse> {
 	const accepted = deferred<void>();
-	void conversation
+	void session
 		.prompt(cmd.message, {
 			images: cmd.images,
 			source: "rpc",
@@ -125,8 +151,8 @@ async function handlePrompt(
 				if (success) accepted.resolve();
 			},
 		})
-		// A rejected prompt (e.g. an ambiguous mid-stream submit) throws its real error here; a
-		// later turn-time failure is a no-op against the already-resolved deferred.
+		// A rejected prompt (e.g. an ambiguous mid-stream submit) throws its real error here; a later
+		// turn-time failure is a no-op against the already-resolved deferred.
 		.catch((e) => accepted.reject(e instanceof Error ? e : new Error(String(e))));
 	await accepted.promise;
 	return ok(cmd.id, "prompt");
@@ -145,11 +171,12 @@ function pluginRootForSpec(pluginManager: DefaultPluginManager, spec: string): s
 /**
  * Drive integration onboarding for the selected services, writing each credential through the runtime's
  * live account store (no cross-process staleness) and rendering `onboard(ctx)`'s dialogs via the
- * runner's bound `uiContext` (which emits them to attached clients). Returns structured per-service
+ * initiating session's `ui` (which emits them to that session's clients). Returns structured per-service
  * results for the client to print.
  */
 async function runDaemonOnboarding(
 	runtime: AgentRuntime,
+	ui: ExtensionUIContext,
 	selectServices: (input: { integrations: Integration[]; pluginManager: DefaultPluginManager }) => string[],
 ): Promise<OnboardServiceResult[]> {
 	const name = runtime.config.name;
@@ -160,13 +187,13 @@ async function runDaemonOnboarding(
 	const { integrations } = await loadIntegrations(integrationPaths, agentDir);
 
 	const services = selectServices({ integrations, pluginManager });
-	// The runtime's live account store is the single writer; its bound uiContext renders dialogs over the wire.
+	// The runtime's live account store is the single writer; the initiating session's ui renders dialogs.
 	const accounts = runtime.integrationAccounts;
-	const ui: IntegrationOnboardUI = runtime.extensionRunner.getUIContext();
+	const onboardUI: IntegrationOnboardUI = ui;
 
 	const results: OnboardServiceResult[] = [];
 	for (const service of services) {
-		const result = await onboardIntegration({ service, integrations, accounts, ui });
+		const result = await onboardIntegration({ service, integrations, accounts, ui: onboardUI });
 		results.push(
 			result.status === "error"
 				? { service, status: result.status, message: result.message }
@@ -177,19 +204,22 @@ async function runDaemonOnboarding(
 }
 
 /**
- * The command dispatch switch. Throws on command-level failure (caught by the `/control`
- * route, surfaced as `err`).
+ * The command dispatch switch. `session` is the session named in the URL path — the target for session-
+ * scoped verbs, and the UI rail for agent-global verbs (login/reload/…) whose effect is global but whose
+ * dialogs route back to the initiating session. Throws on command-level failure (caught by the route).
  */
-async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise<DaemonResponse> {
+async function handleCommand(
+	runtime: AgentRuntime,
+	session: AgentSession,
+	cmd: DaemonCommand,
+): Promise<DaemonResponse> {
 	const id = cmd.id;
-	const conversation = runtime.getConversation();
-	if (!conversation) throw new Error("AgentRuntime not started.");
-	const harness = conversation.harness;
+	const harness = session.harness;
 
 	switch (cmd.type) {
 		// Prompting
 		case "prompt":
-			return handlePrompt(conversation, cmd);
+			return handlePrompt(session, cmd);
 		case "steer":
 			await harness.steer(cmd.message, { images: cmd.images });
 			return ok(id, "steer");
@@ -204,56 +234,53 @@ async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise
 			await harness.waitForIdle();
 			return ok(id, "wait_for_idle");
 		case "clear_queue":
-			return ok(id, "clear_queue", await conversation.clearQueue());
-		case "new_session": {
-			// A forming (undeployed) agent stays in its birth session; only a deploy-reason swap may
-			// replace it. snapshot() re-resolves the new conversation after the swap.
-			if (cmd.reason !== "deploy" && !AgentSettingsManager.create(runtime.config.name).getAgentDeployed()) {
+			return ok(id, "clear_queue", await session.clearQueue());
+		case "create_session": {
+			// Additive: a fresh session alongside the rest. A forming agent stays in its birth session.
+			if (!AgentSettingsManager.create(runtime.config.name).getAgentDeployed()) {
 				throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
 			}
-			await runtime.createConversation();
-			return ok(id, "new_session", snapshot(runtime));
+			const created = await runtime.createSession();
+			return ok(id, "create_session", sessionSnapshot(created));
 		}
 		case "reload":
 			await runtime.reload();
 			return ok(id, "reload");
 		case "deploy": {
-			// The human's single Yes. Flip the latch, register the OS service unit, and swap to a fresh
+			// The human's single Yes. Flip the latch, register the OS service unit, and create a fresh
 			// deployed session — persisted to disk, so the supervised daemon (which resumes the most-recent
 			// session) picks up THIS fresh one. For a real backend, start the supervised daemon now: it
-			// binds its own ephemeral port while this birth daemon keeps serving its own (two ephemeral
-			// binds never collide). The client then reconnects to it and stops this daemon. With the `none`
+			// binds its own ephemeral port while this birth daemon keeps serving its own. With the `none`
 			// backend there is no supervisor, so this daemon stays on the fresh session.
 			const name = runtime.config.name;
 			const serviceManager = getServiceManager();
 			AgentSettingsManager.create(name).setAgentDeployed();
 			serviceManager.install(name);
-			// Latch already flipped, so swap unguarded to the fresh deployed session.
-			await runtime.createConversation();
+			const deployed = await runtime.createSession();
 			if (serviceManager.kind !== "none") {
 				serviceManager.start(name);
 			}
-			return ok(id, "deploy", snapshot(runtime));
+			return ok(id, "deploy", sessionSnapshot(deployed));
 		}
 
 		// Model / thinking
 		case "set_thinking_level":
-			await conversation.setThinkingLevel(cmd.level);
+			await session.setThinkingLevel(cmd.level);
 			return ok(id, "set_thinking_level");
 		case "set_model":
-			return ok(id, "set_model", await conversation.setModelById(cmd.provider, cmd.modelId));
+			return ok(id, "set_model", await session.setModelById(cmd.provider, cmd.modelId));
 		case "get_available_models":
 			return ok(id, "get_available_models", { models: runtime.getAvailableModels() });
 		case "set_scoped_models":
-			await conversation.setScopedModels(cmd.enabledModelIds);
+			await session.setScopedModels(cmd.enabledModelIds);
 			return ok(id, "set_scoped_models");
 		case "set_enabled_models":
 			runtime.setEnabledModels(cmd.enabledModels);
 			return ok(id, "set_enabled_models");
 
-		// Provider login — runs daemon-side; OAuth prompts ride the uiContext dialog seam.
+		// Provider login — runs daemon-side; OAuth prompts ride the initiating session's ui.
 		case "login":
-			return ok(id, "login", await runtime.login(cmd.provider, cmd.authType));
+			return ok(id, "login", await runtime.login(cmd.provider, cmd.authType, session.ui));
 		case "logout":
 			return ok(id, "logout", runtime.logout(cmd.provider));
 		case "get_login_providers":
@@ -263,18 +290,18 @@ async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise
 
 		// State
 		case "get_state":
-			return ok(id, "get_state", snapshot(runtime));
+			return ok(id, "get_state", sessionSnapshot(session));
 		case "get_messages":
-			return ok(id, "get_messages", { messages: conversation.buildSessionContext().messages });
+			return ok(id, "get_messages", { messages: session.buildSessionContext().messages });
 		case "get_commands":
 			return ok(id, "get_commands", { commands: runtime.getCommands() });
 		case "get_entries":
-			return ok(id, "get_entries", { entries: conversation.getEntries() });
+			return ok(id, "get_entries", { entries: session.getEntries() });
 		case "get_resource_summary":
 			return ok(id, "get_resource_summary", runtime.getResourceSummary());
 		case "get_tool_info":
 			return ok(id, "get_tool_info", {
-				tools: runtime.getToolInfos(),
+				tools: runtime.getToolInfos(harness),
 				activeToolNames: harness.getActiveTools().map((tool) => tool.name),
 			});
 		case "get_integration_info":
@@ -288,7 +315,7 @@ async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise
 
 		// Session-mutation helpers
 		case "seed_assistant_message":
-			return ok(id, "seed_assistant_message", await conversation.seedAssistantMessage(cmd.text));
+			return ok(id, "seed_assistant_message", await session.seedAssistantMessage(cmd.text));
 		case "append_message":
 			await harness.appendMessage(cmd.message);
 			return ok(id, "append_message");
@@ -313,12 +340,11 @@ async function handleCommand(runtime: AgentRuntime, cmd: DaemonCommand): Promise
 			await runtime.reload();
 			return ok(id, "update_plugins");
 		}
-		// Onboarding writes through the runtime's live account store, so no second reload is needed
-		// (the credential is already in-memory-consistent); `install_plugin` did the reload. The
+		// Onboarding writes through the runtime's live account store, so no second reload is needed; the
 		// source scopes onboarding to the just-installed plugin's integrations that declare `onboard`.
 		case "onboard_plugin":
 			return ok(id, "onboard_plugin", {
-				results: await runDaemonOnboarding(runtime, ({ integrations, pluginManager }) => {
+				results: await runDaemonOnboarding(runtime, session.ui, ({ integrations, pluginManager }) => {
 					const root = pluginRootForSpec(pluginManager, cmd.source);
 					const services: string[] = [];
 					for (const integration of integrations) {
@@ -368,10 +394,9 @@ async function createAgentRuntime(name: string): Promise<{ runtime: AgentRuntime
 	}
 	const model = resolved.model;
 
-	// Auth precedence (handled by AuthStorage): runtime → auth.json (api key / OAuth)
-	// → env var. hasAuth() doesn't refresh tokens — it just checks something exists.
-	// If it returns false, every credential source (including the env var) is absent,
-	// so the only actionable hint is to log in.
+	// Auth precedence (handled by AuthStorage): runtime → auth.json (api key / OAuth) → env var.
+	// hasAuth() doesn't refresh tokens — it just checks something exists. If it returns false, every
+	// credential source (including the env var) is absent, so the only actionable hint is to log in.
 	if (!authStorage.hasAuth(model.provider)) {
 		return { error: `No credentials found for provider "${model.provider}". Log in with the steward CLI.` };
 	}
@@ -386,11 +411,11 @@ export interface RunDaemonOptions {
 }
 
 /**
- * The `daemon <name>` runner: start the agent's `AgentRuntime`, then wrap it in a long-running
- * HTTP/SSE server clients attach to. Binds an OS-assigned ephemeral port (unless `--port` overrides),
- * writes the pid/port/token to the temp-dir config so clients can find it, and blocks on the listening
- * server until a signal tears it down. The `@opsyhq/cli` client's hidden `daemon` subcommand and every
- * OS service unit invoke this.
+ * The `daemon <name>` runner: start the agent's `AgentRuntime`, then wrap it in a long-running HTTP/SSE
+ * server clients attach to. Binds an OS-assigned ephemeral port (unless `--port` overrides), writes the
+ * pid/port/token to the temp-dir config so clients can find it, and blocks on the listening server until
+ * a signal tears it down. The `@opsyhq/cli` client's hidden `daemon` subcommand and every OS service unit
+ * invoke this.
  */
 export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Promise<number> {
 	if (!AgentSettingsManager.get(name)) {
@@ -405,16 +430,12 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
 	}
 	const { runtime } = built;
 
-	// Resume the agent's most-recent session. Scope is seeded from config inside the runtime.
-	await runtime.resumeConversation();
-
 	// Every daemon binds an OS-assigned ephemeral port and writes it back to the temp config, where
-	// clients discover it — no port is reserved up front. This is also what lets deploy stand up the
-	// supervised daemon alongside the still-serving birth daemon: two ephemeral binds never collide.
-	// `--port` is a manual override for this run (e.g. to pin a known port for debugging).
+	// clients discover it. This is also what lets deploy stand up the supervised daemon alongside the
+	// still-serving birth daemon: two ephemeral binds never collide. `--port` is a manual override.
 	const port = opts.port ?? 0;
 
-	// Bearer token for /events + /control: the STEWARD_DAEMON_TOKEN override, else a fresh 256-bit hex.
+	// Bearer token for the wire: the STEWARD_DAEMON_TOKEN override, else a fresh 256-bit hex.
 	const token = process.env[ENV_DAEMON_TOKEN]?.trim() || randomBytes(32).toString("hex");
 	saveDaemonConfig(name, {
 		pid: process.pid,
@@ -430,8 +451,6 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
 	const boundPort = loadDaemonConfig(name)?.port ?? port;
 	console.log(`${APP_NAME} daemon for "${name}" listening on http://127.0.0.1:${boundPort}`);
 
-	// server.close() drops the broadcaster subscription (via the server's "close" listener); we then
-	// release the runtime + config.
 	let shuttingDown = false;
 	const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
 		if (shuttingDown) return;
@@ -450,12 +469,10 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
 }
 
 /**
- * Bind a loopback HTTP/SSE server wrapping `runtime`, subscribe the broadcaster to the live harness
- * (re-subscribing after every swap), and resolve once it is listening. Returns the `serve()` server
- * so `runDaemon` can `server.close()` on shutdown — closing the server drops the broadcaster
- * subscription (via the `close` listener below), the leak `runtime.cleanup()` does not cover. Exported
- * for the daemon integration test, which drives it directly against a faux runtime; not part of the SDK
- * barrel.
+ * Bind a loopback HTTP/SSE server wrapping `runtime`: build the per-session UI rails, start the runtime,
+ * open the initial session, then serve the session-namespaced routes. Resolves once it is listening.
+ * Returns the `serve()` server so `runDaemon` can `server.close()` on shutdown. Exported for the daemon
+ * integration test, which drives it directly; not part of the SDK barrel.
  */
 export async function runDaemonMode(
 	runtime: AgentRuntime,
@@ -463,32 +480,77 @@ export async function runDaemonMode(
 ): Promise<ServerType> {
 	const startedAt = new Date().toISOString();
 
-	// ---- Event broadcaster ------------------------------------------------
-	const clients = new Set<SSEStreamingApi>();
-	let seq = 0;
-	const ring: { id: number; frame: string }[] = [];
+	// ---- Per-session event broadcaster ------------------------------------
+	// Each session owns its own subscriber set, sequence counter, and replay ring (the path scopes its
+	// stream, so frames need no session id). A session goes live when its first client attaches and is
+	// dropped when its last detaches (if idle); the harness subscription tracks that window.
+	const sessionClients = new Map<string, Set<SSEStreamingApi>>();
+	const sessionSeq = new Map<string, number>();
+	const sessionRing = new Map<string, { id: number; frame: string }[]>();
+	const sessionUnsub = new Map<string, () => void>();
+	// Each session's parked extension-UI dialogs, keyed by request id within the session.
+	const sessionPending = new Map<
+		string,
+		Map<string, { resolve: (r: ExtensionUIResponse) => void; reject: (e: Error) => void }>
+	>();
+	// The root control-stream subscribers (agent snapshot + session lifecycle).
+	const controlClients = new Set<SSEStreamingApi>();
 
-	const broadcast = async (event: AgentHarnessEvent | ScopedModelsUpdateEvent): Promise<void> => {
-		// Curation: forward only the allowlisted AgentEvent + queue/model/thinking updates;
-		// drop the internal own-events (save_point, settled, abort, session_*, tools_update, …).
+	const broadcastToSession = async (
+		sessionId: string,
+		event: AgentHarnessEvent | ScopedModelsUpdateEvent,
+	): Promise<void> => {
+		// Curation: forward only the allowlisted AgentEvent + queue/model/thinking updates; drop the
+		// internal own-events (save_point, settled, abort, session_*, tools_update, …).
 		if (!FORWARDED_EVENT_TYPES.has(event.type as DaemonEvent["type"])) return;
-		seq += 1;
-		const id = seq;
+		const clients = sessionClients.get(sessionId);
+		if (!clients || clients.size === 0) return;
+		const seq = (sessionSeq.get(sessionId) ?? 0) + 1;
+		sessionSeq.set(sessionId, seq);
 		const frame = JSON.stringify(event);
-		ring.push({ id, frame });
+		const ring = sessionRing.get(sessionId) ?? [];
+		ring.push({ id: seq, frame });
 		if (ring.length > RING_SIZE) ring.shift();
+		sessionRing.set(sessionId, ring);
 		for (const client of clients) {
 			if (client.aborted) {
 				clients.delete(client);
 				continue;
 			}
-			await client.writeSSE({ id: String(id), event: "message", data: frame });
+			await client.writeSSE({ id: String(seq), event: "message", data: frame });
 		}
 	};
 
-	// The extension-UI sink: fire-and-forget, no `seq`/ring, no SSE `id` — so a request frame is
-	// not an AgentHarnessEvent and stays invisible to Last-Event-ID replay.
-	const output = (request: ExtensionUIRequest): void => {
+	const broadcastControl = (event: DaemonControlEvent): void => {
+		const frame = JSON.stringify(event);
+		for (const client of controlClients) {
+			if (client.aborted) {
+				controlClients.delete(client);
+				continue;
+			}
+			void client.writeSSE({ event: "message", data: frame });
+		}
+	};
+
+	// Subscribe the broadcaster to a session's harness while it has clients (exactly once per session).
+	const subscribeSession = (session: AgentSession): void => {
+		const sessionId = session.getSessionId();
+		if (sessionUnsub.has(sessionId)) return;
+		sessionUnsub.set(
+			sessionId,
+			session.harness.subscribe((event) => void broadcastToSession(sessionId, event)),
+		);
+	};
+	const unsubscribeSession = (sessionId: string): void => {
+		sessionUnsub.get(sessionId)?.();
+		sessionUnsub.delete(sessionId);
+	};
+
+	// The extension-UI sink for one session: fire-and-forget, no `seq`/ring/SSE `id` — so a request
+	// frame is not an AgentHarnessEvent and stays invisible to Last-Event-ID replay.
+	const output = (sessionId: string, request: ExtensionUIRequest): void => {
+		const clients = sessionClients.get(sessionId);
+		if (!clients) return;
 		for (const client of clients) {
 			if (client.aborted) {
 				clients.delete(client);
@@ -498,298 +560,282 @@ export async function runDaemonMode(
 		}
 	};
 
-	// ---- Subscribe + rebind -----------------------------------------------
-	// Keep exactly one subscription on the live harness: unsub-old → sub-new → store.
-	let unsubscribe: (() => void) | undefined;
-	const resubscribe = (harness: AgentHarness): void => {
-		unsubscribe?.();
-		unsubscribe = harness.subscribe(broadcast);
-	};
-	// Subscribe to the live conversation's harness; rebind re-points after every swap.
-	const initialConversation = runtime.getConversation();
-	if (initialConversation) resubscribe(initialConversation.harness);
-	// Re-fire after every harness swap (build/newSession) and after reload.
-	runtime.setRebindHandler(resubscribe);
-	// Scoped-model scope changes are runtime-originated (not harness own-events), so bridge them
-	// onto the same broadcaster the harness events ride.
-	runtime.setScopedModelsHandler((scopedModels) => void broadcast({ type: "scoped_models_update", scopedModels }));
+	/**
+	 * Build the per-session UI rail bound to `sessionId`: its four awaited dialogs (select/confirm/
+	 * input/editor) park a promise in the session's pending map and emit a request frame to the
+	 * session's clients; the fire-and-forget methods just emit; unserializable surfaces are stubbed.
+	 */
+	const createSessionUI = (sessionId: string): ExtensionUIContext => {
+		const pending = (): Map<string, { resolve: (r: ExtensionUIResponse) => void; reject: (e: Error) => void }> => {
+			let map = sessionPending.get(sessionId);
+			if (!map) {
+				map = new Map();
+				sessionPending.set(sessionId, map);
+			}
+			return map;
+		};
 
-	// ---- Extension-UI bridge ----------------------------------------------
-	// Swap the runner's noOpUIContext for one whose dialogs ride the SSE stream (via `output`) and
-	// resolve over `POST /ui-response`. The four awaited dialogs (select/confirm/input/editor) park a
-	// promise keyed by request id; the fire-and-forget methods just emit; the `theme` family is
-	// data-only and unserializable surfaces are stubbed. `pendingExtensionRequests` is closure-scoped,
-	// so it survives harness swaps: bindInteractiveContext re-applies the SAME uiContext to every
-	// runner build()/reload(), so a fresh session never reverts to noOpUIContext and an in-flight
-	// dialog survives a swap.
-	const pendingExtensionRequests = new Map<
-		string,
-		{ resolve: (response: ExtensionUIResponse) => void; reject: (error: Error) => void }
-	>();
+		// Park a promise for an awaited dialog, with optional signal/timeout cancellation.
+		const createDialogPromise = <T>(
+			opts: ExtensionUIDialogOptions | undefined,
+			defaultValue: T,
+			request: Record<string, unknown>,
+			parseResponse: (response: ExtensionUIResponse) => T,
+		): Promise<T> => {
+			if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
 
-	// Park a promise for an awaited dialog, with optional signal/timeout cancellation.
-	const createDialogPromise = <T>(
-		opts: ExtensionUIDialogOptions | undefined,
-		defaultValue: T,
-		request: Record<string, unknown>,
-		parseResponse: (response: ExtensionUIResponse) => T,
-	): Promise<T> => {
-		if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
+			const requestId = randomUUID();
+			return new Promise((resolve, reject) => {
+				let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-		const id = randomUUID();
-		return new Promise((resolve, reject) => {
-			let timeoutId: ReturnType<typeof setTimeout> | undefined;
+				const cleanup = () => {
+					if (timeoutId) clearTimeout(timeoutId);
+					opts?.signal?.removeEventListener("abort", onAbort);
+					pending().delete(requestId);
+				};
 
-			const cleanup = () => {
-				if (timeoutId) clearTimeout(timeoutId);
-				opts?.signal?.removeEventListener("abort", onAbort);
-				pendingExtensionRequests.delete(id);
-			};
-
-			const onAbort = () => {
-				cleanup();
-				resolve(defaultValue);
-			};
-			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-			if (opts?.timeout) {
-				timeoutId = setTimeout(() => {
+				const onAbort = () => {
 					cleanup();
 					resolve(defaultValue);
-				}, opts.timeout);
-			}
+				};
+				opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
-			pendingExtensionRequests.set(id, {
-				resolve: (response: ExtensionUIResponse) => {
-					cleanup();
-					resolve(parseResponse(response));
-				},
-				reject,
-			});
-			output({ type: "extension_ui_request", id, ...request } as ExtensionUIRequest);
-		});
-	};
+				if (opts?.timeout) {
+					timeoutId = setTimeout(() => {
+						cleanup();
+						resolve(defaultValue);
+					}, opts.timeout);
+				}
 
-	const uiContext: ExtensionUIContext = {
-		select: (title, options, opts) =>
-			createDialogPromise<string | undefined>(
-				opts,
-				undefined,
-				{ method: "select", title, options, timeout: opts?.timeout },
-				(r) => ("cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
-			),
-
-		confirm: (title, message, opts) =>
-			createDialogPromise<boolean>(
-				opts,
-				false,
-				{ method: "confirm", title, message, timeout: opts?.timeout },
-				(r) => ("cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false),
-			),
-
-		input: (title, placeholder, opts) =>
-			createDialogPromise<string | undefined>(
-				opts,
-				undefined,
-				{ method: "input", title, placeholder, timeout: opts?.timeout },
-				(r) => ("cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
-			),
-
-		notify(message: string, type?: "info" | "warning" | "error"): void {
-			// Fire and forget — no response needed.
-			output({ type: "extension_ui_request", id: randomUUID(), method: "notify", message, notifyType: type });
-		},
-
-		onTerminalInput(): () => void {
-			// Raw terminal input is a client-only concern; the daemon has no terminal.
-			return () => {};
-		},
-
-		setStatus(key: string, text: string | undefined): void {
-			output({
-				type: "extension_ui_request",
-				id: randomUUID(),
-				method: "setStatus",
-				statusKey: key,
-				statusText: text,
-			});
-		},
-
-		setWorkingMessage(_message?: string): void {
-			// Requires TUI loader access — client-only.
-		},
-
-		setWorkingVisible(_visible: boolean): void {
-			// Requires TUI loader access — client-only.
-		},
-
-		setWorkingIndicator(_options?: WorkingIndicatorOptions): void {
-			// Requires TUI loader access — client-only.
-		},
-
-		setHiddenThinkingLabel(_label?: string): void {
-			// Requires TUI message rendering — client-only.
-		},
-
-		setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {
-			// Only string arrays cross the wire; component factories can't be serialized.
-			if (content === undefined || Array.isArray(content)) {
-				output({
-					type: "extension_ui_request",
-					id: randomUUID(),
-					method: "setWidget",
-					widgetKey: key,
-					widgetLines: content as string[] | undefined,
-					widgetPlacement: options?.placement,
-				});
-			}
-		},
-
-		setFooter(_factory: unknown): void {
-			// Custom footer is a component factory — can't serialize.
-		},
-
-		setHeader(_factory: unknown): void {
-			// Custom header is a component factory — can't serialize.
-		},
-
-		setTitle(title: string): void {
-			output({ type: "extension_ui_request", id: randomUUID(), method: "setTitle", title });
-		},
-
-		async custom() {
-			// Custom components can't cross the wire.
-			return undefined as never;
-		},
-
-		pasteToEditor(text: string): void {
-			// No paste semantics over the wire — falls back to setEditorText.
-			this.setEditorText(text);
-		},
-
-		setEditorText(text: string): void {
-			output({ type: "extension_ui_request", id: randomUUID(), method: "setEditorText", text });
-		},
-
-		getEditorText(): string {
-			// Synchronous read can't round-trip; the client tracks editor state locally.
-			return "";
-		},
-
-		async editor(title: string, prefill?: string): Promise<string | undefined> {
-			// Parked directly — `editor` has no signal/timeout in the extension API, so the
-			// last-client-gone cancel below is its only escape from hanging forever.
-			const id = randomUUID();
-			return new Promise((resolve, reject) => {
-				pendingExtensionRequests.set(id, {
+				pending().set(requestId, {
 					resolve: (response: ExtensionUIResponse) => {
-						if ("cancelled" in response && response.cancelled) resolve(undefined);
-						else if ("value" in response) resolve(response.value);
-						else resolve(undefined);
+						cleanup();
+						resolve(parseResponse(response));
 					},
 					reject,
 				});
-				output({ type: "extension_ui_request", id, method: "editor", title, prefill });
+				output(sessionId, { type: "extension_ui_request", id: requestId, ...request } as ExtensionUIRequest);
 			});
-		},
+		};
 
-		addAutocompleteProvider(): void {
-			// Autocomplete composition is a client-only concern.
-		},
+		const ui: ExtensionUIContext = {
+			select: (title, options, opts) =>
+				createDialogPromise<string | undefined>(
+					opts,
+					undefined,
+					{ method: "select", title, options, timeout: opts?.timeout },
+					(r) => ("cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
+				),
 
-		setEditorComponent(): void {
-			// Custom editor components can't be serialized.
-		},
+			confirm: (title, message, opts) =>
+				createDialogPromise<boolean>(
+					opts,
+					false,
+					{ method: "confirm", title, message, timeout: opts?.timeout },
+					(r) => ("cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false),
+				),
 
-		getEditorComponent() {
-			return undefined;
-		},
+			input: (title, placeholder, opts) =>
+				createDialogPromise<string | undefined>(
+					opts,
+					undefined,
+					{ method: "input", title, placeholder, timeout: opts?.timeout },
+					(r) => ("cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
+				),
 
-		// —— theme family: data-only / inert (theme rendering is a client concern) ——
-		get theme() {
-			return theme;
-		},
+			notify(message: string, type?: "info" | "warning" | "error"): void {
+				output(sessionId, {
+					type: "extension_ui_request",
+					id: randomUUID(),
+					method: "notify",
+					message,
+					notifyType: type,
+				});
+			},
 
-		getAllThemes() {
-			return [];
-		},
+			onTerminalInput(): () => void {
+				// Raw terminal input is a client-only concern; the daemon has no terminal.
+				return () => {};
+			},
 
-		getTheme(_name: string) {
-			return undefined;
-		},
+			setStatus(key: string, text: string | undefined): void {
+				output(sessionId, {
+					type: "extension_ui_request",
+					id: randomUUID(),
+					method: "setStatus",
+					statusKey: key,
+					statusText: text,
+				});
+			},
 
-		setTheme(_theme: string | Theme) {
-			return { success: false, error: "UI not available" };
-		},
+			setWorkingMessage(_message?: string): void {
+				// Requires TUI loader access — client-only.
+			},
 
-		getToolsExpanded() {
-			return false;
-		},
+			setWorkingVisible(_visible: boolean): void {
+				// Requires TUI loader access — client-only.
+			},
 
-		setToolsExpanded(_expanded: boolean) {
-			// Tool expansion is client TUI state.
-		},
+			setWorkingIndicator(_options?: WorkingIndicatorOptions): void {
+				// Requires TUI loader access — client-only.
+			},
+
+			setHiddenThinkingLabel(_label?: string): void {
+				// Requires TUI message rendering — client-only.
+			},
+
+			setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {
+				// Only string arrays cross the wire; component factories can't be serialized.
+				if (content === undefined || Array.isArray(content)) {
+					output(sessionId, {
+						type: "extension_ui_request",
+						id: randomUUID(),
+						method: "setWidget",
+						widgetKey: key,
+						widgetLines: content as string[] | undefined,
+						widgetPlacement: options?.placement,
+					});
+				}
+			},
+
+			setFooter(_factory: unknown): void {
+				// Custom footer is a component factory — can't serialize.
+			},
+
+			setHeader(_factory: unknown): void {
+				// Custom header is a component factory — can't serialize.
+			},
+
+			setTitle(title: string): void {
+				output(sessionId, { type: "extension_ui_request", id: randomUUID(), method: "setTitle", title });
+			},
+
+			async custom() {
+				// Custom components can't cross the wire.
+				return undefined as never;
+			},
+
+			pasteToEditor(text: string): void {
+				// No paste semantics over the wire — falls back to setEditorText.
+				this.setEditorText(text);
+			},
+
+			setEditorText(text: string): void {
+				output(sessionId, { type: "extension_ui_request", id: randomUUID(), method: "setEditorText", text });
+			},
+
+			getEditorText(): string {
+				// Synchronous read can't round-trip; the client tracks editor state locally.
+				return "";
+			},
+
+			async editor(title: string, prefill?: string): Promise<string | undefined> {
+				// Parked directly — `editor` has no signal/timeout in the extension API, so the
+				// last-client-gone cancel below is its only escape from hanging forever.
+				const requestId = randomUUID();
+				return new Promise((resolve, reject) => {
+					pending().set(requestId, {
+						resolve: (response: ExtensionUIResponse) => {
+							if ("cancelled" in response && response.cancelled) resolve(undefined);
+							else if ("value" in response) resolve(response.value);
+							else resolve(undefined);
+						},
+						reject,
+					});
+					output(sessionId, { type: "extension_ui_request", id: requestId, method: "editor", title, prefill });
+				});
+			},
+
+			addAutocompleteProvider(): void {
+				// Autocomplete composition is a client-only concern.
+			},
+
+			setEditorComponent(): void {
+				// Custom editor components can't be serialized.
+			},
+
+			getEditorComponent() {
+				return undefined;
+			},
+
+			// —— theme family: data-only / inert (theme rendering is a client concern) ——
+			get theme() {
+				return theme;
+			},
+
+			getAllThemes() {
+				return [];
+			},
+
+			getTheme(_name: string) {
+				return undefined;
+			},
+
+			setTheme(_theme: string | Theme) {
+				return { success: false, error: "UI not available" };
+			},
+
+			getToolsExpanded() {
+				return false;
+			},
+
+			setToolsExpanded(_expanded: boolean) {
+				// Tool expansion is client TUI state.
+			},
+		};
+		return ui;
 	};
 
+	// ---- Bind the runtime host surface + lifecycle bridges -----------------
 	runtime.bindInteractiveContext({
-		uiContext,
+		createSessionUI,
 		mode: "rpc",
-		// Surface runner errors (extension + integration) to clients as error notifies.
-		onError: (e) => uiContext.notify(`${e.path}: ${e.error}`, "error"),
+		// Runner errors (extension + integration) are agent-global — no originating session — so notify
+		// every live session's clients.
+		onError: (e) => {
+			for (const session of runtime.listLiveSessions()) session.ui.notify(`${e.path}: ${e.error}`, "error");
+		},
 		newSession: async () => {
 			if (!AgentSettingsManager.create(runtime.config.name).getAgentDeployed()) {
 				throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
 			}
-			await runtime.createConversation();
+			await runtime.createSession();
 			return { cancelled: false };
 		},
 	});
+	// Session lifecycle → control stream, so a client tracking the open-session list keeps it fresh.
+	runtime.setSessionLifecycleHandler((event) => {
+		if (event.type === "added") broadcastControl({ type: "session_added", session: sessionSummary(event.session) });
+		else if (event.type === "removed") broadcastControl({ type: "session_removed", sessionId: event.sessionId });
+		else broadcastControl({ type: "session_renamed", sessionId: event.sessionId, sessionName: event.sessionName });
+	});
+	// Scoped-model scope changes are runtime-originated (not harness own-events) — bridge each onto the
+	// owning session's broadcaster.
+	runtime.setScopedModelsHandler(
+		(sessionId, scopedModels) => void broadcastToSession(sessionId, { type: "scoped_models_update", scopedModels }),
+	);
+
+	// Build the agent-global shared resources, then open the initial (most-recent or fresh) session so
+	// the agent always has at least one session to list/attach.
+	await runtime.start();
+	await runtime.openSession();
 
 	// ---- HTTP app ---------------------------------------------------------
 	const app = new Hono();
 	app.use("/events", bearerAuth({ token }));
-	app.use("/control", bearerAuth({ token }));
-	app.use("/ui-response", bearerAuth({ token }));
+	app.use("/sessions", bearerAuth({ token }));
+	app.use("/sessions/*", bearerAuth({ token }));
 
 	app.get("/health", (c) => c.json({ status: "ok", agent: runtime.config.name, pid: process.pid, startedAt }));
 
+	// Root control stream: agent snapshot hello + session lifecycle frames.
 	app.get("/events", (c) =>
 		streamSSE(c, async (stream) => {
-			clients.add(stream);
-			// Capture the replay watermark with NO intervening await, so live broadcasts
-			// (id > watermark) and replayed events (id ≤ watermark) stay disjoint — no
-			// double-delivery across the reconnect boundary.
-			const replayUpTo = seq;
+			controlClients.add(stream);
 			stream.onAbort(() => {
-				clients.delete(stream);
-				// With no client left to answer, resolve every parked dialog to cancel — otherwise a
-				// dialog open when its owning client dropped (notably `editor`, which has no
-				// signal/timeout) would hang forever. Other clients still attached keep dialogs parked.
-				if (clients.size === 0) {
-					for (const [id, pending] of [...pendingExtensionRequests]) {
-						pending.resolve({ type: "extension_ui_response", id, cancelled: true });
-					}
-					pendingExtensionRequests.clear();
-				}
+				controlClients.delete(stream);
 			});
-
-			// Replay buffered events after the client's Last-Event-ID, bounded by the watermark.
-			const lastEventId = c.req.header("Last-Event-ID");
-			if (lastEventId !== undefined) {
-				const after = Number(lastEventId);
-				for (const entry of ring) {
-					if (entry.id > after && entry.id <= replayUpTo) {
-						await stream.writeSSE({ id: String(entry.id), event: "message", data: entry.frame });
-					}
-				}
-			}
-
-			// hello = the get_state snapshot, so a fresh attach knows the current state at once.
-			await stream.writeSSE({ event: "hello", data: JSON.stringify(snapshot(runtime)) });
-
-			// Mandatory keepalive: Hono closes the stream when this callback returns, so the
-			// loop must run for the connection's lifetime (Hono issue #2993). The heartbeat
-			// is a raw SSE comment via stream.write (not writeSSE).
+			await stream.writeSSE({ event: "hello", data: JSON.stringify(await agentSnapshot(runtime)) });
 			while (!stream.aborted) {
 				await stream.sleep(KEEPALIVE_MS);
 				if (stream.aborted) break;
@@ -798,41 +844,122 @@ export async function runDaemonMode(
 		}),
 	);
 
-	app.post("/control", async (c) => {
-		// Parse inside the try so a malformed body becomes a structured {success:false} error
-		// instead of an unstructured HTTP 500.
+	// The session list.
+	app.get("/sessions", async (c) => c.json(await agentSnapshot(runtime)));
+
+	// Per-session event stream. Subscribing makes the session live (rehydrating it if idle); the last
+	// client detaching evicts it (when idle).
+	app.get("/sessions/:id/events", (c) =>
+		streamSSE(c, async (stream) => {
+			const id = c.req.param("id");
+			let session: AgentSession;
+			try {
+				session = runtime.getSession(id) ?? (await runtime.openSession(id));
+			} catch {
+				await stream.writeSSE({ event: "error", data: `No session "${id}"` });
+				return;
+			}
+
+			let clients = sessionClients.get(id);
+			if (!clients) {
+				clients = new Set();
+				sessionClients.set(id, clients);
+			}
+			const firstClient = clients.size === 0;
+			clients.add(stream);
+			if (firstClient) subscribeSession(session);
+
+			// Capture the replay watermark with NO intervening await, so live broadcasts (id > watermark)
+			// and replayed events (id ≤ watermark) stay disjoint — no double-delivery across reconnect.
+			const replayUpTo = sessionSeq.get(id) ?? 0;
+			stream.onAbort(() => {
+				clients.delete(stream);
+				if (clients.size === 0) {
+					// No client left to answer this session's parked dialogs — resolve them to cancel
+					// (notably `editor`, which has no signal/timeout, would otherwise hang forever).
+					const pending = sessionPending.get(id);
+					if (pending) {
+						for (const [requestId, p] of [...pending]) {
+							p.resolve({ type: "extension_ui_response", id: requestId, cancelled: true });
+						}
+						pending.clear();
+					}
+					unsubscribeSession(id);
+					// Driver gone — evict the session unless a turn is still in flight (never kill a turn).
+					const live = runtime.getSession(id);
+					if (live && !live.isStreaming()) void runtime.closeSession(id);
+				}
+			});
+
+			// Replay buffered events after the client's Last-Event-ID, bounded by the watermark.
+			const lastEventId = c.req.header("Last-Event-ID");
+			if (lastEventId !== undefined) {
+				const after = Number(lastEventId);
+				for (const entry of sessionRing.get(id) ?? []) {
+					if (entry.id > after && entry.id <= replayUpTo) {
+						await stream.writeSSE({ id: String(entry.id), event: "message", data: entry.frame });
+					}
+				}
+			}
+
+			// hello = the session snapshot, so a fresh attach knows the current state at once.
+			await stream.writeSSE({ event: "hello", data: JSON.stringify(sessionSnapshot(session)) });
+
+			// Mandatory keepalive: Hono closes the stream when this callback returns, so the loop must run
+			// for the connection's lifetime (Hono issue #2993). The heartbeat is a raw SSE comment.
+			while (!stream.aborted) {
+				await stream.sleep(KEEPALIVE_MS);
+				if (stream.aborted) break;
+				await stream.write(": ping\n\n");
+			}
+		}),
+	);
+
+	// Per-session command. The session id comes from the URL — it is the target for session-scoped verbs
+	// and the UI rail for agent-global ones. Resolve (rehydrating if idle) before dispatch.
+	app.post("/sessions/:id/control", async (c) => {
+		const id = c.req.param("id");
 		let cmd: DaemonCommand;
 		try {
 			cmd = await c.req.json<DaemonCommand>();
 		} catch {
 			return c.json(err(undefined, "unknown", "Malformed JSON body."));
 		}
+		let session: AgentSession;
 		try {
-			return c.json(await handleCommand(runtime, cmd));
+			session = runtime.getSession(id) ?? (await runtime.openSession(id));
+		} catch (e) {
+			return c.json(err(cmd.id, cmd.type, e instanceof Error ? e.message : String(e)));
+		}
+		try {
+			return c.json(await handleCommand(runtime, session, cmd));
 		} catch (e) {
 			return c.json(err(cmd.id, cmd.type, e instanceof Error ? e.message : String(e)));
 		}
 	});
 
-	// A client's answer to an awaited extension-UI dialog — resolve the parked promise by id.
-	app.post("/ui-response", async (c) => {
+	// A client's answer to one of this session's awaited extension-UI dialogs — resolve the parked
+	// promise by request id.
+	app.post("/sessions/:id/ui-response", async (c) => {
+		const id = c.req.param("id");
 		let response: ExtensionUIResponse;
 		try {
 			response = await c.req.json<ExtensionUIResponse>();
 		} catch {
 			return c.json({ success: false, error: "Malformed JSON body." });
 		}
-		const pending = pendingExtensionRequests.get(response.id);
-		if (pending) {
-			pendingExtensionRequests.delete(response.id);
-			pending.resolve(response);
+		const pending = sessionPending.get(id);
+		const parked = pending?.get(response.id);
+		if (parked) {
+			pending?.delete(response.id);
+			parked.resolve(response);
 		}
 		return c.json({ success: true });
 	});
 
 	// ---- Serve ------------------------------------------------------------
-	// Patch the resolved port back into the config — for `port: 0` the real port is only
-	// known once the OS assigns it (read off serve()'s `info.port`).
+	// Patch the resolved port back into the config — for `port: 0` the real port is only known once the
+	// OS assigns it (read off serve()'s `info.port`).
 	const writePortBack = (port: number): void => {
 		const existing = loadDaemonConfig(runtime.config.name);
 		if (existing) saveDaemonConfig(runtime.config.name, { ...existing, port });
@@ -843,15 +970,6 @@ export async function runDaemonMode(
 			writePortBack(info.port);
 			resolve(s);
 		});
-	});
-
-	// runtime.cleanup() does NOT drop the broadcaster subscription, so tie it to server close.
-	server.on("close", () => {
-		try {
-			unsubscribe?.();
-		} catch {
-			/* harness already gone with its subscription */
-		}
 	});
 
 	return server;

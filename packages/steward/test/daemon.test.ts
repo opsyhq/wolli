@@ -1,8 +1,8 @@
 /**
- * Daemon mode (HTTP/SSE server) integration — against a REAL `AgentRuntime` + a faux
- * provider (no network), so the whole transport runs: bearer auth, the `POST /control`
- * command switch, the curated `GET /events` SSE stream, `Last-Event-ID` replay, and the
- * rebind-on-`new_session` re-subscribe.
+ * Daemon mode (HTTP/SSE server) integration — against a REAL `AgentRuntime` + a faux provider (no
+ * network), so the whole transport runs: bearer auth, the per-session `POST /sessions/:id/control`
+ * command switch, the curated `GET /sessions/:id/events` SSE stream, `Last-Event-ID` replay, and
+ * additive `create_session` (two sessions streaming independently).
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -28,6 +28,8 @@ const registrations: Array<{ unregister(): void }> = [];
 const sseClients: SseClient[] = [];
 let activeRuntime: AgentRuntime | undefined;
 let activeServer: ServerType | undefined;
+// The initial session the daemon opens at startup — the target for the session-scoped helpers below.
+let sessionId = "";
 
 function makeRuntime(): { runtime: AgentRuntime; registration: ReturnType<typeof registerFauxProvider> } {
 	const registration = registerFauxProvider();
@@ -49,13 +51,16 @@ function makeRuntime(): { runtime: AgentRuntime; registration: ReturnType<typeof
 	return { runtime, registration };
 }
 
-/** Build + start a runtime, wrap it in a daemon on an ephemeral port. Returns the faux provider. */
+/**
+ * Build + start a runtime, wrap it in a daemon on an ephemeral port (which opens the initial session),
+ * then capture that session's id. Returns the faux provider.
+ */
 async function startDaemon(opts: { deploy?: boolean } = {}): Promise<ReturnType<typeof registerFauxProvider>> {
 	if (opts.deploy) AgentSettingsManager.create(AGENT).setAgentDeployed();
 	const { runtime, registration } = makeRuntime();
 	activeRuntime = runtime;
-	await runtime.createConversation();
 	activeServer = await runDaemonMode(runtime, { port: 0, token: TOKEN });
+	sessionId = (await agentState()).sessions[0].sessionId;
 	return registration;
 }
 
@@ -65,9 +70,18 @@ function baseUrl(): string {
 	throw new Error("daemon server is not listening");
 }
 
-/** POST a command to /control with the bearer token and return the parsed JSON response. */
-async function control(command: object): Promise<{ success: boolean; command: string; data?: any; error?: string }> {
-	const res = await fetch(`${baseUrl()}/control`, {
+/** The agent-global snapshot (config, cwd, session list) from `GET /sessions`. */
+async function agentState(): Promise<{ config: any; cwd: string; sessions: { sessionId: string; live: boolean }[] }> {
+	const res = await fetch(`${baseUrl()}/sessions`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+	return res.json() as Promise<{ config: any; cwd: string; sessions: { sessionId: string; live: boolean }[] }>;
+}
+
+/** POST a command to a session's control endpoint and return the parsed JSON response. */
+async function controlFor(
+	id: string,
+	command: object,
+): Promise<{ success: boolean; command: string; data?: any; error?: string }> {
+	const res = await fetch(`${baseUrl()}/sessions/${id}/control`, {
 		method: "POST",
 		headers: { "content-type": "application/json", Authorization: `Bearer ${TOKEN}` },
 		body: JSON.stringify(command),
@@ -75,13 +89,23 @@ async function control(command: object): Promise<{ success: boolean; command: st
 	return res.json() as Promise<{ success: boolean; command: string; data?: any; error?: string }>;
 }
 
+/** POST a command to the initial session's control endpoint. */
+function control(command: object): Promise<{ success: boolean; command: string; data?: any; error?: string }> {
+	return controlFor(sessionId, command);
+}
+
 /** Answer an awaited daemon-side dialog (the client half of the onboarding round-trip). */
 async function uiRespond(id: string, answer: Record<string, unknown>): Promise<void> {
-	await fetch(`${baseUrl()}/ui-response`, {
+	await fetch(`${baseUrl()}/sessions/${sessionId}/ui-response`, {
 		method: "POST",
 		headers: { "content-type": "application/json", Authorization: `Bearer ${TOKEN}` },
 		body: JSON.stringify({ type: "extension_ui_response", id, ...answer }),
 	});
+}
+
+/** The initial session's event-stream URL — subscribing makes the session live. */
+function sessionEventsUrl(): string {
+	return `${baseUrl()}/sessions/${sessionId}/events`;
 }
 
 /** Write a minimal self-contained local package fixture (a `steward` manifest + its files). */
@@ -261,12 +285,12 @@ describe("daemon HTTP/SSE server", () => {
 		expect(await res.json()).toMatchObject({ status: "ok", agent: AGENT, pid: process.pid });
 	});
 
-	it("rejects /events and /control without the bearer token", async () => {
+	it("rejects the control stream and a session control endpoint without the bearer token", async () => {
 		await startDaemon();
 		const events = await fetch(`${baseUrl()}/events`);
 		expect(events.status).toBe(401);
 		await events.text();
-		const ctl = await fetch(`${baseUrl()}/control`, {
+		const ctl = await fetch(`${baseUrl()}/sessions/${sessionId}/control`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ type: "get_state" }),
@@ -301,7 +325,7 @@ describe("daemon HTTP/SSE server", () => {
 	it("emits a hello snapshot when a client attaches", async () => {
 		await startDaemon();
 		const client = newSse();
-		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
+		await client.connect(sessionEventsUrl(), { token: TOKEN });
 		const hello = await client.waitFor((e) => e.event === "hello");
 		expect(JSON.parse(hello.data)).toMatchObject({ isStreaming: false, messageCount: 0 });
 	});
@@ -311,7 +335,7 @@ describe("daemon HTTP/SSE server", () => {
 		registration.setResponses([() => fauxAssistantMessage("hello from the faux model")]);
 
 		const client = newSse();
-		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
+		await client.connect(sessionEventsUrl(), { token: TOKEN });
 		await client.waitFor((e) => e.event === "hello");
 
 		// The ack returns the instant the prompt is accepted — well before the turn ends.
@@ -332,7 +356,7 @@ describe("daemon HTTP/SSE server", () => {
 		registration.setResponses([() => fauxAssistantMessage("buffered turn")]);
 
 		const client = newSse();
-		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
+		await client.connect(sessionEventsUrl(), { token: TOKEN });
 		await client.waitFor((e) => e.event === "hello");
 		await control({ type: "prompt", message: "go" });
 		await client.waitFor((e) => dataType(e) === "agent_end");
@@ -344,48 +368,51 @@ describe("daemon HTTP/SSE server", () => {
 
 		// Reconnect from firstId: events with id > firstId replay, firstId itself does not.
 		const replay = newSse();
-		await replay.connect(`${baseUrl()}/events`, { token: TOKEN, lastEventId: String(firstId) });
+		await replay.connect(sessionEventsUrl(), { token: TOKEN, lastEventId: String(firstId) });
 		await replay.waitFor((e) => e.id !== undefined && Number(e.id) === lastId);
 		const replayedIds = replay.events.filter((e) => e.id !== undefined).map((e) => Number(e.id));
 		expect(replayedIds).toContain(lastId);
 		expect(replayedIds).not.toContain(firstId);
 	});
 
-	it("keeps streaming to the same client after new_session (rebind re-subscribes exactly once)", async () => {
+	it("create_session adds a second resident session that streams independently", async () => {
 		const registration = await startDaemon({ deploy: true });
 		registration.setResponses([() => fauxAssistantMessage("first turn"), () => fauxAssistantMessage("second turn")]);
 
-		const client = newSse();
-		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
-		await client.waitFor((e) => e.event === "hello");
-
+		// Subscribe to session A and run a turn on it.
+		const a = newSse();
+		await a.connect(sessionEventsUrl(), { token: TOKEN });
+		await a.waitFor((e) => e.event === "hello");
 		await control({ type: "prompt", message: "one" });
-		await client.waitFor((e) => dataType(e) === "agent_end");
+		await a.waitFor((e) => dataType(e) === "agent_end");
 
-		// Swap the harness underneath the live SSE client.
-		const swap = await control({ type: "new_session" });
-		expect(swap).toMatchObject({ command: "new_session", success: true });
+		// Additively create session B — A stays live.
+		const created = await control({ type: "create_session" });
+		expect(created).toMatchObject({ command: "create_session", success: true });
+		const bId: string = created.data.sessionId;
+		expect(bId).not.toBe(sessionId);
+		expect((await agentState()).sessions.filter((s) => s.live).length).toBeGreaterThanOrEqual(2);
 
-		// The second turn runs on the NEW harness and must still reach the same client.
-		await control({ type: "prompt", message: "two" });
-		await client.waitFor(
-			(e) => dataType(e) === "agent_end" && client.events.filter((x) => dataType(x) === "agent_end").length >= 2,
-		);
+		// B's turn streams on B's own stream and does not leak onto A's.
+		const b = newSse();
+		await b.connect(`${baseUrl()}/sessions/${bId}/events`, { token: TOKEN });
+		await b.waitFor((e) => e.event === "hello");
+		await controlFor(bId, { type: "prompt", message: "two" });
+		await b.waitFor((e) => dataType(e) === "agent_end");
 
-		// Exactly two agent_end across both turns — a leaked old subscription would double them.
-		const agentEnds = client.events.filter((e) => dataType(e) === "agent_end").length;
-		expect(agentEnds).toBe(2);
+		expect(a.events.filter((e) => dataType(e) === "agent_end").length).toBe(1);
+		expect(b.events.filter((e) => dataType(e) === "agent_end").length).toBe(1);
 	});
 });
 
 describe("daemon client-support verbs (Slice 0)", () => {
-	it("get_state snapshot now carries config + cwd", async () => {
+	it("the agent snapshot (GET /sessions) carries config + cwd + the session list", async () => {
 		await startDaemon();
-		const res = await control({ type: "get_state" });
-		expect(res.success).toBe(true);
-		expect(res.data.config).toMatchObject({ name: AGENT });
-		expect(typeof res.data.cwd).toBe("string");
-		expect(res.data.cwd.length).toBeGreaterThan(0);
+		const state = await agentState();
+		expect(state.config).toMatchObject({ name: AGENT });
+		expect(typeof state.cwd).toBe("string");
+		expect(state.cwd.length).toBeGreaterThan(0);
+		expect(state.sessions.length).toBeGreaterThanOrEqual(1);
 	});
 
 	it("get_entries returns the live session entries", async () => {
@@ -420,28 +447,26 @@ describe("daemon client-support verbs (Slice 0)", () => {
 		expect(JSON.stringify(msgs.data.messages)).toContain("appended note");
 	});
 
-	it("new_session accepts a deploy reason", async () => {
-		await startDaemon({ deploy: true });
-		const res = await control({ type: "new_session", reason: "deploy" });
-		expect(res).toMatchObject({ command: "new_session", success: true });
-		expect(res.data).toMatchObject({ isStreaming: false });
+	it("create_session is refused while the agent is still forming", async () => {
+		await startDaemon(); // forming (not pre-deployed)
+		const res = await control({ type: "create_session" });
+		expect(res.success).toBe(false);
+		expect(res.error).toMatch(/still forming/);
 	});
 
 	it("deploy flips the latch and swaps to a fresh deployed session", async () => {
 		await startDaemon(); // forming (not pre-deployed)
 		expect(AgentSettingsManager.create(AGENT).getAgentDeployed()).toBe(false);
-		const before = await control({ type: "get_state" });
-		const birthSessionId = before.data.sessionId;
+		const birthSessionId = sessionId;
 
 		const res = await control({ type: "deploy" });
 		expect(res).toMatchObject({ command: "deploy", success: true });
-		// The swap re-reads agent.json, so the returned snapshot config reads as deployed.
-		expect(res.data.config.deployedAt).toBeTruthy();
 		expect(res.data).toMatchObject({ isStreaming: false });
-		// Deploy always swaps to a fresh session — the supervised daemon resumes the most-recent one.
+		// Deploy always creates a fresh session — the supervised daemon resumes the most-recent one.
 		expect(res.data.sessionId).not.toBe(birthSessionId);
-		// And the latch is persisted to disk.
+		// The latch is persisted to disk; the agent snapshot now reads as deployed.
 		expect(AgentSettingsManager.create(AGENT).getAgentDeployed()).toBe(true);
+		expect((await agentState()).config.deployedAt).toBeTruthy();
 	});
 });
 
@@ -504,7 +529,7 @@ describe("daemon plugin/onboarding consistency", () => {
 		expect(await control({ type: "install_plugin", source: pkg })).toMatchObject({ success: true });
 
 		const client = newSse();
-		await client.connect(`${baseUrl()}/events`, { token: TOKEN });
+		await client.connect(sessionEventsUrl(), { token: TOKEN });
 		await client.waitFor((e) => e.event === "hello");
 
 		// The verb awaits the dialog round-trip, so fire it WITHOUT awaiting; the client answers the

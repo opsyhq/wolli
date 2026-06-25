@@ -24,7 +24,7 @@ export async function runNew(positionals: string[]): Promise<number> {
 	}
 
 	// `create` throws on an invalid name; cli.ts's top-level handler prints the message and exits 1
-	// (identical to a local catch), and `agent.open()` already bubbles there — so no local try/catch.
+	// (identical to a local catch), and `agent.connect()` already bubbles there — so no local try/catch.
 	const agent = steward.create(name);
 	process.stdout.write(`Created agent "${agent.config.name}".\n`);
 

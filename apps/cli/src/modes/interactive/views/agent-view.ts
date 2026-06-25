@@ -1,6 +1,6 @@
 /** Agent detail page: config header plus live capability sections read from the daemon. */
 
-import { type Agent, type AgentSession, isDeployed, theme } from "@opsyhq/steward";
+import { type Agent, type SessionHandle, isDeployed, theme } from "@opsyhq/steward";
 import { type Component, Container, matchesKey, type OverlayHandle, Spacer, Text } from "@opsyhq/tui";
 import type { AppView, ViewContext } from "../app.ts";
 import { DeleteConfirm } from "./components/delete-confirm.ts";
@@ -8,10 +8,10 @@ import { DeleteConfirm } from "./components/delete-confirm.ts";
 export class AgentView extends Container implements AppView {
 	private ctx!: ViewContext;
 	private readonly agent: Agent;
-	private readonly session?: AgentSession;
+	private readonly session?: SessionHandle;
 	private overlay?: OverlayHandle;
 
-	constructor(agent: Agent, session?: AgentSession) {
+	constructor(agent: Agent, session?: SessionHandle) {
 		super();
 		this.agent = agent;
 		this.session = session;

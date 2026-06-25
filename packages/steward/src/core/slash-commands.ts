@@ -26,6 +26,7 @@ export interface BuiltinSlashCommand {
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "deploy", description: "Deploy the agent once its purpose and SOUL.md are ready" },
 	{ name: "new", description: "Start a new session" },
+	{ name: "sessions", description: "Switch to another session" },
 	{ name: "compact", description: "Manually compact the session context" },
 	{ name: "reload", description: "Reload extensions, skills, and prompts" },
 	{ name: "model", description: "Switch the active model" },

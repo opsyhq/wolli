@@ -1,15 +1,18 @@
 /**
- * Extension runner - executes extensions and manages their lifecycle.
+ * Extension runner - executes extensions and manages their lifecycle (Option A: one agent-global
+ * runner, built once and rebuilt only on reload).
  *
- * Handlers, custom tools, and commands receive an `ExtensionContext` (`{ conversation }`) built by
- * `createContext()`. The runner holds the durable extension state (loaded extensions, flag values,
- * UI context, the shared runtime) and the currently-bound conversation; it translates harness events
- * into `ExtensionEvent`s and routes them to the registered handlers along with that context.
+ * The runner holds the durable, agent-global extension state (loaded extensions, flag values, the
+ * shared runtime). It is session-agnostic: every event/tool/command invocation is threaded the
+ * originating `AgentSession`, from which `createContext()` builds the flat `ExtensionContext`
+ * (`{ session, ui, mode }`) by reading that session's facade + presentation channel. So the same
+ * runner serves N live sessions, each carrying its own presentation channel.
  */
 
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@opsyhq/agent";
 import { type Theme, theme } from "../../theme/theme.ts";
+import type { AgentSession } from "../agent-runtime.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type {
@@ -18,13 +21,11 @@ import type {
 	BeforeProviderRequestEvent,
 	ContextEvent,
 	ContextEventResult,
-	Conversation,
 	Extension,
 	ExtensionContext,
 	ExtensionError,
 	ExtensionEvent,
 	ExtensionFlag,
-	ExtensionMode,
 	ExtensionRuntime,
 	ExtensionUIContext,
 	InputEvent,
@@ -82,21 +83,23 @@ export type NewSessionHandler = (options?: NewSessionOptions) => Promise<{ cance
 export type ShutdownHandler = () => void;
 
 /**
- * Helper function to emit session_shutdown event to extensions.
+ * Helper function to emit session_shutdown event to extensions for the given session.
  * Returns true if the event was emitted, false if there were no handlers.
  */
 export async function emitSessionShutdownEvent(
 	extensionRunner: ExtensionRunner,
 	event: SessionShutdownEvent,
+	session: AgentSession,
 ): Promise<boolean> {
 	if (extensionRunner.hasHandlers("session_shutdown")) {
-		await extensionRunner.emit(event);
+		await extensionRunner.emit(event, session);
 		return true;
 	}
 	return false;
 }
 
-const noOpUIContext: ExtensionUIContext = {
+/** The inert UI rail a session falls back to when it has no live presentation channel. */
+export const noOpUIContext: ExtensionUIContext = {
 	select: async () => undefined,
 	confirm: async () => false,
 	input: async () => undefined,
@@ -133,10 +136,6 @@ export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
 	private modelRegistry: ModelRegistry;
-	private uiContext: ExtensionUIContext;
-	private mode: ExtensionMode = "print";
-	/** The conversation handed to handlers/tools/commands. Bound (before any event fires) by bindConversation(). */
-	private conversation!: Conversation;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
@@ -145,21 +144,16 @@ export class ExtensionRunner {
 		this.extensions = extensions;
 		this.runtime = runtime;
 		this.modelRegistry = modelRegistry;
-		this.uiContext = noOpUIContext;
 	}
 
 	/**
-	 * Bind the live conversation to this runner: it is handed to every handler/tool/command, backs
-	 * `registerTool()`'s mid-session tool refresh, and triggers the one-time provider-registration
-	 * flush. Called once per runner build (createConversation / resumeConversation / reload).
+	 * Wire the agent-global runtime delegates to this runner and flush the queued provider
+	 * registrations. Called once per runner build (the shared resource build + reload) — session-
+	 * agnostic, since the runner is agent-global under Option A.
 	 */
-	bindConversation(conversation: Conversation): void {
-		this.conversation = conversation;
-		// registerTool() refreshes the live tool set through the conversation.
-		this.runtime.refreshTools = () => conversation.refreshTools();
-
-		// Flush provider registrations queued during extension loading. A fresh runner is built per
-		// createConversation/resumeConversation/reload, so this flushes once and empties the list.
+	bindCore(): void {
+		// Flush provider registrations queued during extension loading. A fresh runner is built once
+		// per shared-resource build / reload, so this flushes once and empties the list.
 		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
 			try {
 				this.modelRegistry.registerProvider(name, config);
@@ -183,34 +177,12 @@ export class ExtensionRunner {
 		};
 	}
 
-	/** The conversation bound to this runner, or undefined before bindConversation(). */
-	getConversation(): Conversation | undefined {
-		return this.conversation;
-	}
-
-	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
-		this.uiContext = uiContext ?? noOpUIContext;
-		this.mode = mode;
-	}
-
-	getUIContext(): ExtensionUIContext {
-		return this.uiContext;
-	}
-
-	getMode(): ExtensionMode {
-		return this.mode;
-	}
-
-	hasUI(): boolean {
-		return this.uiContext !== noOpUIContext;
-	}
-
 	/**
-	 * Build the context handed to event handlers, custom tools, and commands. A fresh `{ conversation }`
-	 * each call, resolving the live conversation bound to this runner.
+	 * Build the flat context handed to event handlers, custom tools, and commands from the originating
+	 * `AgentSession` — a fresh `{ session, ui, mode }` each call, scoped to that session.
 	 */
-	createContext(): ExtensionContext {
-		return { conversation: this.conversation };
+	createContext(session: AgentSession): ExtensionContext {
+		return { session: session.facade, ui: session.ui, mode: session.mode };
 	}
 
 	getExtensionPaths(): string[] {
@@ -356,8 +328,8 @@ export class ExtensionRunner {
 		return event.type === "session_before_compact";
 	}
 
-	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
-		const ctx = this.createContext();
+	async emit<TEvent extends RunnerEmitEvent>(event: TEvent, session: AgentSession): Promise<RunnerEmitResult<TEvent>> {
+		const ctx = this.createContext(session);
 		let result: SessionBeforeCompactResult | undefined;
 
 		for (const ext of this.extensions) {
@@ -390,8 +362,8 @@ export class ExtensionRunner {
 		return result as RunnerEmitResult<TEvent>;
 	}
 
-	async emitMessageEnd(event: MessageEndEvent): Promise<AgentMessage | undefined> {
-		const ctx = this.createContext();
+	async emitMessageEnd(event: MessageEndEvent, session: AgentSession): Promise<AgentMessage | undefined> {
+		const ctx = this.createContext(session);
 		let currentMessage = event.message;
 		let modified = false;
 
@@ -432,8 +404,8 @@ export class ExtensionRunner {
 		return modified ? currentMessage : undefined;
 	}
 
-	async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {
-		const ctx = this.createContext();
+	async emitToolResult(event: ToolResultEvent, session: AgentSession): Promise<ToolResultEventResult | undefined> {
+		const ctx = this.createContext(session);
 		const currentEvent: ToolResultEvent = { ...event };
 		let modified = false;
 
@@ -482,8 +454,8 @@ export class ExtensionRunner {
 		};
 	}
 
-	async emitToolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {
-		const ctx = this.createContext();
+	async emitToolCall(event: ToolCallEvent, session: AgentSession): Promise<ToolCallEventResult | undefined> {
+		const ctx = this.createContext(session);
 		let result: ToolCallEventResult | undefined;
 
 		for (const ext of this.extensions) {
@@ -505,8 +477,8 @@ export class ExtensionRunner {
 		return result;
 	}
 
-	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
-		const ctx = this.createContext();
+	async emitUserBash(event: UserBashEvent, session: AgentSession): Promise<UserBashEventResult | undefined> {
+		const ctx = this.createContext(session);
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("user_bash");
@@ -534,8 +506,8 @@ export class ExtensionRunner {
 		return undefined;
 	}
 
-	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
-		const ctx = this.createContext();
+	async emitContext(messages: AgentMessage[], session: AgentSession): Promise<AgentMessage[]> {
+		const ctx = this.createContext(session);
 		let currentMessages = structuredClone(messages);
 
 		for (const ext of this.extensions) {
@@ -566,8 +538,8 @@ export class ExtensionRunner {
 		return currentMessages;
 	}
 
-	async emitBeforeProviderRequest(payload: unknown): Promise<unknown> {
-		const ctx = this.createContext();
+	async emitBeforeProviderRequest(payload: unknown, session: AgentSession): Promise<unknown> {
+		const ctx = this.createContext(session);
 		let currentPayload = payload;
 
 		for (const ext of this.extensions) {
@@ -604,10 +576,11 @@ export class ExtensionRunner {
 		prompt: string,
 		images: ImageContent[] | undefined,
 		systemPrompt: string,
+		session: AgentSession,
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
-		const ctx = this.createContext();
+		const ctx = this.createContext(session);
 		let currentSystemPrompt = systemPrompt;
-		const systemPromptOptions = ctx.conversation.getSystemPromptOptions();
+		const systemPromptOptions = ctx.session.getSystemPromptOptions();
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
 		let systemPromptModified = false;
 
@@ -664,9 +637,10 @@ export class ExtensionRunner {
 		text: string,
 		images: ImageContent[] | undefined,
 		source: InputSource,
-		streamingBehavior?: "steer" | "followUp",
+		streamingBehavior: "steer" | "followUp" | undefined,
+		session: AgentSession,
 	): Promise<InputEventResult> {
-		const ctx = this.createContext();
+		const ctx = this.createContext(session);
 		let currentText = text;
 		let currentImages = images;
 

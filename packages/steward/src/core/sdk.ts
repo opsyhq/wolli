@@ -17,7 +17,7 @@ import {
 	type Session,
 	type ThinkingLevel,
 } from "@opsyhq/agent";
-import type { AgentRuntime, Conversation } from "./agent-runtime.ts";
+import type { AgentRuntime, AgentSession } from "./agent-runtime.ts";
 import type { AgentSettingsManager } from "./agent-settings-manager.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ModelRegistry } from "./model-registry.ts";
@@ -92,14 +92,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions): Pr
 
 /**
  * The public, in-process agent façade — the narrow handle an extension drives its agent
- * through (exposed as `steward.agent`). It wraps the internal `AgentRuntime` and exposes
- * only conversation-level verbs; runtime administration (auth, reload, registry, cleanup)
- * stays internal. A future embedding/remote caller uses this same surface.
+ * through. It wraps the internal `AgentRuntime` and exposes only session-level verbs; runtime
+ * administration (auth, reload, registry, cleanup) stays internal. A future embedding/remote
+ * caller uses this same surface.
  *
- * At N=1 the runtime holds one live conversation, so `getConversation()` returns it (or
- * undefined before the agent has started one). `createConversation()` starts a fresh one and
- * `resumeConversation(id)` reopens a stored session — both swap the single live conversation
- * in place at N=1; the keyed/concurrent form lights up with the multi-session wire.
+ * The runtime holds N resident sessions keyed by id: `getSession(id)` returns one (or undefined
+ * when not resident), `createSession()` adds a fresh one, and `openSession(id)` rehydrates a stored
+ * session.
  */
 export class Agent {
 	private readonly runtime: AgentRuntime;
@@ -108,22 +107,22 @@ export class Agent {
 		this.runtime = runtime;
 	}
 
-	/** The live conversation, or undefined if the agent has not started one. Find-only — never creates. */
-	getConversation(): Conversation | undefined {
-		return this.runtime.getConversation();
+	/** A resident session by id, or undefined. Find-only — never rehydrates. */
+	getSession(id: string): AgentSession | undefined {
+		return this.runtime.getSession(id);
 	}
 
-	/** Start a fresh conversation (new stored session) and make it the live one. */
-	createConversation(): Promise<Conversation> {
-		return this.runtime.createConversation();
+	/** Start a fresh session (new stored session) and make it resident. Additive. */
+	createSession(): Promise<AgentSession> {
+		return this.runtime.createSession();
 	}
 
-	/** Reopen a stored session by id as the live conversation. */
-	resumeConversation(id: string): Promise<Conversation> {
-		return this.runtime.resumeConversation(id);
+	/** Rehydrate a stored session by id into the resident map. */
+	openSession(id: string): Promise<AgentSession> {
+		return this.runtime.openSession(id);
 	}
 
-	/** Stored sessions for this agent (newest first) — the ids `resumeConversation` accepts. */
+	/** Stored sessions for this agent (newest first) — the ids `openSession` accepts. */
 	listSessions(): Promise<SessionInfo[]> {
 		return this.runtime.listSessions();
 	}

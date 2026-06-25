@@ -304,10 +304,10 @@ export interface CompactOptions {
 /** Run mode the agent is hosted in. Use "tui" to guard terminal-only UI such as custom components. */
 export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
-/** Source of a `Conversation.prompt()` submission. */
+/** Source of a `Session.prompt()` submission. */
 export type InputSource = "interactive" | "rpc" | "extension";
 
-/** Options for the conversation dispatch pipeline (`Conversation.prompt()`). */
+/** Options for the session dispatch pipeline (`Session.prompt()`). */
 export interface ConversationPromptOptions {
 	/** Images to attach to the user turn. An `input` transform may also inject these. */
 	images?: ImageContent[];
@@ -325,32 +325,24 @@ export interface ConversationPromptOptions {
 	preflightResult?: (success: boolean) => void;
 }
 
-/** Options for `Conversation.newSession()`. */
+/** Options for `Session.newSession()` / `steward.createSession()`. */
 export interface NewSessionOptions {
 	/** Initialize the fresh session before it goes live (seed entries, etc.). */
 	setup?: (sessionManager: SessionManager) => Promise<void>;
-	/** Run against the replacement conversation once it is live. */
-	withConversation?: (conversation: Conversation) => Promise<void>;
+	/** Run against the new session once it is wired and live. */
+	withSession?: (session: Session) => Promise<void>;
 }
 
 /**
- * A live conversation — the per-conversation surface extensions act on. Handed to every event,
- * command, shortcut, and custom-tool handler, and returned from `steward.getConversation()`.
+ * A live session — the per-session conversation surface extensions act on. Handed (as `ctx.session`)
+ * to every event, command, shortcut, and custom-tool handler, and returned from `steward.getSession()`.
  *
- * Holds session/harness/UI state plus the actions that operate on a single running conversation.
- * Agent-global capabilities (cwd, environments, model registry, integrations, reload, shutdown)
- * live on `ExtensionAPI`, not here.
- *
- * `ui` exposes the full client-global UI surface for the N=1 case; future multi-conversation work
- * may split dialog UI from app-global UI.
+ * Holds session/harness state plus the actions that operate on a single running conversation. The
+ * presentation channel (`ui`/`mode`) is lifted onto `ExtensionContext`, not here; agent-global
+ * capabilities (cwd, environments, model registry, integrations, reload, shutdown) live on
+ * `ExtensionAPI`.
  */
-export interface Conversation {
-	/** UI methods for user interaction. */
-	readonly ui: ExtensionUIContext;
-	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */
-	readonly mode: ExtensionMode;
-	/** Whether dialog-capable UI is available (true in TUI and RPC modes). */
-	readonly hasUI: boolean;
+export interface Session {
 	/** Session manager (read-only). */
 	readonly sessionManager: ReadonlySessionManager;
 	/** Current model (may be undefined). */
@@ -434,22 +426,26 @@ export interface Conversation {
 	/** Merge tags into this session (later writes win per key). */
 	setTags(tags: Record<string, string>): void;
 
-	/** Start a new session, optionally with initialization, and make it the live conversation. */
+	/** Start a new session, optionally with initialization. Additive — other sessions stay live. */
 	newSession(options?: NewSessionOptions): Promise<{ cancelled: boolean }>;
 
-	/** Reload extensions, skills, prompts, and themes against this conversation. */
+	/** Reload extensions, skills, prompts, and themes. */
 	reload(): Promise<void>;
 }
 
 /**
  * Context handed to every extension event handler, command, shortcut, and custom tool.
  *
- * Currently just the live `conversation`; kept as a bag so additional per-invocation context can be
- * added later without changing every handler signature.
+ * `session` is the live session this invocation is acting on; `ui`/`mode` are that session's
+ * presentation channel — a dialog raised through `ui` routes only to that session's subscribers.
  */
 export interface ExtensionContext {
-	/** The live conversation this handler/tool/command is acting on. */
-	conversation: Conversation;
+	/** The live session this handler/tool/command is acting on. */
+	session: Session;
+	/** UI methods for user interaction, scoped to this session. */
+	ui: ExtensionUIContext;
+	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */
+	mode: ExtensionMode;
 }
 
 // ============================================================================
@@ -1147,18 +1143,21 @@ export interface ExtensionAPI {
 	/** Model registry for API key resolution and provider registration. */
 	readonly modelRegistry: ModelRegistry;
 
-	/** The live conversation, or undefined if the agent has not started one. Find-only — never creates. */
-	getConversation(): Conversation | undefined;
+	/** A resident (in-memory) session by id, or undefined when it is not currently resident. Find-only. */
+	getSession(id: string): Session | undefined;
 
-	/** Start a fresh conversation (new stored session) and make it the live one. */
-	createConversation(): Promise<Conversation>;
+	/** Rehydrate a stored session by id into the resident set (or return it if already resident). */
+	openSession(id: string): Promise<Session>;
+
+	/** Start a fresh session (new stored session) and make it resident. Additive — others stay live. */
+	createSession(options?: NewSessionOptions): Promise<Session>;
 
 	/** Stored sessions for this agent (newest first). */
 	listSessions(): Promise<SessionInfo[]>;
 
 	/**
 	 * Locate stored sessions whose folded tags subset-match `filter` (each with `tags` populated) — e.g.
-	 * the session another extension bound to an external conversation via `conversation.setTags(...)`.
+	 * the session another extension bound to an external conversation via `session.setTags(...)`.
 	 */
 	findSessions(filter: Record<string, string>): Promise<SessionInfo[]>;
 
@@ -1252,8 +1251,11 @@ export interface ExtensionAPI {
 	 *
 	 * @example
 	 * const telegram = steward.getIntegration("telegram", "default");
-	 * telegram.on("message", (msg) => steward.getConversation()?.appendEntry("tg_message", msg));
-	 * await telegram.call("sendMessage", { chatId, text: "hi" });
+	 * telegram.on("message", async (msg) => {
+	 *   const [match] = await steward.findSessions({ "telegram:chat": String(msg.chatId) });
+	 *   const session = match ? await steward.openSession(match.id) : await steward.createSession();
+	 *   await session.sendUserMessage(msg.text);
+	 * });
 	 */
 	getIntegration(name: string, account?: string): IntegrationHandle;
 
@@ -1368,8 +1370,9 @@ export interface ExtensionRuntimeState {
 	// Agent-global capabilities backing the `steward.*` methods. Throwing stubs during extension load;
 	// the runtime overrides them (closures over the AgentRuntime) once resources are built — so accessing
 	// them during load throws (mirrors the old `steward.agent` resolution).
-	getConversation: () => Conversation | undefined;
-	createConversation: () => Promise<Conversation>;
+	getSession: (id: string) => Session | undefined;
+	openSession: (id: string) => Promise<Session>;
+	createSession: (options?: NewSessionOptions) => Promise<Session>;
 	listSessions: () => Promise<SessionInfo[]>;
 	findSessions: (filter: Record<string, string>) => Promise<SessionInfo[]>;
 	reload: () => Promise<void>;

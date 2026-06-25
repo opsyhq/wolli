@@ -1,9 +1,12 @@
 /**
  * Daemon protocol types.
  *
- * Commands arrive as a JSON body on `POST /control`; the response is that request's JSON
- * body. Events stream out of `GET /events` as SSE — a curated subset of the harness's event
- * surface (the `AgentEvent` stream plus queue/model/thinking updates), never the own-events.
+ * The wire is session-namespaced. Per-session commands arrive as a JSON body on
+ * `POST /sessions/:id/control` (the session id comes from the URL, never the body); the response is
+ * that request's JSON body. Each session streams out of `GET /sessions/:id/events` as SSE — a curated
+ * subset of the harness's event surface (the `AgentEvent` stream plus queue/model/thinking updates),
+ * never the own-events. A low-volume root control stream (`GET /events`) carries the agent snapshot +
+ * session lifecycle (added/removed/renamed).
  */
 
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
@@ -38,9 +41,9 @@ export type DaemonCommand =
 	| { id?: string; type: "compact"; customInstructions?: string }
 	| { id?: string; type: "wait_for_idle" }
 	| { id?: string; type: "clear_queue" }
-	// `reason` distinguishes a plain reset ("new") from a post-deploy swap ("deploy"); the
-	// deploy verb (Item 6) depends on it. Absent → the daemon defaults to "new".
-	| { id?: string; type: "new_session"; reason?: "deploy" | "new" }
+	// Additive: create a fresh session and return its snapshot. Every other resident session stays
+	// live; the TUI switches to the new one. A forming agent refuses (it stays in its birth session).
+	| { id?: string; type: "create_session" }
 	| { id?: string; type: "reload" }
 	// The single post-confirm deploy commit: flip the latch, install the OS service, swap to a
 	// fresh deployed session. Returns the fresh snapshot (config now reads as deployed).
@@ -170,25 +173,53 @@ export type ExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; cancelled: true };
 
 // ============================================================================
-// Session state (get_state / hello snapshot)
+// Agent + session state (hello snapshots / get_state / list)
 // ============================================================================
 
-/** The `get_state` / `hello` snapshot. */
+/** One session in the agent's list — the control-stream hello and `GET /sessions` carry these. */
+export interface DaemonSessionSummary {
+	sessionId: string;
+	sessionName?: string;
+	createdAt?: string;
+	isStreaming: boolean;
+	/** Whether the session is currently resident (in-memory) on the daemon. */
+	live: boolean;
+}
+
+/**
+ * The agent-global snapshot — rides the root control stream's `hello` and `GET /sessions`. Holds the
+ * fields that are the same for every session (config, cwd) plus the current session list.
+ */
+export interface DaemonAgentState {
+	/** The agent's config (mirrors `runtime.config`) — the client reads it without a round-trip. */
+	config: AgentConfig;
+	/** The agent's home dir (mirrors `runtime.getCwd()`) — built-in tool renderers reconstruct from it. */
+	cwd: string;
+	/** Every stored session (resident + idle), newest first. */
+	sessions: DaemonSessionSummary[];
+}
+
+/** The per-session `get_state` / session-stream `hello` snapshot. */
 export interface DaemonSessionState {
+	sessionId: string;
 	model?: Model<Api>;
 	thinkingLevel: ThinkingLevel;
 	scopedModels: ScopedModel[];
 	isStreaming: boolean;
-	sessionId: string;
 	sessionName?: string;
 	sessionFile?: string;
 	messageCount: number;
 	pendingMessageCount: number;
-	/** The agent's config (mirrors `host.config`) — the client reads it without a round-trip. */
-	config: AgentConfig;
-	/** The agent's home dir (mirrors `host.getCwd()`) — built-in tool renderers reconstruct from it. */
-	cwd: string;
 }
+
+/**
+ * Session lifecycle frames pushed on the root control stream (`GET /events`), so a client tracking the
+ * open-session list keeps it fresh without polling `GET /sessions`.
+ */
+export type DaemonControlEvent =
+	| { type: "session_added"; session: DaemonSessionSummary }
+	| { type: "session_removed"; sessionId: string }
+	| { type: "session_renamed"; sessionId: string; sessionName?: string };
 
 // ============================================================================
 // Events (GET /events SSE) — the curated forwarded union

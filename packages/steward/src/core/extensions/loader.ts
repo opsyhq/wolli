@@ -37,6 +37,7 @@ import type {
 	ExtensionRuntime,
 	LoadExtensionsResult,
 	MessageRenderer,
+	NewSessionOptions,
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
@@ -149,8 +150,9 @@ export function createExtensionRuntime(): ExtensionRuntime {
 	const runtime: ExtensionRuntime = {
 		// Agent-global capabilities backing `steward.*` — throwing stubs until the runtime overrides
 		// them (closures over the AgentRuntime) once resources are built. Accessing during load throws.
-		getConversation: notInitialized,
-		createConversation: notInitialized,
+		getSession: notInitialized,
+		openSession: notInitialized,
+		createSession: notInitialized,
 		listSessions: notInitialized,
 		findSessions: notInitialized,
 		reload: notInitialized,
@@ -280,14 +282,19 @@ function createExtensionAPI(
 			return runtime.getModelRegistry();
 		},
 
-		getConversation() {
+		getSession(id: string) {
 			runtime.assertActive();
-			return runtime.getConversation();
+			return runtime.getSession(id);
 		},
 
-		createConversation() {
+		openSession(id: string) {
 			runtime.assertActive();
-			return runtime.createConversation();
+			return runtime.openSession(id);
+		},
+
+		createSession(options?: NewSessionOptions) {
+			runtime.assertActive();
+			return runtime.createSession(options);
 		},
 
 		listSessions() {

@@ -4,17 +4,17 @@
  * The integration (`index.ts`) is the transport (long-poll, token, `message` events);
  * this extension maps that transport onto a Steward session:
  *
- *   - inbound:  `telegram.on("message")` tags the live session `{ "telegram:chat": <id> }`,
- *               then `steward.getConversation()?.sendUserMessage(text)` (one turn)
+ *   - inbound:  `telegram.on("message")` routes the text into this chat's own session via
+ *               `steward.deliverToSession({ "telegram:chat": <id> }, text)` (find-or-create + deliver)
  *   - outbound: `steward.on("agent_end")` reads the PRODUCING session's tag off
- *               `ctx.conversation.getTags()` → final assistant text → `sendMessage`
+ *               `ctx.session.getTags()` → final assistant text → `sendMessage`
  *   - typing:   `agent_start`/`agent_end` toggle the Telegram "typing…" indicator
  *   - commands: `/new`, `/status`, `/help` are handled here, not sent to the model
  *
- * Session binding via tags: the chat→session binding lives on the session as a tag, not in a
- * mutable "last sender" closure — so a reply returns to the chat that started the turn, and any
- * extension can locate this session with `steward.findSessions({ "telegram:chat": <id> })`. At N=1
- * allowlisting a single chat via `allowedChatIds` in integrations.json is still the cleanest setup.
+ * Session binding via tags: each chat gets its OWN Steward session, bound by a `{ "telegram:chat":
+ * <id> }` tag. `deliverToSession` finds (or creates) the chat's session and delivers there, so two
+ * chats run in parallel and a reply returns to the chat that started the turn — located by any
+ * extension with `steward.findSessions({ "telegram:chat": <id> })`.
  *
  * This file is declared under the package's `steward.extensions` and is copied into
  * `<agent>/extensions/` automatically when the integration is onboarded
@@ -77,13 +77,19 @@ export default function (steward: ExtensionAPI) {
 		const command = text.slice(1).split(/\s+/)[0].split("@")[0].toLowerCase();
 		switch (command) {
 			case "new": {
-				const conversation = steward.getConversation();
-				const cancelled = conversation ? (await conversation.newSession()).cancelled : true;
-				await reply(chatId, cancelled ? "Could not start a new session." : "Started a fresh session.");
+				// A fresh session tagged with this chat becomes the newest match, so future messages
+				// route to it (the prior session stays addressable but is no longer the newest).
+				await steward.createSession({
+					setup: async (sessionManager) => {
+						await sessionManager.appendTags({ "telegram:chat": String(chatId) });
+					},
+				});
+				await reply(chatId, "Started a fresh session.");
 				return;
 			}
 			case "status": {
-				const name = steward.getConversation()?.getSessionName() ?? "(unnamed)";
+				const matches = await steward.findSessions({ "telegram:chat": String(chatId) });
+				const name = (matches[0] && steward.getSession(matches[0].id)?.getSessionName()) ?? "(unnamed)";
 				const model = lastModel ?? "(unknown until first reply)";
 				await reply(chatId, `Session: ${name}\nModel: ${model}`);
 				return;
@@ -100,18 +106,25 @@ export default function (steward: ExtensionAPI) {
 
 	tg.on("message", async (data) => {
 		const m = data as TelegramMessage;
-		const conversation = steward.getConversation();
-
-		// Bind this chat to the live session so outbound + typing recover it from the producing session.
-		conversation?.setTags({ "telegram:chat": String(m.chatId) });
 
 		if (m.text.startsWith("/")) {
 			await handleCommand(m.chatId, m.text);
 			return;
 		}
 
+		// Route into this chat's own session: rehydrate the tag-bound one, or create + tag a fresh one.
+		const chatTag = { "telegram:chat": String(m.chatId) };
+		const [match] = await steward.findSessions(chatTag);
+		const session = match
+			? await steward.openSession(match.id)
+			: await steward.createSession({
+					setup: async (sessionManager) => {
+						await sessionManager.appendTags(chatTag);
+					},
+				});
+
 		// followUp so a message arriving mid-stream queues cleanly instead of interrupting.
-		void conversation?.sendUserMessage(m.text, { deliverAs: "followUp" });
+		void session.sendUserMessage(m.text, { deliverAs: "followUp" });
 	});
 
 	// Typing indicator: kept alive on a timer while a turn runs (Telegram clears the
@@ -124,7 +137,7 @@ export default function (steward: ExtensionAPI) {
 	};
 
 	steward.on("agent_start", async (_event, ctx) => {
-		const chat = ctx.conversation.getTags()["telegram:chat"];
+		const chat = ctx.session.getTags()["telegram:chat"];
 		if (!chat) return; // not a telegram-bound session
 		const chatId = Number(chat);
 		const sendTyping = () => {
@@ -145,7 +158,7 @@ export default function (steward: ExtensionAPI) {
 
 		// Reply rides the producing session's binding, so the answer returns to the chat that
 		// started this turn — not whoever messaged last.
-		const chat = ctx.conversation.getTags()["telegram:chat"];
+		const chat = ctx.session.getTags()["telegram:chat"];
 		if (!chat) return; // not a telegram-bound session
 
 		const text = finalAssistantText(assistantMsgs);

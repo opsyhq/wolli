@@ -38,8 +38,6 @@ export type {
 	// Event Results
 	ContextEventResult,
 	ContextUsage,
-	// Conversation
-	Conversation,
 	ConversationPromptOptions,
 	CustomToolCallEvent,
 	CustomToolResultEvent,
@@ -97,6 +95,8 @@ export type {
 	RegisteredCommandOptions,
 	RegisteredTool,
 	ResolvedCommand,
+	// Session facade
+	Session,
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,
 	SessionEvent,
@@ -142,4 +142,3 @@ export {
 	isToolCallEventType,
 	isWriteToolResult,
 } from "./types.ts";
-export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.ts";

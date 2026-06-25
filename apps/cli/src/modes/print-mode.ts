@@ -8,9 +8,9 @@
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { AgentSession } from "@opsyhq/steward";
+import type { SessionHandle } from "@opsyhq/steward";
 
-export async function runPrintMode(session: AgentSession, message: string): Promise<number> {
+export async function runPrintMode(session: SessionHandle, message: string): Promise<number> {
 	let exitCode = 0;
 	try {
 		await session.prompt(message);

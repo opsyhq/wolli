@@ -1,7 +1,7 @@
 /**
  * Interactive TUI chat mode — a daemon client.
  *
- * Drives an `AgentSession` (the one `fetch`/SSE seam) instead of an in-process `SessionHost`:
+ * Drives a `SessionHandle` (the one `fetch`/SSE seam) instead of an in-process `SessionHost`:
  * actions are control-command round-trips and the event stream arrives over SSE, byte-identical to
  * the in-process harness events this consumed before. Those events are bridged onto a small
  * retained-mode component tree (a chat log `Container`, a status `Container` holding a `Loader`, and
@@ -38,7 +38,6 @@ import {
 	TUI,
 } from "@opsyhq/tui";
 import {
-	type AgentSession,
 	type AutocompleteProviderFactory,
 	BUILTIN_SLASH_COMMANDS,
 	createBashExecutionMessage,
@@ -64,6 +63,7 @@ import {
 	rawKeyHint,
 	type ReadonlyFooterDataProvider,
 	type ResourceDiagnostic,
+	type SessionHandle,
 	setTheme,
 	setThemeInstance,
 	type SourceInfo,
@@ -144,7 +144,7 @@ function isExpandable(obj: unknown): obj is Expandable {
 }
 
 export class ChatView extends Container implements AppView {
-	private readonly session: AgentSession;
+	private readonly session: SessionHandle;
 	private readonly options: ChatViewOptions;
 	// The TUI, view context, editor, and loader are owned by `App` and wired in `onMount`.
 	private ui!: TUI;
@@ -232,7 +232,7 @@ export class ChatView extends Container implements AppView {
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
 	private fdPath: string | undefined;
 
-	constructor(session: AgentSession, options: ChatViewOptions = {}, keybindings: KeybindingsManager) {
+	constructor(session: SessionHandle, options: ChatViewOptions = {}, keybindings: KeybindingsManager) {
 		super();
 		this.session = session;
 		this.options = options;
@@ -532,7 +532,7 @@ export class ChatView extends Container implements AppView {
 			await this.handleDeployCommand();
 			return;
 		}
-		// `/new` — start a fresh session and clear the chat.
+		// `/new` — start a fresh session and switch to it.
 		if (trimmed === "/new") {
 			this.editor.setText("");
 			await this.handleNewCommand();
@@ -687,77 +687,24 @@ export class ChatView extends Container implements AppView {
 	}
 
 	/**
-	 * Swap to a fresh session in place (the shared core of `/new` and deploy). The daemon's
-	 * `new_session` verb rebuilds the server-side session; the client drops its event handler for
-	 * the round-trip, re-subscribes, and resets the transient per-session UI state. The TUI is
-	 * never torn down.
-	 *
-	 * Transcript-neutral — callers decide whether to clear the chat log (deploy keeps it,
-	 * `/new` clears it). Returns `false` (error surfaced) if the swap failed.
-	 *
-	 * `reason` records the caller's intent: the daemon refuses a `"new"` swap while the agent is
-	 * still forming (the birth-session invariant). A thrown swap degrades gracefully here.
-	 */
-	private async swapToNewSession(reason: "deploy" | "new"): Promise<boolean> {
-		return this.swapSession(() => this.session.newSession({ reason }));
-	}
-
-	/**
-	 * Run a server-side session swap (`new_session` or `deploy`) with the shared client-side
-	 * teardown/rebuild: drop the event handler for the round-trip, re-subscribe, and reset the
-	 * transient per-session UI state. The TUI is never torn down; the transcript is left to the
-	 * caller (deploy keeps it, `/new` clears it). Returns `false` (error surfaced) if the swap threw.
-	 */
-	private async swapSession(swap: () => Promise<void>): Promise<boolean> {
-		this.unsubscribe?.();
-		// Tear down the old session's extension chrome before the swap so the fresh session paints
-		// onto a clean surface.
-		this.resetExtensionUI();
-		try {
-			await swap();
-		} catch (error) {
-			this.subscribeToHost();
-			this.setupExtensionShortcuts();
-			this.appendErrorLine(error instanceof Error ? error.message : String(error));
-			this.ui.requestRender();
-			return false;
-		}
-		this.subscribeToHost();
-		// Re-snapshot extension shortcuts (inert — shortcuts aren't wired over the daemon).
-		this.setupExtensionShortcuts();
-
-		// Reset transient per-session UI state.
-		this.streamingComponent = undefined;
-		this.pendingTools.clear();
-		this.bashAbortController?.abort();
-		this.bashAbortController = undefined;
-		this.bashComponent = undefined;
-		this.deployToolCallId = undefined;
-		this.deployToolErrored = false;
-		this.setBusy(false);
-		return true;
-	}
-
-	/**
-	 * Commit the deploy. The daemon persists the deploy state (flip the latch + register the OS
-	 * service unit); with the `none` backend it also swaps to a fresh session in place. Runs through
-	 * the shared `swapSession` teardown/rebuild so the client re-subscribes and repaints onto the
-	 * deployed session without tearing down the TUI.
+	 * Commit the deploy. The daemon flips the latch, registers the OS service unit, and creates a fresh
+	 * deployed session (with a real backend it also stands up the supervised daemon and re-points the
+	 * client transport onto it). The App then replaces this chat with the new session's.
 	 */
 	private async doDeploy(): Promise<void> {
-		if (!(await this.swapSession(() => this.session.deploy()))) return;
-		await this.renderCurrentSessionState();
-		this.chatContainer.addChild(new Text(theme.fg("dim", "✓ Deployed."), 1, 0));
-		this.ui.requestRender();
+		try {
+			const sessionId = await this.ctx.deploy();
+			await this.ctx.switchSession(sessionId);
+		} catch (error) {
+			this.appendErrorLine(error instanceof Error ? error.message : String(error));
+			this.ui.requestRender();
+		}
 	}
 
 	/**
-	 * `/new` — start a fresh session, reusing `swapToNewSession()` (the same dance deploy uses) and
-	 * surfacing any failure via its `appendErrorLine` path.
-	 *
-	 * Forming guard: while the agent is undeployed it stays in its single birth session, so `/new` is
-	 * refused here (the primary guard) and again by the daemon (the backstop — the birth-session
-	 * invariant).
+	 * `/new` — create a fresh session (additive: the daemon keeps the others live) and have the App
+	 * switch to its chat. While the agent is still forming it stays in its single birth session, so
+	 * `/new` is refused here (the primary guard) and again by the daemon (the birth-session invariant).
 	 */
 	private async handleNewCommand(): Promise<void> {
 		if (!isDeployed(this.session.config)) {
@@ -767,14 +714,13 @@ export class ChatView extends Container implements AppView {
 			this.ui.requestRender();
 			return;
 		}
-		if (!(await this.swapToNewSession("new"))) return;
-		// Single source of truth for the reset+repaint (header + transcript). On an empty
-		// fresh session this reproduces today's header-only output.
-		await this.renderCurrentSessionState();
-		this.chatContainer.addChild(new Text(theme.fg("dim", "✓ New session started."), 1, 0));
-		this.chatContainer.addChild(new Spacer(1));
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
+		try {
+			const sessionId = await this.ctx.createSession();
+			await this.ctx.switchSession(sessionId);
+		} catch (error) {
+			this.appendErrorLine(error instanceof Error ? error.message : String(error));
+			this.ui.requestRender();
+		}
 	}
 
 	/**
@@ -1932,7 +1878,6 @@ export class ChatView extends Container implements AppView {
 					}
 					const skillBlock = parseSkillBlock(textContent);
 					if (skillBlock) {
-						// Render skill block (collapsible)
 						const component = new SkillInvocationMessageComponent(skillBlock, this.markdownTheme);
 						component.setExpanded(this.toolOutputExpanded);
 						this.chatContainer.addChild(component);
@@ -1982,10 +1927,8 @@ export class ChatView extends Container implements AppView {
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 
 		for (const message of sessionContext.messages) {
-			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
 				this.addMessageToChat(message);
-				// Render tool call components
 				for (const content of message.content) {
 					if (content.type === "toolCall") {
 						const component = new ToolExecutionComponent(
@@ -2014,14 +1957,12 @@ export class ChatView extends Container implements AppView {
 					}
 				}
 			} else if (message.role === "toolResult") {
-				// Match tool results to pending tool components
 				const component = renderedPendingTools.get(message.toolCallId);
 				if (component) {
 					component.updateResult(message);
 					renderedPendingTools.delete(message.toolCallId);
 				}
 			} else {
-				// All other messages use standard rendering
 				this.addMessageToChat(message, options);
 			}
 		}

@@ -6,10 +6,9 @@
  */
 
 export { serializeConversation } from "@opsyhq/agent";
-// The client surface: the agent collection (`Steward`), one agent (`Agent`), and the per-conversation
-// proxy (`AgentSession`) the interactive TUI + `--print` drive. `Connection` (the transport) stays
-// private to `Agent` and is intentionally not re-exported here.
-export { Agent, AgentSession, Steward } from "./client.ts";
+// The client surface: the agent collection (`Steward`), one agent (`Agent`, which owns the transport),
+// and the per-session proxy (`SessionHandle`) the interactive TUI + `--print` drive.
+export { Agent, SessionHandle, Steward } from "./client.ts";
 // Shared UI components + keybinding-hint helpers imported by the @opsyhq/cli daemon client (the
 // interactive TUI lives in apps/cli); DynamicBorder and the keyHint/keyText helpers are also part
 // of the extension SDK surface.
@@ -75,7 +74,6 @@ export type {
 	CompactOptions,
 	ContextEvent,
 	ContextUsage,
-	Conversation,
 	ConversationPromptOptions,
 	CustomToolCallEvent,
 	EditorFactory,
@@ -111,6 +109,7 @@ export type {
 	RegisteredCommand,
 	RegisteredTool,
 	ResolvedCommand,
+	Session,
 	SessionBeforeCompactEvent,
 	SessionShutdownEvent,
 	SessionStartEvent,
@@ -146,8 +145,6 @@ export {
 	isReadToolResult,
 	isToolCallEventType,
 	isWriteToolResult,
-	wrapRegisteredTool,
-	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
 export type { ToolRenderContext } from "./core/extensions/types.ts";
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
@@ -301,9 +298,12 @@ export {
 	theme,
 } from "./theme/theme.ts";
 export type {
+	DaemonAgentState,
 	DaemonCommand,
+	DaemonControlEvent,
 	DaemonResponse,
 	DaemonSessionState,
+	DaemonSessionSummary,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
 	OnboardServiceResult,
