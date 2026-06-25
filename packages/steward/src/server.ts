@@ -37,6 +37,7 @@ import type {
 	WorkingIndicatorOptions,
 } from "./core/extensions/index.ts";
 import { IntegrationAccountStorage } from "./core/integration-account-storage.ts";
+import { IntegrationStore } from "./core/integration-store.ts";
 import { loadIntegrations } from "./core/integrations/loader.ts";
 import { onboardIntegration } from "./core/integrations/onboarding.ts";
 import type { Integration, IntegrationOnboardUI } from "./core/integrations/types.ts";
@@ -375,6 +376,8 @@ async function createAgentRuntime(name: string): Promise<{ runtime: AgentRuntime
 	const authStorage = AuthStorage.create();
 	// Integration accounts are per-agent (`~/.steward/agents/<name>/integrations.json`).
 	const integrationAccounts = IntegrationAccountStorage.create(name);
+	// Integration runtime state is per-agent, one file per service (`~/.steward/agents/<name>/store/`).
+	const integrationStore = IntegrationStore.create(name);
 	const modelRegistry = ModelRegistry.create(authStorage);
 
 	// Model precedence: agent.json override → shared default → known-provider defaults → first-available.
@@ -401,7 +404,7 @@ async function createAgentRuntime(name: string): Promise<{ runtime: AgentRuntime
 		return { error: `No credentials found for provider "${model.provider}". Log in with the steward CLI.` };
 	}
 
-	const runtime = new AgentRuntime({ name, model, authStorage, modelRegistry, integrationAccounts });
+	const runtime = new AgentRuntime({ name, model, authStorage, modelRegistry, integrationAccounts, integrationStore });
 	return { runtime };
 }
 

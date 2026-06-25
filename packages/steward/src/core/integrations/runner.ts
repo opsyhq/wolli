@@ -5,6 +5,7 @@
 import * as path from "node:path";
 import { Compile } from "typebox/compile";
 import type { IntegrationAccountRecord, IntegrationAccountStorage } from "../integration-account-storage.ts";
+import type { IntegrationStore } from "../integration-store.ts";
 import { resolveConfigValue } from "../resolve-config-value.ts";
 import type {
 	Integration,
@@ -15,6 +16,7 @@ import type {
 	IntegrationHandle,
 	IntegrationRunContext,
 	IntegrationRuntime,
+	KeyValueStore,
 } from "./types.ts";
 
 type Validator = ReturnType<typeof Compile>;
@@ -48,6 +50,7 @@ export class IntegrationRunner {
 	private runtime: IntegrationRuntime;
 	private cwd: string;
 	private accountStorage: IntegrationAccountStorage;
+	private store: IntegrationStore;
 	/** service → registered integration (first registration wins). */
 	private registeredIntegrations: Map<string, RegisteredIntegration> = new Map();
 	/** key (`service accountId`) → live account. */
@@ -59,10 +62,12 @@ export class IntegrationRunner {
 		runtime: IntegrationRuntime,
 		cwd: string,
 		accountStorage: IntegrationAccountStorage,
+		store: IntegrationStore,
 	) {
 		this.runtime = runtime;
 		this.cwd = cwd;
 		this.accountStorage = accountStorage;
+		this.store = store;
 
 		for (const integration of integrations) {
 			for (const [service, config] of integration.definitions) {
@@ -158,6 +163,16 @@ export class IntegrationRunner {
 		return entry;
 	}
 
+	/** Per-service `ctx.store` handle, closing over the service so the integration sees only its own file. */
+	private storeHandle(service: string): KeyValueStore {
+		return {
+			get: (key) => this.store.get(service, key),
+			set: (key, value) => this.store.set(service, key, value),
+			getAll: () => this.store.getAll(service),
+			delete: (key) => this.store.delete(service, key),
+		};
+	}
+
 	/**
 	 * Resolve and validate the account for `(service, account)` — the value handed to
 	 * `ctx.account`. Throws if it is not configured or fails validation.
@@ -224,6 +239,7 @@ export class IntegrationRunner {
 
 				const ctx: IntegrationRunContext = {
 					account,
+					store: this.storeHandle(service),
 					signal: controller.signal,
 					emit: (event, data) => {
 						void this.emitIntegrationEvent(service, accountId, event, data);
@@ -376,7 +392,11 @@ export class IntegrationRunner {
 		// Reuse the live producer's controller when present, else a per-call one.
 		const entry = this.liveAccounts.get(this.liveKey(service, account));
 		const controller = entry?.controller ?? new AbortController();
-		const ctx: IntegrationActionContext = { account: resolvedAccount, signal: controller.signal };
+		const ctx: IntegrationActionContext = {
+			account: resolvedAccount,
+			store: this.storeHandle(service),
+			signal: controller.signal,
+		};
 		return actionDef.execute(args, ctx);
 	}
 

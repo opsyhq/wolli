@@ -80,6 +80,7 @@ import type {
 	ToolResultEvent,
 } from "./extensions/types.ts";
 import type { IntegrationAccountStorage } from "./integration-account-storage.ts";
+import type { IntegrationStore } from "./integration-store.ts";
 import { IntegrationRunner } from "./integrations/runner.ts";
 import { loadMemory } from "./memory.ts";
 import { type CustomMessage, createCustomMessage } from "./messages.ts";
@@ -125,6 +126,12 @@ export interface AgentRuntimeOptions {
 	 * must survive `/reload` so per-account state isn't lost.
 	 */
 	integrationAccounts: IntegrationAccountStorage;
+	/**
+	 * Per-agent integration runtime-state store (one file per service). Constructed once
+	 * (process-scoped) and must survive `/reload` so an integration's jobs/state persist
+	 * across the producer teardown→restart.
+	 */
+	integrationStore: IntegrationStore;
 }
 
 /**
@@ -923,6 +930,7 @@ export class AgentRuntime {
 		const name = this.options.name;
 		const agentDir = getAgentDir(name);
 		const integrationAccounts = this.options.integrationAccounts;
+		const integrationStore = this.options.integrationStore;
 
 		// One resource loader owns npm/git/local install + resolution and resolves extensions AND
 		// integrations in place from the same per-agent home. It builds the *unbound* IntegrationRunner
@@ -939,7 +947,7 @@ export class AgentRuntime {
 		});
 		await loader.reload({
 			buildIntegrationRunner: ({ integrations, runtime }) =>
-				new IntegrationRunner(integrations, runtime, agentDir, integrationAccounts),
+				new IntegrationRunner(integrations, runtime, agentDir, integrationAccounts, integrationStore),
 		});
 
 		const integrationRunner = loader.getIntegrationRunner();

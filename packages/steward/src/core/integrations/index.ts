@@ -21,5 +21,6 @@ export type {
 	IntegrationRuntime,
 	IntegrationRuntimeState,
 	IntegrationsAPI,
+	KeyValueStore,
 	LoadIntegrationsResult,
 } from "./types.ts";

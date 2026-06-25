@@ -174,6 +174,16 @@ export function getAgentIntegrationsDir(name: string): string {
 	return join(getAgentDir(name), "integrations");
 }
 
+/** Path to an agent's per-integration runtime state dir, e.g. ~/.steward/agents/<name>/store */
+export function getAgentStoreDir(name: string): string {
+	return join(getAgentDir(name), "store");
+}
+
+/** Path to one integration's runtime state file, e.g. ~/.steward/agents/<name>/store/<service>.json */
+export function getIntegrationStorePath(name: string, service: string): string {
+	return join(getAgentStoreDir(name), `${service}.json`);
+}
+
 /** Path to an agent's approvals.json (durable host-escalation prefix rules). */
 export function getAgentApprovalsPath(name: string): string {
 	return join(getAgentDir(name), "approvals.json");

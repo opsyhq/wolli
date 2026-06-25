@@ -19,6 +19,7 @@ import { Compile } from "typebox/compile";
 import { describe, expect, it } from "vitest";
 import telegram from "../plugins/telegram/index.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
+import { IntegrationStore } from "../src/core/integration-store.ts";
 import {
 	createIntegrationRuntime,
 	type IntegrationConfig,
@@ -32,7 +33,7 @@ async function buildRunner() {
 	const accounts = IntegrationAccountStorage.inMemory({
 		telegram: { default: { botToken: "test" } },
 	});
-	const runner = new IntegrationRunner([integration], runtime, process.cwd(), accounts);
+	const runner = new IntegrationRunner([integration], runtime, process.cwd(), accounts, IntegrationStore.inMemory());
 	runner.bindCore();
 	return { runner, integration };
 }

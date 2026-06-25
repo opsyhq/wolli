@@ -49,6 +49,19 @@ export interface IntegrationOnboardContext {
 	signal: AbortSignal;
 }
 
+/**
+ * A string-keyed store an integration uses for its durable runtime state (`ctx.store`),
+ * scoped to one service. Backed by `~/.steward/agents/<name>/store/<service>.json`,
+ * process-scoped, and survives `/reload` — where an integration keeps machine-written
+ * state (e.g. the scheduler's jobs).
+ */
+export interface KeyValueStore {
+	get(key: string): unknown;
+	set(key: string, value: unknown): void;
+	getAll(): Record<string, unknown>;
+	delete(key: string): void;
+}
+
 /** A callable request/response function exposed by an integration. */
 export interface IntegrationAction {
 	description?: string;
@@ -81,12 +94,16 @@ export interface IntegrationRunContext {
 	account: unknown;
 	/** Validated against `config.events[event]`. */
 	emit(event: string, data: unknown): void;
+	/** Durable per-service runtime state. */
+	store: KeyValueStore;
 	/** Aborted on `stop()`; one `run()` per (service, account). */
 	signal: AbortSignal;
 }
 
 export interface IntegrationActionContext {
 	account: unknown;
+	/** Durable per-service runtime state. */
+	store: KeyValueStore;
 	signal: AbortSignal;
 }
 

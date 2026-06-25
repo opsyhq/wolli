@@ -15,6 +15,7 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { IntegrationAccountRecord } from "../src/core/integration-account-storage.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
+import { IntegrationStore } from "../src/core/integration-store.ts";
 import {
 	createIntegrationRuntime,
 	IntegrationRunner,
@@ -169,7 +170,13 @@ describe("IntegrationRunner.start idempotency (go-live)", () => {
 		};
 		const integration = await loadIntegrationFromFactory(factory, process.cwd(), runtime, "<fake>");
 		const accounts = IntegrationAccountStorage.inMemory({ fakesvc: { default: { token: "literal" } } });
-		const runner = new IntegrationRunner([integration], runtime, process.cwd(), accounts);
+		const runner = new IntegrationRunner(
+			[integration],
+			runtime,
+			process.cwd(),
+			accounts,
+			IntegrationStore.inMemory(),
+		);
 		runner.bindCore();
 
 		await runner.start();

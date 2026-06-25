@@ -18,6 +18,7 @@ import { AgentRuntime } from "../src/core/agent-runtime.ts";
 import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
+import { IntegrationStore } from "../src/core/integration-store.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { openAgentSession } from "../src/core/session.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -41,6 +42,7 @@ function makeRuntime(): AgentRuntime {
 		authStorage,
 		modelRegistry: ModelRegistry.create(authStorage),
 		integrationAccounts: IntegrationAccountStorage.inMemory(),
+		integrationStore: IntegrationStore.inMemory(),
 	});
 }
 

@@ -172,6 +172,7 @@ export {
 	type IntegrationRuntime,
 	type IntegrationRuntimeState,
 	type IntegrationsAPI,
+	type KeyValueStore,
 	type LoadIntegrationsResult,
 	loadIntegrationFromFactory,
 	loadIntegrations,
