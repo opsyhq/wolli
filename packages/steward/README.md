@@ -166,49 +166,15 @@ Override the root with `STEWARD_HOME` (defaults to `~/.steward`).
 
 Steward exposes its agent builder programmatically from `@opsyhq/steward`. The
 SDK builds the engine's high-level `AgentHarness` from an execution environment,
-a session, a model, and a pre-built system prompt:
+a session, a model, and a pre-built system prompt (`openAgentSession`,
+`loadMemory`, `buildSystemPrompt`, `AuthStorage`, `createAgentSession`).
 
-```typescript
-import {
-  AuthStorage,
-  buildSystemPrompt,
-  createAgentSession,
-  loadAgentConfig,
-  loadMemory,
-  openAgentSession,
-} from "@opsyhq/steward";
-import { getModel } from "@earendil-works/pi-ai";
+`AuthStorage` resolves a provider key from the shared credential store
+(`~/.steward/agent/auth.json`) populated by `/login`, then OAuth tokens, then
+environment variables — so an existing login or an `ANTHROPIC_API_KEY` both work
+with no extra setup.
 
-const name = "calories";
-const config = loadAgentConfig(name);
-const { soul, memory, user } = loadMemory(name);
-
-// Open the agent's durable session (resumes the latest leaf by default).
-const { session, env } = await openAgentSession(name);
-
-const systemPrompt = buildSystemPrompt({ config, soul, memory, user });
-
-const authStorage = AuthStorage.create();
-const model = getModel("anthropic", "claude-opus-4-8");
-
-const { harness } = await createAgentSession({
-  env,
-  session,
-  model,
-  systemPrompt,
-  thinkingLevel: "medium",
-  authStorage,
-});
-
-await harness.prompt("log: two eggs and toast");
-```
-
-The system prompt is passed in pre-built and frozen for the lifetime of the
-session. `AuthStorage` resolves a provider key from the shared credential store
-(`~/.steward/agent/auth.json`), then OAuth tokens, then environment variables —
-so an existing login or an `ANTHROPIC_API_KEY` both work with no extra setup.
-
-See [examples/sdk/](examples/sdk/) for runnable examples.
+See [docs/sdk.md](docs/sdk.md) for the full walkthrough.
 
 ## License
 

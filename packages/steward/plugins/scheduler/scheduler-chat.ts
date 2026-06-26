@@ -14,8 +14,8 @@
  * special-casing — a telegram-tagged origin means telegram's own `agent_end` ships the reply
  * back to that chat. An untagged origin falls back to the newest session.
  *
- * This file is declared under the package's `steward.extensions` and is copied into
- * `<agent>/extensions/` when the integration is onboarded.
+ * This file is declared under the package's `steward.extensions` and is resolved in place by the
+ * package manager when the integration is onboarded.
  */
 
 import type { ExtensionAPI } from "@opsyhq/steward";

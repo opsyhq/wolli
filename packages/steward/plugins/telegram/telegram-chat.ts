@@ -4,21 +4,22 @@
  * The integration (`index.ts`) is the transport (long-poll, token, `message` events);
  * this extension maps that transport onto a Steward session:
  *
- *   - inbound:  `telegram.on("message")` routes the text into this chat's own session via
- *               `steward.deliverToSession({ "telegram:chat": <id> }, text)` (find-or-create + deliver)
+ *   - inbound:  `telegram.on("message")` routes the text into this chat's own session by
+ *               `steward.findSessions({ "telegram:chat": <id> })` → `openSession` the match (or
+ *               `createSession` + tag a fresh one) → `session.sendUserMessage(text)`
  *   - outbound: `steward.on("agent_end")` reads the PRODUCING session's tag off
  *               `ctx.session.getTags()` → final assistant text → `sendMessage`
  *   - typing:   `agent_start`/`agent_end` toggle the Telegram "typing…" indicator
  *   - commands: `/new`, `/status`, `/help` are handled here, not sent to the model
  *
  * Session binding via tags: each chat gets its OWN Steward session, bound by a `{ "telegram:chat":
- * <id> }` tag. `deliverToSession` finds (or creates) the chat's session and delivers there, so two
+ * <id> }` tag. `findSessions` locates (and `createSession` lazily creates) the chat's session, so two
  * chats run in parallel and a reply returns to the chat that started the turn — located by any
  * extension with `steward.findSessions({ "telegram:chat": <id> })`.
  *
- * This file is declared under the package's `steward.extensions` and is copied into
- * `<agent>/extensions/` automatically when the integration is onboarded
- * (`steward integrations configure <agent> telegram`); it activates on the next launch.
+ * This file is declared under the package's `steward.extensions` and is resolved in place by the
+ * package manager when the integration is onboarded
+ * (`steward <agent> plugins configure telegram`); it activates on the next launch.
  */
 
 import type { AgentMessage } from "@opsyhq/agent";

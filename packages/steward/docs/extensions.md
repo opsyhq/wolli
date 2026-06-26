@@ -2,15 +2,15 @@
 
 Extensions are TypeScript modules that extend Steward's behavior. They can subscribe to lifecycle events, register custom tools callable by the LLM, add commands, and more.
 
-> **Placement for /reload:** Put extensions in an agent's `~/.steward/agents/<name>/extensions/` for auto-discovery. Use `--extension ./path.ts` only for quick tests. Extensions in auto-discovered locations can be hot-reloaded with `/reload`.
+> **Placement for /reload:** Put extensions in an agent's `~/.steward/agents/<name>/extensions/` for auto-discovery, or list extra paths under `extensions` in `settings.json`. Extensions in auto-discovered locations can be hot-reloaded with `/reload`.
 
 **Key capabilities:**
 - **Custom tools** - Register tools the LLM can call via `steward.registerTool()`
 - **Event interception** - Block or modify tool calls, inject context, customize compaction
-- **User interaction** - Prompt users via `conversation.ui` (select, confirm, input, notify)
-- **Custom UI components** - Full TUI components with keyboard input via `conversation.ui.custom()` for complex interactions
+- **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
+- **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
 - **Custom commands** - Register commands like `/mycommand` via `steward.registerCommand()`
-- **Session persistence** - Store state that survives restarts via `conversation.appendEntry()`
+- **Session persistence** - Store state that survives restarts via `ctx.session.appendEntry()`
 - **Custom rendering** - Control how tool calls/results and messages appear in TUI
 
 **Example use cases:**
@@ -24,7 +24,7 @@ Extensions are TypeScript modules that extend Steward's behavior. They can subsc
 
 > **Note:** The extension factory's first argument is named `steward` throughout this document. That name is just a convention for the extension API object — call it whatever you like. (The package.json manifest key used to declare extensions is `"steward"`; that key name is fixed and unrelated to the argument name.)
 >
-> Every event handler, command, shortcut, and custom-tool `execute` receives a context bag as its last argument: `context: ExtensionContext`, where `ExtensionContext = { conversation: Conversation }`. Examples destructure it as `{ conversation }`. The `conversation` carries the per-conversation surface (`ui`, `sessionManager`, `model`, `sendMessage`, `compact`, etc.); agent-global capabilities live on `steward`.
+> Every event handler, command, shortcut, and custom-tool `execute` receives a context bag as its last argument: `ctx: ExtensionContext`, where `ExtensionContext = { session, ui, mode }`. Examples destructure it as `{ session, ui, mode }`. `session` is the live session this invocation acts on (carrying `sessionManager`, `model`, `sendMessage`, `compact`, etc.); `ui` is that session's presentation channel; `mode` is the current run mode. Agent-global capabilities (cwd, environments, model registry, session discovery, integrations, reload, shutdown) live on `steward`.
 
 ## Table of Contents
 
@@ -35,17 +35,23 @@ Extensions are TypeScript modules that extend Steward's behavior. They can subsc
   - [Extension Styles](#extension-styles)
 - [Events](#events)
   - [Lifecycle Overview](#lifecycle-overview)
+  - [Handler Ordering and Folding](#handler-ordering-and-folding)
   - [Session Events](#session-events)
   - [Agent Events](#agent-events)
   - [Model Events](#model-events)
   - [Tool Events](#tool-events)
-- [Context and Conversation](#context-and-conversation)
-- [API Reference](#api-reference)
+  - [User Bash Events](#user-bash-events)
+  - [Input Events](#input-events)
+- [ExtensionContext](#extensioncontext)
+  - [ctx.session members](#ctxsession-members)
+  - [Session replacement lifecycle and footguns](#session-replacement-lifecycle-and-footguns)
+- [ExtensionAPI Methods](#extensionapi-methods)
 - [State Management](#state-management)
 - [Custom Tools](#custom-tools)
 - [Custom UI](#custom-ui)
 - [Error Handling](#error-handling)
 - [Mode Behavior](#mode-behavior)
+- [Worked Examples](#worked-examples)
 
 ## Quick Start
 
@@ -57,13 +63,13 @@ import { Type } from "typebox";
 
 export default function (steward: ExtensionAPI) {
   // React to events
-  steward.on("session_start", async (_event, { conversation }) => {
-    conversation.ui.notify("Extension loaded!", "info");
+  steward.on("session_start", async (_event, { ui }) => {
+    ui.notify("Extension loaded!", "info");
   });
 
-  steward.on("tool_call", async (event, { conversation }) => {
+  steward.on("tool_call", async (event, { ui }) => {
     if (event.toolName === "bash" && event.input.command?.includes("rm -rf")) {
-      const ok = await conversation.ui.confirm("Dangerous!", "Allow rm -rf?");
+      const ok = await ui.confirm("Dangerous!", "Allow rm -rf?");
       if (!ok) return { block: true, reason: "Blocked by user" };
     }
   });
@@ -76,7 +82,7 @@ export default function (steward: ExtensionAPI) {
     parameters: Type.Object({
       name: Type.String({ description: "Name to greet" }),
     }),
-    async execute(toolCallId, params, signal, onUpdate, { conversation }) {
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
       return {
         content: [{ type: "text", text: `Hello, ${params.name}!` }],
         details: {},
@@ -87,18 +93,15 @@ export default function (steward: ExtensionAPI) {
   // Register a command
   steward.registerCommand("hello", {
     description: "Say hello",
-    handler: async (args, { conversation }) => {
-      conversation.ui.notify(`Hello ${args || "world"}!`, "info");
+    handler: async (args, { ui }) => {
+      const name = args.trim() || "world";
+      ui.notify(`Hello ${name}!`, "info");
     },
   });
 }
 ```
 
-Test with `--extension` (or `-e`) flag:
-
-```bash
-steward <name> -e ./my-extension.ts
-```
+The agent loads extensions from its `extensions/` directory automatically. After editing one, run `/reload` to pick up the change without restarting.
 
 ## Extension Locations
 
@@ -111,7 +114,7 @@ Extensions are auto-discovered from the agent's own home, because each agent own
 | `~/.steward/agents/<name>/extensions/*.ts` | The agent (all sessions) |
 | `~/.steward/agents/<name>/extensions/*/index.ts` | The agent (subdirectory) |
 
-Additional paths via `settings.json`:
+Additional paths via `settings.json` (`extensions` is `string[]`):
 
 ```json
 {
@@ -144,12 +147,12 @@ import type { ExtensionAPI } from "@opsyhq/steward";
 
 export default function (steward: ExtensionAPI) {
   // Subscribe to events
-  steward.on("event_name", async (event, { conversation }) => {
-    // conversation.ui for user interaction
-    const ok = await conversation.ui.confirm("Title", "Are you sure?");
-    conversation.ui.notify("Done!", "info");
-    conversation.ui.setStatus("my-ext", "Processing...");  // Footer status
-    conversation.ui.setWidget("my-ext", ["Line 1", "Line 2"]);  // Widget above editor (default)
+  steward.on("event_name", async (event, { ui }) => {
+    // ui for user interaction
+    const ok = await ui.confirm("Title", "Are you sure?");
+    ui.notify("Done!", "info");
+    ui.setStatus("my-ext", "Processing...");  // Footer status
+    ui.setWidget("my-ext", ["Line 1", "Line 2"]);  // Widget above editor (default)
   });
 
   // Register tools, commands, shortcuts, flags
@@ -263,7 +266,7 @@ user sends prompt ────────────────────�
                                                            │
 user sends another prompt ◄────────────────────────────────┘
 
-/new (new session) or /resume (switch session)
+/new (new session) or /sessions (switch session)
   ├─► session_shutdown
   └─► session_start { reason: "new" | "resume", previousSessionFile? }
 
@@ -274,12 +277,37 @@ user sends another prompt ◄─────────────────
   ├─► thinking_level_select (if model change changes/clamps thinking level)
   └─► model_select
 
-thinking level changes (settings, keybinding, conversation.setThinkingLevel())
+thinking level changes (settings, keybinding, ctx.session.setThinkingLevel())
   └─► thinking_level_select
 
 exit (Ctrl+C, Ctrl+D, SIGHUP, SIGTERM)
   └─► session_shutdown
 ```
+
+### Handler Ordering and Folding
+
+The diagram above is the order *events* fire. Within a single event, multiple handlers can be registered — across extensions, and within one extension. Steward always invokes them in the same nesting:
+
+```
+for each extension (in extension load order)
+  for each handler that extension registered for this event (in registration order)
+    await handler(event, ctx)
+```
+
+So "extension load order" decides which extension's handlers run first, and registration order (the order you called `steward.on(...)` inside that extension's factory) decides ordering among handlers from the same extension.
+
+How return values combine depends on the event. There are four shapes:
+
+| Event | How handlers combine |
+|-------|----------------------|
+| `tool_call` | Each `{ block, reason }` is recorded; the **first** handler to return `{ block: true }` short-circuits and the tool never runs. Argument mutations (`event.input` mutated in place) are cumulative — later handlers see earlier mutations. |
+| `input`, `user_bash` | First-wins short-circuit. For `input`, `{ action: "handled" }` stops the chain immediately; `{ action: "transform" }` rewrites `event.text`/`event.images` and continues so later handlers see the rewritten text. For `user_bash`, the first handler returning any result wins and the rest are skipped. |
+| `context`, `before_provider_request`, `before_agent_start`, `tool_result`, `message_end` | Fold/chain: the running value (messages, payload, system prompt, result fields, finalized message) threads through every handler, and each handler sees the previous handler's output. `message_end` rejects (and logs) any replacement whose `role` differs from the original. `before_agent_start` accumulates injected `message`s from all handlers while chaining `systemPrompt`. |
+| everything else (`session_*`, `agent_*`, `turn_*`, `message_start`/`message_update`, `tool_execution_*`, `model_select`, `thinking_level_select`) | Notification-only. Return values are ignored; all handlers run. |
+
+> A throw inside one handler is caught, reported through the extension error channel, and does **not** stop the remaining handlers. Never rely on a sibling handler's failure to halt processing — for fail-safe gating, return an explicit `{ block: true }` from `tool_call`.
+
+You cannot control cross-extension ordering from inside an extension; it follows the order extensions are discovered/loaded. Within your own extension, order your `steward.on(...)` calls if one handler must observe another's mutation first.
 
 ### Session Events
 
@@ -288,10 +316,10 @@ exit (Ctrl+C, Ctrl+D, SIGHUP, SIGTERM)
 Fired when a session is started, loaded, or reloaded.
 
 ```typescript
-steward.on("session_start", async (event, { conversation }) => {
+steward.on("session_start", async (event, { session, ui }) => {
   // event.reason - "startup" | "reload" | "new" | "resume" | "fork"
   // event.previousSessionFile - present for "new", "resume", and "fork"
-  conversation.ui.notify(`Session: ${conversation.sessionManager.getSessionFile() ?? "ephemeral"}`, "info");
+  ui.notify(`Session: ${session.sessionManager.getSessionFile() ?? "ephemeral"}`, "info");
 });
 ```
 
@@ -303,7 +331,7 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 Fired on compaction. **Can cancel or customize.**
 
 ```typescript
-steward.on("session_before_compact", async (event, { conversation }) => {
+steward.on("session_before_compact", async (event, ctx) => {
   const { preparation, branchEntries, customInstructions, signal } = event;
 
   // Cancel:
@@ -325,7 +353,7 @@ steward.on("session_before_compact", async (event, { conversation }) => {
 Fired before an extension runtime is torn down.
 
 ```typescript
-steward.on("session_shutdown", async (event, { conversation }) => {
+steward.on("session_shutdown", async (event, ctx) => {
   // event.reason - "quit" | "reload" | "new" | "resume" | "fork"
   // event.targetSessionFile - destination session for session replacement flows
   // Cleanup, save state, etc.
@@ -339,20 +367,20 @@ steward.on("session_shutdown", async (event, { conversation }) => {
 Fired after user submits prompt, before agent loop. Can inject a message and/or modify the system prompt.
 
 ```typescript
-steward.on("before_agent_start", async (event, { conversation }) => {
+steward.on("before_agent_start", async (event, ctx) => {
   // event.prompt - user's prompt text
   // event.images - attached images (if any)
   // event.systemPrompt - current chained system prompt for this handler
   //   (includes changes from earlier before_agent_start handlers)
   // event.systemPromptOptions - structured options used to build the system prompt
-  //   .customPrompt - any custom system prompt
-  //   .selectedTools - tools currently active in the prompt
-  //   .toolSnippets - one-line descriptions for each tool
-  //   .promptGuidelines - custom guideline bullets
-  //   .appendSystemPrompt - text from --append-system-prompt flags
+  //   .config - the agent config (present at the real call site)
   //   .cwd - working directory
-  //   .contextFiles - context files loaded into the prompt
-  //   .skills - loaded skills
+  //   .soul - frozen SOUL.md snapshot ("" when absent)
+  //   .memory - frozen MEMORY.md snapshot ("" when absent)
+  //   .user - frozen USER.md snapshot ("" when absent)
+  //   .skills - skills discovered for this agent
+  //   .selectedTools - names of the tools active this session
+  //   .appendSystemPrompt - text appended to the end of the system prompt
 
   return {
     // Inject a persistent message (stored in session, sent to LLM)
@@ -367,18 +395,18 @@ steward.on("before_agent_start", async (event, { conversation }) => {
 });
 ```
 
-The `systemPromptOptions` field gives extensions access to the same structured data Steward uses to build the system prompt. This lets you inspect what Steward has loaded — custom prompts, guidelines, tool snippets, context files, skills — without re-discovering resources or re-parsing flags. Use it when your extension needs to make deep, informed changes to the system prompt while respecting user-provided configuration.
+The `systemPromptOptions` field gives extensions access to the same structured data Steward uses to build the system prompt (type `BuildSystemPromptOptions`). This lets you inspect what Steward has loaded — the agent config, frozen SOUL/MEMORY/USER snapshots, discovered skills, the active tool names, and any appended system-prompt text — without re-discovering resources or re-parsing flags. Use it when your extension needs to make deep, informed changes to the system prompt while respecting user-provided configuration.
 
-Inside `before_agent_start`, `event.systemPrompt` and `conversation.getSystemPrompt()` both reflect the chained system prompt as of the current handler. Later `before_agent_start` handlers can still modify it again.
+Inside `before_agent_start`, `event.systemPrompt` and `ctx.session.getSystemPrompt()` both reflect the chained system prompt as of the current handler. Later `before_agent_start` handlers can still modify it again.
 
 #### agent_start / agent_end
 
 Fired once per user prompt.
 
 ```typescript
-steward.on("agent_start", async (_event, { conversation }) => {});
+steward.on("agent_start", async (_event, ctx) => {});
 
-steward.on("agent_end", async (event, { conversation }) => {
+steward.on("agent_end", async (event, ctx) => {
   // event.messages - messages from this prompt
 });
 ```
@@ -388,11 +416,11 @@ steward.on("agent_end", async (event, { conversation }) => {
 Fired for each turn (one LLM response + tool calls).
 
 ```typescript
-steward.on("turn_start", async (event, { conversation }) => {
+steward.on("turn_start", async (event, ctx) => {
   // event.turnIndex, event.timestamp
 });
 
-steward.on("turn_end", async (event, { conversation }) => {
+steward.on("turn_end", async (event, ctx) => {
   // event.turnIndex, event.message, event.toolResults
 });
 ```
@@ -406,16 +434,16 @@ Fired for message lifecycle updates.
 - `message_end` handlers can return `{ message }` to replace the finalized message. The replacement must keep the same `role`.
 
 ```typescript
-steward.on("message_start", async (event, { conversation }) => {
+steward.on("message_start", async (event, ctx) => {
   // event.message
 });
 
-steward.on("message_update", async (event, { conversation }) => {
+steward.on("message_update", async (event, ctx) => {
   // event.message
   // event.assistantMessageEvent (token-by-token stream event)
 });
 
-steward.on("message_end", async (event, { conversation }) => {
+steward.on("message_end", async (event, ctx) => {
   if (event.message.role !== "assistant") return;
 
   return {
@@ -444,15 +472,15 @@ In parallel tool mode:
 - final `toolResult` message events are still emitted later in assistant source order
 
 ```typescript
-steward.on("tool_execution_start", async (event, { conversation }) => {
+steward.on("tool_execution_start", async (event, ctx) => {
   // event.toolCallId, event.toolName, event.args
 });
 
-steward.on("tool_execution_update", async (event, { conversation }) => {
+steward.on("tool_execution_update", async (event, ctx) => {
   // event.toolCallId, event.toolName, event.args, event.partialResult
 });
 
-steward.on("tool_execution_end", async (event, { conversation }) => {
+steward.on("tool_execution_end", async (event, ctx) => {
   // event.toolCallId, event.toolName, event.result, event.isError
 });
 ```
@@ -462,7 +490,7 @@ steward.on("tool_execution_end", async (event, { conversation }) => {
 Fired before each LLM call. Modify messages non-destructively.
 
 ```typescript
-steward.on("context", async (event, { conversation }) => {
+steward.on("context", async (event, ctx) => {
   // event.messages - deep copy, safe to modify
   const filtered = event.messages.filter(m => !shouldPrune(m));
   return { messages: filtered };
@@ -473,10 +501,10 @@ steward.on("context", async (event, { conversation }) => {
 
 Fired after the provider-specific payload is built, right before the request is sent. Handlers run in extension load order. Returning `undefined` keeps the payload unchanged. Returning any other value replaces the payload for later handlers and for the actual request.
 
-This hook can rewrite provider-level system instructions or remove them entirely. Those payload-level changes are not reflected by `conversation.getSystemPrompt()`, which reports Steward's system prompt string rather than the final serialized provider payload.
+This hook can rewrite provider-level system instructions or remove them entirely. Those payload-level changes are not reflected by `ctx.session.getSystemPrompt()`, which reports Steward's system prompt string rather than the final serialized provider payload.
 
 ```typescript
-steward.on("before_provider_request", (event, { conversation }) => {
+steward.on("before_provider_request", (event, ctx) => {
   console.log(JSON.stringify(event.payload, null, 2));
 
   // Optional: replace payload
@@ -486,6 +514,8 @@ steward.on("before_provider_request", (event, { conversation }) => {
 
 This is mainly useful for debugging provider serialization and cache behavior.
 
+> **`console.log` and the TUI.** `console.log`/`console.error` write to the host's stdout/stderr. In `mode === "tui"` that shares the terminal with the rendered UI and can corrupt it. There is no logger on `ExtensionContext`. For user-visible diagnostics in interactive mode, use `ui.notify(...)` or `ui.setStatus(...)` instead. Raw `console.*` output is safe in the non-TUI modes (`rpc`, `json`, `print`), so guard it with `ctx.mode !== "tui"` if you need it in both.
+
 ### Model Events
 
 #### model_select
@@ -493,7 +523,7 @@ This is mainly useful for debugging provider serialization and cache behavior.
 Fired when the model changes via `/model` command, model cycling (`Ctrl+P`), or session restore.
 
 ```typescript
-steward.on("model_select", async (event, { conversation }) => {
+steward.on("model_select", async (event, { ui }) => {
   // event.model - newly selected model
   // event.previousModel - previous model (undefined if first selection)
   // event.source - "set" | "cycle" | "restore"
@@ -503,7 +533,7 @@ steward.on("model_select", async (event, { conversation }) => {
     : "none";
   const next = `${event.model.provider}/${event.model.id}`;
 
-  conversation.ui.notify(`Model changed (${event.source}): ${prev} -> ${next}`, "info");
+  ui.notify(`Model changed (${event.source}): ${prev} -> ${next}`, "info");
 });
 ```
 
@@ -514,15 +544,15 @@ Use this to update UI elements (status bars, footers) or perform model-specific 
 Fired when the thinking level changes. This is notification-only; handler return values are ignored.
 
 ```typescript
-steward.on("thinking_level_select", async (event, { conversation }) => {
+steward.on("thinking_level_select", async (event, { ui }) => {
   // event.level - newly selected thinking level
   // event.previousLevel - previous thinking level
 
-  conversation.ui.setStatus("thinking", `thinking: ${event.level}`);
+  ui.setStatus("thinking", `thinking: ${event.level}`);
 });
 ```
 
-Use this to update extension UI when `conversation.setThinkingLevel()`, model changes, or built-in thinking-level controls change the active thinking level.
+Use this to update extension UI when `ctx.session.setThinkingLevel()`, model changes, or built-in thinking-level controls change the active thinking level.
 
 ### Tool Events
 
@@ -530,9 +560,9 @@ Use this to update extension UI when `conversation.setThinkingLevel()`, model ch
 
 Fired after `tool_execution_start`, before the tool executes. **Can block.** Use `isToolCallEventType` to narrow and get typed inputs.
 
-Before `tool_call` runs, Steward waits for previously emitted Agent events to finish draining. This means `conversation.sessionManager` is up to date through the current assistant tool-calling message.
+Before `tool_call` runs, Steward waits for previously emitted Agent events to finish draining. This means `ctx.session.sessionManager` is up to date through the current assistant tool-calling message.
 
-In the default parallel tool execution mode, sibling tool calls from the same assistant message are preflighted sequentially, then executed concurrently. `tool_call` is not guaranteed to see sibling tool results from that same assistant message in `conversation.sessionManager`.
+In the default parallel tool execution mode, sibling tool calls from the same assistant message are preflighted sequentially, then executed concurrently. `tool_call` is not guaranteed to see sibling tool results from that same assistant message in `ctx.session.sessionManager`.
 
 `event.input` is mutable. Mutate it in place to patch tool arguments before execution.
 
@@ -545,7 +575,7 @@ Behavior guarantees:
 ```typescript
 import { isToolCallEventType } from "@opsyhq/steward";
 
-steward.on("tool_call", async (event, { conversation }) => {
+steward.on("tool_call", async (event, ctx) => {
   // event.toolName - "bash", "read", "write", "edit", etc.
   // event.toolCallId
   // event.input - tool parameters (mutable)
@@ -600,12 +630,12 @@ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in 
 - Each handler sees the latest result after previous handler changes
 - Handlers can return partial patches (`content`, `details`, or `isError`); omitted fields keep their current values
 
-Use `conversation.signal` for nested async work inside the handler. This lets Esc cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
+Use `ctx.session.signal` for nested async work inside the handler. This lets Esc cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
 
 ```typescript
 import { isBashToolResult } from "@opsyhq/steward";
 
-steward.on("tool_result", async (event, { conversation }) => {
+steward.on("tool_result", async (event, { session }) => {
   // event.toolName, event.toolCallId, event.input
   // event.content, event.details, event.isError
 
@@ -616,7 +646,7 @@ steward.on("tool_result", async (event, { conversation }) => {
   const response = await fetch("https://example.com/summarize", {
     method: "POST",
     body: JSON.stringify({ content: event.content }),
-    signal: conversation.signal,
+    signal: session.signal,
   });
 
   // Modify result:
@@ -633,7 +663,7 @@ Fired when user executes `!` or `!!` commands. **Can intercept.**
 ```typescript
 import { createHostEnvironment } from "@opsyhq/steward";
 
-steward.on("user_bash", (event, { conversation }) => {
+steward.on("user_bash", (event, ctx) => {
   // event.command - the bash command
   // event.excludeFromContext - true if !! prefix
   // event.cwd - working directory
@@ -669,10 +699,10 @@ Fired when user input is received, after extension commands are checked but befo
 5. Agent processing begins (`before_agent_start`, etc.)
 
 ```typescript
-steward.on("input", async (event, { conversation }) => {
+steward.on("input", async (event, { ui }) => {
   // event.text - raw input (before skill/template expansion)
   // event.images - attached images, if any
-  // event.source - "interactive" (typed) or "extension" (via sendUserMessage)
+  // event.source - "interactive" (typed), "rpc", or "extension" (via sendUserMessage)
   // event.streamingBehavior - "steer" | "followUp" | undefined
   //   undefined when idle, "steer" for mid-stream interrupts,
   //   "followUp" for messages queued until the agent finishes
@@ -683,7 +713,7 @@ steward.on("input", async (event, { conversation }) => {
 
   // Handle: respond without LLM (extension shows its own feedback)
   if (event.text === "ping") {
-    conversation.ui.notify("pong", "info");
+    ui.notify("pong", "info");
     return { action: "handled" };
   }
 
@@ -706,58 +736,68 @@ steward.on("input", async (event, { conversation }) => {
 
 Transforms chain across handlers.
 
-## Context and Conversation
+## ExtensionContext
 
-Every event handler, command, shortcut, and custom-tool `execute` receives a context bag as its last argument: `context: ExtensionContext`, where `ExtensionContext = { conversation: Conversation }`. Destructure it as `{ conversation }`. The `conversation` is the live conversation the handler is acting on, and carries the per-conversation surface described below.
+Every event handler, command, shortcut, and custom-tool `execute` receives a context bag as its last argument: `ctx: ExtensionContext`. It has exactly three members:
 
-Outside a handler (for example, in an integration `.on(...)` callback registered at load time), there may be no live conversation. Reach it with `steward.getConversation()`, which returns `Conversation | undefined`, and guard with `?.`.
+```typescript
+interface ExtensionContext {
+  session: Session;          // the live session this handler/tool/command acts on
+  ui: ExtensionUIContext;    // that session's presentation channel
+  mode: ExtensionMode;       // "tui" | "rpc" | "json" | "print"
+}
+```
 
-### conversation.ui
+Destructure whichever you need, e.g. `{ session }`, `{ ui }`, or `{ session, ui, mode }`.
 
-UI methods for user interaction. See [Custom UI](#custom-ui) for full details.
+- **`ctx.session`** is the live session the handler is acting on. It carries the per-session surface (session manager, model, abort signal, send/append/compact actions, tool and model controls). See [ctx.session members](#ctxsession-members).
+- **`ctx.ui`** is the UI rail for user interaction, scoped to this session: a dialog raised through `ui` routes only to this session's subscribers. See [Custom UI](#custom-ui) for the full surface.
+- **`ctx.mode`** is the current run mode: `"tui"`, `"rpc"`, `"json"`, or `"print"`. Use `ctx.mode === "tui"` to guard terminal-only features such as `custom()`, component factories, terminal input, and direct TUI rendering. See [Mode Behavior](#mode-behavior).
 
-### conversation.mode
+Outside a handler (for example, in an integration `.on(...)` callback registered at load time), there is no `ctx` in scope. Reach a session through the agent-global discovery methods on `steward` — `steward.getSession(id)`, `steward.openSession(id)`, `steward.createSession()` — described in [ExtensionAPI Methods](#extensionapi-methods).
 
-Current run mode: `"tui"` or `"print"`. Use `conversation.mode === "tui"` to guard terminal-only features such as `custom()`, component factories, terminal input, and direct TUI rendering.
+### ctx.session members
 
-### conversation.hasUI
+The members below all live on `ctx.session` (type `Session`).
 
-`true` in TUI mode. `false` in print mode (`-p`). Use this to guard dialog methods (`select`, `confirm`, `input`, `editor`) and fire-and-forget methods (`notify`, `setStatus`, `setWidget`, `setTitle`, `setEditorText`).
-
-### conversation.sessionManager
+#### session.sessionManager
 
 Read-only access to session state.
 
 For `tool_call`, this state is synchronized through the current assistant message before handlers run. In parallel tool execution mode it is still not guaranteed to include sibling tool results from the same assistant message.
 
 ```typescript
-conversation.sessionManager.getEntries()       // All entries
-conversation.sessionManager.getBranch()        // Current branch
-conversation.sessionManager.getLeafId()        // Current leaf entry ID
+session.sessionManager.getEntries()       // All entries
+session.sessionManager.getBranch()        // Current branch
+session.sessionManager.getLeafId()        // Current leaf entry ID
+session.sessionManager.getLabel(entryId)  // Label on an entry, if any
+session.sessionManager.getSessionFile()   // Session file path, or undefined
 ```
 
-### conversation.model
+To write tags onto a session, use `appendTags(tags: Record<string, string>): Promise<string>` — the method to call on the `SessionManager` handed to a `createSession({ setup })` callback. (`session.getTags()` / `session.setTags(tags)` read and replace the live session's folded tags; `appendTags` is the additive form used when seeding a freshly created session.)
 
-The current model, or `undefined`. For the model registry and API keys, use `steward.modelRegistry` (see [API Reference](#api-reference)).
+#### session.model
 
-### conversation.signal
+The current model, or `undefined`. For the model registry and API keys, use `steward.modelRegistry` (see [ExtensionAPI Methods](#extensionapi-methods)).
+
+#### session.signal
 
 The current agent abort signal, or `undefined` when no agent turn is active.
 
 Use this for abort-aware nested work started by extension handlers, for example:
-- `fetch(..., { signal: conversation.signal })`
+- `fetch(..., { signal: session.signal })`
 - model calls that accept `signal`
 - file or process helpers that accept `AbortSignal`
 
-`conversation.signal` is typically defined during active turn events such as `tool_call`, `tool_result`, `message_update`, and `turn_end`.
+`session.signal` is typically defined during active turn events such as `tool_call`, `tool_result`, `message_update`, and `turn_end`.
 It is usually `undefined` in idle or non-turn contexts such as session events, extension commands, and shortcuts fired while Steward is idle.
 
 ```typescript
-steward.on("tool_result", async (event, { conversation }) => {
+steward.on("tool_result", async (event, { session }) => {
   const response = await fetch("https://example.com/api", {
     method: "POST",
     body: JSON.stringify(event),
-    signal: conversation.signal,
+    signal: session.signal,
   });
 
   const data = await response.json();
@@ -765,53 +805,53 @@ steward.on("tool_result", async (event, { conversation }) => {
 });
 ```
 
-### conversation.prompt(text, options?)
+#### session.prompt(text, options?)
 
 Submit user input through the full command/skill/prompt pipeline, then hand off to the harness.
 
-### conversation.isIdle() / conversation.abort() / conversation.waitForIdle() / conversation.getPendingMessageCount() / conversation.hasPendingMessages()
+#### session.isIdle() / session.abort() / session.waitForIdle() / session.getPendingMessageCount() / session.hasPendingMessages()
 
 Control flow helpers.
 
-`conversation.waitForIdle()` waits for the agent to finish streaming:
+`session.waitForIdle()` waits for the agent to finish streaming:
 
 ```typescript
 steward.registerCommand("my-cmd", {
-  handler: async (args, { conversation }) => {
-    await conversation.waitForIdle();
+  handler: async (args, { session }) => {
+    await session.waitForIdle();
     // Agent is now idle, safe to modify session
   },
 });
 ```
 
-### conversation.getContextUsage()
+#### session.getContextUsage()
 
-Returns current context usage for the active model. Uses last assistant usage when available, then estimates tokens for trailing messages.
+Returns current context usage for the active model. Uses last assistant usage when available, then estimates tokens for trailing messages. The `tokens` and `percent` fields are `null` when token count is unknown (e.g. right after compaction, before the next LLM response).
 
 ```typescript
-const usage = conversation.getContextUsage();
-if (usage && usage.tokens > 100_000) {
+const usage = session.getContextUsage();
+if (usage && usage.tokens !== null && usage.tokens > 100_000) {
   // ...
 }
 ```
 
-### conversation.compact()
+#### session.compact(options?)
 
 Trigger compaction without awaiting completion. Use `onComplete` and `onError` for follow-up actions.
 
 ```typescript
-conversation.compact({
+session.compact({
   customInstructions: "Focus on recent changes",
   onComplete: (result) => {
-    conversation.ui.notify("Compaction completed", "info");
+    ui.notify("Compaction completed", "info");
   },
   onError: (error) => {
-    conversation.ui.notify(`Compaction failed: ${error.message}`, "error");
+    ui.notify(`Compaction failed: ${error.message}`, "error");
   },
 });
 ```
 
-### conversation.getSystemPrompt()
+#### session.getSystemPrompt()
 
 Returns Steward's current system prompt string.
 
@@ -821,33 +861,231 @@ Returns Steward's current system prompt string.
 - If later-loaded extensions run after yours, they can still change what is ultimately sent.
 
 ```typescript
-steward.on("before_agent_start", (event, { conversation }) => {
-  const prompt = conversation.getSystemPrompt();
+steward.on("before_agent_start", (event, { session }) => {
+  const prompt = session.getSystemPrompt();
   console.log(`System prompt length: ${prompt.length}`);
 });
 ```
 
-### conversation.getSystemPromptOptions()
+#### session.getSystemPromptOptions()
 
 Returns the base inputs Steward currently uses to build the system prompt.
 
 ```typescript
-const options = conversation.getSystemPromptOptions();
-const contextPaths = options.contextFiles?.map((file) => file.path) ?? [];
+const options = session.getSystemPromptOptions();
+const activeToolNames = options.selectedTools ?? [];
 ```
 
-This has the same shape and mutability as `before_agent_start` `event.systemPromptOptions`: custom prompt, active tools, tool snippets, prompt guidelines, appended system prompt text, cwd, loaded context files, and loaded skills. It may include full context file contents, so treat it as sensitive extension-local data and avoid exposing it through command lists, logs, or autocomplete metadata.
+This has the same shape as `before_agent_start` `event.systemPromptOptions` (type `BuildSystemPromptOptions`): the agent config, cwd, frozen SOUL/MEMORY/USER snapshots, discovered skills, the active tool names (`selectedTools`), and appended system-prompt text. The frozen memory snapshots can contain sensitive content, so treat it as sensitive extension-local data and avoid exposing it through command lists, logs, or autocomplete metadata.
 
 This reports the current base prompt inputs. It does not include per-turn `before_agent_start` chained system-prompt changes, later `context` event message mutations, or `before_provider_request` payload rewrites.
 
-### conversation.newSession(options?)
+#### session.sendMessage(message, options?)
 
-Start a new session, optionally with initialization, and make it the live conversation:
+Inject a custom message into the session. Signature:
+
+```typescript
+sendMessage<T = unknown>(
+  message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+  options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+): void;
+```
+
+`CustomMessage<T>` fields you pass: `customType: string`, `content: string | (TextContent | ImageContent)[]`, `display: boolean` (show in TUI), and optional `details?: T` (arbitrary payload available to a registered renderer and to state reconstruction).
+
+```typescript
+session.sendMessage({
+  customType: "my-extension",
+  content: "Message text",
+  display: true,
+  details: { ... },
+}, {
+  triggerTurn: true,
+  deliverAs: "steer",
+});
+```
+
+> **`sendMessage` vs `appendEntry`.** `sendMessage` creates a `role: "custom"` message entry that **is** shown in the TUI (when `display: true`) and **is** sent to the LLM — `convertToLlm` maps a `custom` message to a `user` message, so its `content` enters model context. `appendEntry` (see [session.appendEntry](#sessionappendentrycustomtype-data)) stores a role-less custom entry that is **not** part of LLM context at all. Use `sendMessage` to put something in front of both the user and the model; use `appendEntry` for invisible extension-only state. The two also persist as different entry kinds — see [State Management](#state-management).
+
+**Options:**
+- `deliverAs` - Delivery mode:
+  - `"steer"` (default) - Queues the message while streaming. Delivered after the current assistant turn finishes executing its tool calls, before the next LLM call.
+  - `"followUp"` - Waits for agent to finish. Delivered only when agent has no more tool calls.
+  - `"nextTurn"` - Queued for next user prompt. Does not interrupt or trigger anything.
+- `triggerTurn: true` - If agent is idle, trigger an LLM response immediately. Only applies to `"steer"` and `"followUp"` modes (ignored for `"nextTurn"`).
+
+When the agent is idle and `triggerTurn` is omitted/false, the message is appended (and persisted) without starting an LLM turn.
+
+#### session.sendUserMessage(content, options?)
+
+Send a user message to the agent. Unlike `sendMessage()` which sends custom messages, this sends an actual user message that appears as if typed by the user. Always triggers a turn.
+
+```typescript
+// Simple text message
+session.sendUserMessage("What is 2+2?");
+
+// With content array (text + images)
+session.sendUserMessage([
+  { type: "text", text: "Describe this image:" },
+  { type: "image", source: { type: "base64", mediaType: "image/png", data: "..." } },
+]);
+
+// During streaming - must specify delivery mode
+session.sendUserMessage("Focus on error handling", { deliverAs: "steer" });
+session.sendUserMessage("And then summarize", { deliverAs: "followUp" });
+```
+
+**Options:**
+- `deliverAs` - Required when agent is streaming:
+  - `"steer"` - Queues the message for delivery after the current assistant turn finishes executing its tool calls
+  - `"followUp"` - Waits for agent to finish all tools
+
+When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error.
+
+#### session.appendEntry(customType, data?)
+
+Persist extension state (does NOT participate in LLM context).
+
+```typescript
+steward.on("session_start", async (_event, { session }) => {
+  session.appendEntry("my-state", { count: 42 });
+
+  // Restore on reload
+  for (const entry of session.sessionManager.getEntries()) {
+    if (entry.type === "custom" && entry.customType === "my-state") {
+      // Reconstruct from entry.data
+    }
+  }
+});
+```
+
+#### session.getSessionName() / session.setSessionName(name)
+
+Get or set the session display name (shown in the session selector instead of the first message).
+
+```typescript
+session.setSessionName("Refactor auth module");
+
+const name = session.getSessionName();
+if (name) {
+  console.log(`Session: ${name}`);
+}
+```
+
+#### session.setLabel(entryId, label)
+
+Set or clear a label on an entry. Labels are user-defined markers for bookmarking and navigation.
+
+```typescript
+// Set a label
+session.setLabel(entryId, "checkpoint-before-refactor");
+
+// Clear a label
+session.setLabel(entryId, undefined);
+
+// Read labels via sessionManager
+const label = session.sessionManager.getLabel(entryId);
+```
+
+Labels persist in the session and survive restarts. Use them to mark important points (turns, checkpoints) in the conversation tree.
+
+#### session.getTags() / session.setTags(tags)
+
+Read or merge the session's folded tags — a durable, append-only key/value binding an extension owns (for example, to an external chat). Core never interprets the keys. Query across sessions with `steward.findSessions(...)`.
+
+```typescript
+session.setTags({ "telegram:chat": String(chatId) });
+
+const tags = session.getTags();
+const chat = tags["telegram:chat"];
+```
+
+#### session.getCommands()
+
+Get the slash commands available for invocation via `prompt` in the current session. Includes extension commands, prompt templates, and skill commands.
+The list order is: extensions first, then templates, then skills.
+
+```typescript
+const commands = session.getCommands();
+const fromExtensions = commands.filter((command) => command.source === "extension");
+const userScoped = commands.filter((command) => command.sourceInfo.scope === "user");
+```
+
+Each entry has this shape (`SlashCommandInfo`):
+
+```typescript
+{
+  name: string; // Invokable command name without the leading slash. May be suffixed like "review:1"
+  description?: string;
+  source: "extension" | "prompt" | "skill";
+  sourceInfo: SourceInfo;  // { path, source, scope, origin, baseDir? }
+}
+```
+
+Use `sourceInfo` as the canonical provenance field. Do not infer ownership from command names or from ad hoc path parsing.
+
+Built-in interactive commands (like `/model` and `/settings`) are not included here. They are handled only in interactive mode and would not execute if sent via `prompt`.
+
+#### session.getActiveTools() / session.getAllTools() / session.setActiveTools(names) / session.refreshTools()
+
+Manage active tools. This works for both built-in tools and dynamically registered tools.
+
+```typescript
+const active = session.getActiveTools();
+const all = session.getAllTools();
+// [{
+//   name: "read",
+//   description: "Read file contents...",
+//   parameters: ...,
+//   promptGuidelines: ["Use read to examine files instead of cat or sed."],
+//   sourceInfo: { path: "<builtin:read>", source: "builtin", scope: "temporary", origin: "top-level" }
+// }, ...]
+const names = all.map(t => t.name);
+const builtinTools = all.filter((t) => t.sourceInfo.source === "builtin");
+const extensionTools = all.filter((t) => t.sourceInfo.source !== "builtin" && t.sourceInfo.source !== "sdk");
+session.setActiveTools(["read", "bash"]); // Switch to read-only
+```
+
+`session.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, and `sourceInfo`.
+
+`session.refreshTools()` re-applies the base + extension tool set, picking up tools registered mid-session.
+
+Typical `sourceInfo.source` values:
+- `builtin` for built-in tools
+- `sdk` for tools passed via `createAgentSession({ tools })`
+- extension source metadata for tools registered by extensions
+
+#### session.setModel(model) / session.setModelById(provider, modelId)
+
+Set the current model. `setModel` returns `false` if no API key is available for the model. `setModelById` resolves `{ provider, modelId }` and throws if the model is unknown or unauthenticated.
+
+```typescript
+const model = steward.modelRegistry.find("anthropic", "claude-sonnet-4-5");
+if (model) {
+  const success = await session.setModel(model);
+  if (!success) {
+    ui.notify("No API key for this model", "error");
+  }
+}
+```
+
+#### session.getThinkingLevel() / session.setThinkingLevel(level)
+
+Get or set the thinking level. Level is clamped to model capabilities (non-reasoning models always use "off"). Changes emit `thinking_level_select`.
+
+```typescript
+const current = session.getThinkingLevel();  // "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
+await session.setThinkingLevel("high");
+```
+
+#### session.newSession(options?)
+
+Start a new session, optionally with initialization. The new session goes live; other resident sessions stay live (additive).
 
 ```typescript
 const kickoff = "Continue in the replacement session";
 
-const result = await conversation.newSession({
+const result = await session.newSession({
   setup: async (sm) => {
     sm.appendMessage({
       role: "user",
@@ -855,9 +1093,9 @@ const result = await conversation.newSession({
       timestamp: Date.now(),
     });
   },
-  withConversation: async (conversation) => {
-    // Use only the replacement conversation here.
-    await conversation.sendUserMessage(kickoff);
+  withSession: async (newSession) => {
+    // Use only the replacement session here.
+    await newSession.sendUserMessage(kickoff);
   },
 });
 
@@ -867,77 +1105,34 @@ if (result.cancelled) {
 ```
 
 Options:
-- `setup`: mutate the new session's `SessionManager` before `withConversation` runs
-- `withConversation`: run post-switch work against the fresh replacement conversation. Do not use a captured old `conversation`; see [Session replacement lifecycle and footguns](#session-replacement-lifecycle-and-footguns).
+- `setup`: mutate the new session's `SessionManager` before `withSession` runs
+- `withSession`: run post-switch work against the fresh replacement `Session`. Do not use a captured old `session`; see [Session replacement lifecycle and footguns](#session-replacement-lifecycle-and-footguns).
 
-### Session replacement lifecycle and footguns
-
-`withConversation` receives the fresh replacement `Conversation`.
-
-Lifecycle and footguns:
-- `withConversation` runs only after the old session has emitted `session_shutdown`, the old runtime has been torn down, the replacement session has been rebound, and the new extension instance has already received `session_start`.
-- The callback still executes in the original closure, not inside the new extension instance. That means your old extension instance may already have run its shutdown cleanup before `withConversation` starts.
-- A captured old `conversation` is stale after replacement and will throw if used. Use only the `conversation` passed to `withConversation` for session-bound work.
-- Previously extracted raw objects are still your responsibility. For example, if you capture `const sm = conversation.sessionManager` before replacement, `sm` is still the old `SessionManager` object. Do not reuse it after replacement.
-- Code in `withConversation` should assume any state invalidated by your `session_shutdown` handler is already gone. Only capture plain data that survives shutdown cleanly, such as strings, ids, and serialized config.
-
-Safe pattern:
-
-```typescript
-steward.registerCommand("handoff", {
-  handler: async (_args, { conversation }) => {
-    const kickoff = "Continue from the replacement session";
-    await conversation.newSession({
-      withConversation: async (conversation) => {
-        await conversation.sendUserMessage(kickoff);
-      },
-    });
-  },
-});
-```
-
-Unsafe pattern:
-
-```typescript
-steward.registerCommand("handoff", {
-  handler: async (_args, { conversation }) => {
-    const oldSessionManager = conversation.sessionManager;
-    await conversation.newSession({
-      withConversation: async (_conversation) => {
-        // stale old objects: do not do this
-        oldSessionManager.getSessionFile();
-        conversation.sendUserMessage("wrong");
-      },
-    });
-  },
-});
-```
-
-### conversation.reload()
+#### session.reload()
 
 Run the same reload flow as `/reload`.
 
 ```typescript
 steward.registerCommand("reload-runtime", {
   description: "Reload extensions, skills, prompts, and themes",
-  handler: async (_args, { conversation }) => {
-    await conversation.reload();
+  handler: async (_args, { session }) => {
+    await session.reload();
     return;
   },
 });
 ```
 
 Important behavior:
-- `await conversation.reload()` emits `session_shutdown` for the current extension runtime
+- `await session.reload()` emits `session_shutdown` for the current extension runtime
 - It then reloads resources and emits `session_start` with `reason: "reload"`
 - The currently running command handler still continues in the old call frame
-- Code after `await conversation.reload()` still runs from the pre-reload version
-- Code after `await conversation.reload()` must not assume old in-memory extension state is still valid
+- Code after `await session.reload()` still runs from the pre-reload version
+- Code after `await session.reload()` must not assume old in-memory extension state is still valid
 - After the handler returns, future commands/events/tool calls use the new extension version
 
-For predictable behavior, treat reload as terminal for that handler (`await conversation.reload(); return;`).
+For predictable behavior, treat reload as terminal for that handler (`await session.reload(); return;`).
 
-`steward.reload()` runs the same flow without needing a live conversation in scope.
+`steward.reload()` runs the same flow at the agent-global level.
 
 Example tool the LLM can call to trigger reload (tools queue a follow-up command rather than reloading inline):
 
@@ -948,8 +1143,8 @@ import { Type } from "typebox";
 export default function (steward: ExtensionAPI) {
   steward.registerCommand("reload-runtime", {
     description: "Reload extensions, skills, prompts, and themes",
-    handler: async (_args, { conversation }) => {
-      await conversation.reload();
+    handler: async (_args, { session }) => {
+      await session.reload();
       return;
     },
   });
@@ -959,21 +1154,65 @@ export default function (steward: ExtensionAPI) {
     label: "Reload Runtime",
     description: "Reload extensions, skills, prompts, and themes",
     parameters: Type.Object({}),
-    async execute(toolCallId, params, signal, onUpdate, { conversation }) {
-      conversation.sendUserMessage("/reload-runtime", { deliverAs: "followUp" });
+    async execute(toolCallId, params, signal, onUpdate, { session }) {
+      session.sendUserMessage("/reload-runtime", { deliverAs: "followUp" });
       return {
         content: [{ type: "text", text: "Queued /reload-runtime as a follow-up command." }],
+        details: {},
       };
     },
   });
 }
 ```
 
-## API Reference
+### Session replacement lifecycle and footguns
 
-Methods are split across two objects. The agent-global ones live on `steward` (the extension factory argument): registration, provider management, integrations, the shared event bus, and find/create access to conversations and sessions.
+`withSession` receives the fresh replacement `Session`.
 
-Per-conversation actions (`sendMessage`, `sendUserMessage`, `appendEntry`, `setSessionName`, `setActiveTools`, `setModel`, `setThinkingLevel`, etc.) live on `conversation` instead — destructure `{ conversation }` from a handler's context, or use `steward.getConversation()?.<method>(...)` outside a handler. Both are documented together below; each heading names its owning object.
+Lifecycle and footguns:
+- `withSession` runs only after the old session has emitted `session_shutdown`, the old runtime has been torn down, the replacement session has been rebound, and the new extension instance has already received `session_start`.
+- The callback still executes in the original closure, not inside the new extension instance. That means your old extension instance may already have run its shutdown cleanup before `withSession` starts.
+- A captured old `session` is stale after replacement and will throw if used. Use only the `session` passed to `withSession` for session-bound work.
+- Previously extracted raw objects are still your responsibility. For example, if you capture `const sm = session.sessionManager` before replacement, `sm` is still the old `SessionManager` object. Do not reuse it after replacement.
+- Code in `withSession` should assume any state invalidated by your `session_shutdown` handler is already gone. Only capture plain data that survives shutdown cleanly, such as strings, ids, and serialized config.
+
+Safe pattern:
+
+```typescript
+steward.registerCommand("handoff", {
+  handler: async (_args, { session }) => {
+    const kickoff = "Continue from the replacement session";
+    await session.newSession({
+      withSession: async (newSession) => {
+        await newSession.sendUserMessage(kickoff);
+      },
+    });
+  },
+});
+```
+
+Unsafe pattern:
+
+```typescript
+steward.registerCommand("handoff", {
+  handler: async (_args, { session }) => {
+    const oldSessionManager = session.sessionManager;
+    await session.newSession({
+      withSession: async (_newSession) => {
+        // stale old objects: do not do this
+        oldSessionManager.getSessionFile();
+        session.sendUserMessage("wrong");
+      },
+    });
+  },
+});
+```
+
+## ExtensionAPI Methods
+
+Methods are split across two objects. The agent-global ones live on `steward` (the extension factory argument): registration, provider management, integrations, the shared event bus, and session discovery/creation.
+
+Per-session actions (`sendMessage`, `sendUserMessage`, `appendEntry`, `setSessionName`, `setActiveTools`, `setModel`, `setThinkingLevel`, etc.) live on `ctx.session` instead — destructure `{ session }` from a handler's context, or reach a session through `steward.getSession(id)` / `steward.openSession(id)` outside a handler. The `ctx.session` members are documented in [ctx.session members](#ctxsession-members); the `steward.*` methods are documented here.
 
 ### steward.on(event, handler)
 
@@ -983,9 +1222,9 @@ Subscribe to events. See [Events](#events) for event types and return values.
 
 Register a custom tool callable by the LLM. See [Custom Tools](#custom-tools) for full details.
 
-`steward.registerTool()` works both during extension load and after startup. You can call it inside `session_start`, command handlers, or other event handlers. New tools are refreshed immediately in the same session, so they appear in `conversation.getAllTools()` and are callable by the LLM without `/reload`.
+`steward.registerTool()` works both during extension load and after startup. You can call it inside `session_start`, command handlers, or other event handlers. New tools are refreshed immediately in the same session, so they appear in `ctx.session.getAllTools()` and are callable by the LLM without `/reload`.
 
-Use `conversation.setActiveTools()` to enable or disable tools (including dynamically added tools) at runtime.
+Use `ctx.session.setActiveTools()` to enable or disable tools (including dynamically added tools) at runtime.
 
 Use `promptSnippet` to opt a custom tool into a one-line entry in `Available tools`, and `promptGuidelines` to append tool-specific bullets to the default `Guidelines` section when the tool is active.
 
@@ -1012,7 +1251,7 @@ steward.registerTool({
     return args;
   },
 
-  async execute(toolCallId, params, signal, onUpdate, { conversation }) {
+  async execute(toolCallId, params, signal, onUpdate, ctx) {
     // Stream progress
     onUpdate?.({ content: [{ type: "text", text: "Working..." }] });
 
@@ -1028,120 +1267,20 @@ steward.registerTool({
 });
 ```
 
-### conversation.sendMessage(message, options?)
-
-Inject a custom message into the session. This is a per-conversation action: destructure `{ conversation }` from a handler, or use `steward.getConversation()?.sendMessage(...)` outside a handler.
-
-```typescript
-conversation.sendMessage({
-  customType: "my-extension",
-  content: "Message text",
-  display: true,
-  details: { ... },
-}, {
-  triggerTurn: true,
-  deliverAs: "steer",
-});
-```
-
-**Options:**
-- `deliverAs` - Delivery mode:
-  - `"steer"` (default) - Queues the message while streaming. Delivered after the current assistant turn finishes executing its tool calls, before the next LLM call.
-  - `"followUp"` - Waits for agent to finish. Delivered only when agent has no more tool calls.
-  - `"nextTurn"` - Queued for next user prompt. Does not interrupt or trigger anything.
-- `triggerTurn: true` - If agent is idle, trigger an LLM response immediately. Only applies to `"steer"` and `"followUp"` modes (ignored for `"nextTurn"`).
-
-### conversation.sendUserMessage(content, options?)
-
-Send a user message to the agent. Unlike `sendMessage()` which sends custom messages, this sends an actual user message that appears as if typed by the user. Always triggers a turn.
-
-```typescript
-// Simple text message
-conversation.sendUserMessage("What is 2+2?");
-
-// With content array (text + images)
-conversation.sendUserMessage([
-  { type: "text", text: "Describe this image:" },
-  { type: "image", source: { type: "base64", mediaType: "image/png", data: "..." } },
-]);
-
-// During streaming - must specify delivery mode
-conversation.sendUserMessage("Focus on error handling", { deliverAs: "steer" });
-conversation.sendUserMessage("And then summarize", { deliverAs: "followUp" });
-```
-
-**Options:**
-- `deliverAs` - Required when agent is streaming:
-  - `"steer"` - Queues the message for delivery after the current assistant turn finishes executing its tool calls
-  - `"followUp"` - Waits for agent to finish all tools
-
-When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error.
-
-### conversation.appendEntry(customType, data?)
-
-Persist extension state (does NOT participate in LLM context).
-
-```typescript
-steward.on("session_start", async (_event, { conversation }) => {
-  conversation.appendEntry("my-state", { count: 42 });
-
-  // Restore on reload
-  for (const entry of conversation.sessionManager.getEntries()) {
-    if (entry.type === "custom" && entry.customType === "my-state") {
-      // Reconstruct from entry.data
-    }
-  }
-});
-```
-
-### conversation.setSessionName(name)
-
-Set the session display name (shown in session selector instead of first message).
-
-```typescript
-conversation.setSessionName("Refactor auth module");
-```
-
-### conversation.getSessionName()
-
-Get the current session name, if set.
-
-```typescript
-const name = conversation.getSessionName();
-if (name) {
-  console.log(`Session: ${name}`);
-}
-```
-
-### conversation.setLabel(entryId, label)
-
-Set or clear a label on an entry. Labels are user-defined markers for bookmarking and navigation.
-
-```typescript
-// Set a label
-conversation.setLabel(entryId, "checkpoint-before-refactor");
-
-// Clear a label
-conversation.setLabel(entryId, undefined);
-
-// Read labels via sessionManager
-const label = conversation.sessionManager.getLabel(entryId);
-```
-
-Labels persist in the session and survive restarts. Use them to mark important points (turns, checkpoints) in the conversation tree.
-
 ### steward.registerCommand(name, options)
 
 Register a command.
+
+The handler signature is `(args: string, ctx: ExtensionContext) => Promise<void>`. `args` is **always a `string`** — the text after the command name, or `""` when none was given. It is never `undefined`. Use `args.trim()` to test for "no argument" rather than `args || ...`, which falsely implies it can be falsy/undefined.
 
 If multiple extensions register the same command name, Steward keeps them all and assigns numeric invocation suffixes in load order, for example `/review:1` and `/review:2`.
 
 ```typescript
 steward.registerCommand("stats", {
   description: "Show session statistics",
-  handler: async (args, { conversation }) => {
-    const count = conversation.sessionManager.getEntries().length;
-    conversation.ui.notify(`${count} entries`, "info");
+  handler: async (args, { session, ui }) => {
+    const count = session.sessionManager.getEntries().length;
+    ui.notify(`${count} entries`, "info");
   }
 });
 ```
@@ -1159,44 +1298,11 @@ steward.registerCommand("deploy", {
     const filtered = items.filter((i) => i.value.startsWith(prefix));
     return filtered.length > 0 ? filtered : null;
   },
-  handler: async (args, { conversation }) => {
-    conversation.ui.notify(`Deploying: ${args}`, "info");
+  handler: async (args, { ui }) => {
+    ui.notify(`Deploying: ${args}`, "info");
   },
 });
 ```
-
-### conversation.getCommands()
-
-Get the slash commands available for invocation via `prompt` in the current session. Includes extension commands, prompt templates, and skill commands.
-The list order is: extensions first, then templates, then skills.
-
-```typescript
-const commands = conversation.getCommands();
-const bySource = commands.filter((command) => command.source === "extension");
-const userScoped = commands.filter((command) => command.sourceInfo.scope === "user");
-```
-
-Each entry has this shape:
-
-```typescript
-{
-  name: string; // Invokable command name without the leading slash. May be suffixed like "review:1"
-  description?: string;
-  source: "extension" | "prompt" | "skill";
-  sourceInfo: {
-    path: string;
-    source: string;
-    scope: "user" | "project" | "temporary";
-    origin: "package" | "top-level";
-    baseDir?: string;
-  };
-}
-```
-
-Use `sourceInfo` as the canonical provenance field. Do not infer ownership from command names or from ad hoc path parsing.
-
-Built-in interactive commands (like `/model` and `/settings`) are not included here. They are handled only in interactive
-mode and would not execute if sent via `prompt`.
 
 ### steward.registerMessageRenderer(customType, renderer)
 
@@ -1209,15 +1315,15 @@ Register a keyboard shortcut.
 ```typescript
 steward.registerShortcut("ctrl+shift+p", {
   description: "Toggle plan mode",
-  handler: async ({ conversation }) => {
-    conversation.ui.notify("Toggled!");
+  handler: async ({ ui }) => {
+    ui.notify("Toggled!");
   },
 });
 ```
 
-### steward.registerFlag(name, options)
+### steward.registerFlag(name, options) / steward.getFlag(name)
 
-Register a CLI flag.
+Register a CLI flag and read its value.
 
 ```typescript
 steward.registerFlag("plan", {
@@ -1232,56 +1338,6 @@ if (steward.getFlag("plan")) {
 }
 ```
 
-### conversation.getActiveTools() / conversation.getAllTools() / conversation.setActiveTools(names)
-
-Manage active tools. This works for both built-in tools and dynamically registered tools.
-
-```typescript
-const active = conversation.getActiveTools();
-const all = conversation.getAllTools();
-// [{
-//   name: "read",
-//   description: "Read file contents...",
-//   parameters: ...,
-//   promptGuidelines: ["Use read to examine files instead of cat or sed."],
-//   sourceInfo: { path: "<builtin:read>", source: "builtin", scope: "temporary", origin: "top-level" }
-// }, ...]
-const names = all.map(t => t.name);
-const builtinTools = all.filter((t) => t.sourceInfo.source === "builtin");
-const extensionTools = all.filter((t) => t.sourceInfo.source !== "builtin" && t.sourceInfo.source !== "sdk");
-conversation.setActiveTools(["read", "bash"]); // Switch to read-only
-```
-
-`conversation.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, and `sourceInfo`.
-
-Typical `sourceInfo.source` values:
-- `builtin` for built-in tools
-- `sdk` for tools passed via `createAgentSession({ tools })`
-- extension source metadata for tools registered by extensions
-
-### conversation.setModel(model)
-
-Set the current model. Returns `false` if no API key is available for the model.
-
-```typescript
-const model = steward.modelRegistry.find("anthropic", "claude-sonnet-4-5");
-if (model) {
-  const success = await conversation.setModel(model);
-  if (!success) {
-    conversation.ui.notify("No API key for this model", "error");
-  }
-}
-```
-
-### conversation.getThinkingLevel() / conversation.setThinkingLevel(level)
-
-Get or set the thinking level. Level is clamped to model capabilities (non-reasoning models always use "off"). Changes emit `thinking_level_select`.
-
-```typescript
-const current = conversation.getThinkingLevel();  // "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
-conversation.setThinkingLevel("high");
-```
-
 ### steward.cwd / steward.environments / steward.modelRegistry
 
 Agent-global, read-only.
@@ -1290,22 +1346,28 @@ Agent-global, read-only.
 - `steward.environments` - the full run-target map (type `AgentEnvironments`), including the unconfined `host` target. Reach a specific target via `steward.environments.targets[...]`.
 - `steward.modelRegistry` - model registry for API key resolution and provider registration.
 
-### steward.getConversation() / steward.createConversation() / steward.listSessions()
+### steward.getSession(id) / steward.openSession(id) / steward.createSession(options?) / steward.listSessions() / steward.findSessions(filter)
 
-Find or create conversations and list stored sessions.
+Find, open, create, and list sessions. These are the agent-global session-discovery methods — use them from callbacks that run without a handler context (for example, integration `.on(...)` listeners).
 
-- `steward.getConversation()` returns the live `Conversation`, or `undefined` if the agent has not started one. Find-only — never creates. Use it to reach the conversation from callbacks that run without a handler context (for example, integration `.on(...)` listeners).
-- `steward.createConversation()` starts a fresh conversation (new stored session) and makes it the live one.
-- `steward.listSessions()` returns the stored sessions for this agent (newest first).
+- `steward.getSession(id)` returns a resident (in-memory) `Session` by id, or `undefined` when it is not currently resident. Find-only — never creates or loads.
+- `steward.openSession(id)` rehydrates a stored session by id into the resident set (or returns it if already resident), resolving to a `Session`.
+- `steward.createSession(options?)` starts a fresh stored session and makes it resident. Additive — other sessions stay live. Accepts the same `NewSessionOptions` as `session.newSession()`.
+- `steward.listSessions()` returns the stored sessions for this agent (newest first) as `SessionInfo[]`.
+- `steward.findSessions(filter)` locates stored sessions whose folded tags subset-match `filter`, each with `tags` populated — for example, the session another extension bound to an external conversation via `session.setTags(...)`.
 
 ```typescript
-const conversation = steward.getConversation();
-conversation?.sendUserMessage("Triggered from a background callback");
+// Reach (or create) the session bound to an external chat, from a background callback.
+const [match] = await steward.findSessions({ "telegram:chat": String(chatId) });
+const session = match ? await steward.openSession(match.id) : await steward.createSession();
+await session.sendUserMessage("Triggered from a background callback");
 ```
+
+`SessionInfo` has the shape `{ id: string; createdAt: string; tags: Record<string, string> }`. `tags` is `{}` from the plain `listSessions()` listing and populated by `findSessions()`.
 
 ### steward.reload() / steward.shutdown()
 
-- `steward.reload()` runs the same reload flow as `/reload` (see [conversation.reload()](#conversationreload)). Use this when no live conversation is in scope.
+- `steward.reload()` runs the same reload flow as `/reload` (see [session.reload()](#sessionreload)). Use this at the agent-global level.
 - `steward.shutdown()` requests a graceful shutdown of Steward.
   - **Interactive mode:** Deferred until the agent becomes idle (after processing all queued steering and follow-up messages).
   - **Print mode:** No-op. The process exits automatically when all prompts are processed.
@@ -1322,17 +1384,11 @@ steward.on("tool_call", (event) => {
 
 ### steward.registerProvider(name, config) / steward.unregisterProvider(name)
 
-Register, override, or remove a model provider. See the inline examples in the `@opsyhq/steward` type definitions for `ProviderConfig` (custom models, baseUrl overrides, and OAuth).
+Register, override, or remove a model provider. See the inline examples in the `@opsyhq/steward` type definitions for `ProviderConfig` (custom models, baseUrl overrides, and OAuth). To make a registered provider's models usable, log in with `/login` (subscription/OAuth) or supply the provider's API key; OAuth providers registered via `config.oauth` surface in `/login`.
 
 ### steward.getIntegration(name, account?)
 
-Get a handle to a configured integration `(name, account)` — listen to its events with `.on(event, handler)` and invoke its actions with `.call(action, params)`. `account` defaults to `"default"`.
-
-```typescript
-const telegram = steward.getIntegration("telegram", "default");
-telegram.on("message", (msg) => steward.getConversation()?.appendEntry("tg_message", msg));
-await telegram.call("sendMessage", { chatId, text: "hi" });
-```
+Get a handle to a configured integration. See [integrations.md](integrations.md#consuming-an-integration) for the full surface (`.on(event, handler)`, `.call(action, params)`, account resolution, and binding sessions to external conversations).
 
 ### steward.events
 
@@ -1352,9 +1408,9 @@ export default function (steward: ExtensionAPI) {
   let items: string[] = [];
 
   // Reconstruct state from session
-  steward.on("session_start", async (_event, { conversation }) => {
+  steward.on("session_start", async (_event, { session }) => {
     items = [];
-    for (const entry of conversation.sessionManager.getBranch()) {
+    for (const entry of session.sessionManager.getBranch()) {
       if (entry.type === "message" && entry.message.role === "toolResult") {
         if (entry.message.toolName === "my_tool") {
           items = entry.message.details?.items ?? [];
@@ -1366,7 +1422,7 @@ export default function (steward: ExtensionAPI) {
   steward.registerTool({
     name: "my_tool",
     // ...
-    async execute(toolCallId, params, signal, onUpdate, { conversation }) {
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
       items.push("new item");
       return {
         content: [{ type: "text", text: "Added" }],
@@ -1377,13 +1433,33 @@ export default function (steward: ExtensionAPI) {
 }
 ```
 
+### Restoring state written by a command (sendMessage)
+
+The loop above only matches tool-result `details`. State you persisted with `session.sendMessage(...)` from a command does **not** appear as a `toolResult` message — it is stored as a separate entry kind. In `getBranch()` / `getEntries()` a `sendMessage` custom message surfaces as a `CustomMessageEntry`:
+
+```typescript
+steward.on("session_start", (_event, { session }) => {
+  for (const entry of session.sessionManager.getBranch()) {
+    if (entry.type === "custom_message" && entry.customType === "my-extension") {
+      // entry.content - string | (TextContent | ImageContent)[]
+      // entry.details - the payload you passed to sendMessage
+      // entry.display - boolean
+      const restored = entry.details as { notes?: string[] };
+      // reconstruct from restored.notes...
+    }
+  }
+});
+```
+
+> The on-disk entry type is `"custom_message"` with top-level `customType` / `content` / `details` / `display` fields. It is **not** a `type: "message"` entry with `message.role === "custom"`, so a reconstruction loop that only scans `entry.type === "message" && entry.message.role === "toolResult"` (the pattern above) will silently never match command-written state. Match `entry.type === "custom_message"` to restore it. `appendEntry` state is different again — it surfaces as `entry.type === "custom"` with `entry.customType` / `entry.data` (see [session.appendEntry](#sessionappendentrycustomtype-data)).
+
 ## Custom Tools
 
 Register tools the LLM can call via `steward.registerTool()`. Tools appear in the system prompt and can have custom rendering.
 
 Use `promptSnippet` for a short one-line entry in the `Available tools` section in the default system prompt. If omitted, custom tools are left out of that section.
 
-Use `promptGuidelines` to add tool-specific bullets to the default system prompt `Guidelines` section. These bullets are included only while the tool is active (for example, after `conversation.setActiveTools([...])`).
+Use `promptGuidelines` to add tool-specific bullets to the default system prompt `Guidelines` section. These bullets are included only while the tool is active (for example, after `ctx.session.setActiveTools([...])`).
 
 **Important:** `promptGuidelines` bullets are appended flat to the `Guidelines` section with no tool name prefix or grouping. Each guideline must name the tool it refers to — avoid "Use this tool when..." because the LLM cannot tell which tool "this" means. Write "Use my_tool when..." instead.
 
@@ -1402,7 +1478,7 @@ import { withFileMutationQueue } from "@opsyhq/steward";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-async execute(_toolCallId, params, _signal, _onUpdate, { conversation }) {
+async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
   const absolutePath = resolve(steward.cwd, params.path);
 
   return withFileMutationQueue(absolutePath, async () => {
@@ -1451,10 +1527,10 @@ steward.registerTool({
     return args;
   },
 
-  async execute(toolCallId, params, signal, onUpdate, { conversation }) {
+  async execute(toolCallId, params, signal, onUpdate, ctx) {
     // Check for cancellation
     if (signal?.aborted) {
-      return { content: [{ type: "text", text: "Cancelled" }] };
+      return { content: [{ type: "text", text: "Cancelled" }], details: {} };
     }
 
     // Stream progress updates
@@ -1481,6 +1557,8 @@ steward.registerTool({
   renderResult(result, options, theme, context) { ... },
 });
 ```
+
+**`details` is required:** `execute()` (and the `onUpdate?.(...)` partial-result callback) return an `AgentToolResult<T>`, whose `details: T` field is **non-optional**. Every return — including early-exit and cancellation paths — must include `details`. If your tool has no structured payload, return `details: {}` (or `details: undefined` when `T` permits it). Omitting it is a type error, not a defaulted field.
 
 **Signaling errors:** To mark a tool execution as failed (sets `isError: true` on the result and reports it to the LLM), throw an error from `execute`. Returning a value never sets the error flag regardless of what properties you include in the return object.
 
@@ -1535,7 +1613,7 @@ steward.registerTool({
       edits: [...(input.edits ?? []), { oldText: input.oldText, newText: input.newText }],
     };
   },
-  async execute(toolCallId, params, signal, onUpdate, { conversation }) {
+  async execute(toolCallId, params, signal, onUpdate, ctx) {
     // params now matches the current schema
     return {
       content: [{ type: "text", text: `Applying ${params.edits.length} edit block(s)` }],
@@ -1548,11 +1626,6 @@ steward.registerTool({
 ### Overriding Built-in Tools
 
 Extensions can override built-in tools (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) by registering a tool with the same name. Interactive mode displays a warning when this happens.
-
-```bash
-# Extension's read tool replaces built-in read
-steward <name> -e ./tool-override.ts
-```
 
 **Rendering:** Built-in renderer inheritance is resolved per slot. Execution override and rendering override are independent. If your override omits `renderCall`, the built-in `renderCall` is used. If your override omits `renderResult`, the built-in `renderResult` is used. If your override omits both, the built-in renderer is used automatically (syntax highlighting, diffs, etc.). This lets you wrap built-in tools for logging or access control without reimplementing the UI.
 
@@ -1584,9 +1657,10 @@ For `user_bash`, return `{ environment }` from the handler to run the command in
 The bash tool also supports a spawn hook to adjust the command, cwd, or env before execution:
 
 ```typescript
-import { createBashTool } from "@opsyhq/steward";
+import { createBashTool, createHostEnvironment } from "@opsyhq/steward";
 
-const bashTool = createBashTool(cwd, {
+const env = createHostEnvironment(steward.cwd);
+const bashTool = createBashTool(env, {
   spawnHook: ({ command, cwd, env }) => ({
     command: `source ~/.profile\n${command}`,
     cwd: `/mnt/sandbox${cwd}`,
@@ -1614,7 +1688,7 @@ import {
   DEFAULT_MAX_LINES, // 2000
 } from "@opsyhq/steward";
 
-async execute(toolCallId, params, signal, onUpdate, { conversation }) {
+async execute(toolCallId, params, signal, onUpdate, ctx) {
   const output = await runCommand();
 
   // Apply truncation
@@ -1766,7 +1840,7 @@ Use namespaced keybinding ids:
 - App ids use the `app.*` namespace, for example `app.tools.expand`, `app.editor.external`, `app.session.rename`
 - Shared TUI ids use the `tui.*` namespace, for example `tui.select.confirm`, `tui.select.cancel`, `tui.input.tab`
 
-Custom editors and `conversation.ui.custom()` components receive `keybindings: KeybindingsManager` as an injected argument. They should use that injected manager directly instead of calling `getKeybindings()` or `setKeybindings()`.
+Custom editors and `ctx.ui.custom()` components receive `keybindings: KeybindingsManager` as an injected argument. They should use that injected manager directly instead of calling `getKeybindings()` or `setKeybindings()`.
 
 #### Best Practices
 
@@ -1788,25 +1862,25 @@ If a slot renderer is not defined or throws:
 
 ## Custom UI
 
-Extensions can interact with users via `conversation.ui` methods and customize how messages/tools render.
+Extensions can interact with users via `ctx.ui` methods and customize how messages/tools render.
 
 ### Dialogs
 
 ```typescript
 // Select from options
-const choice = await conversation.ui.select("Pick one:", ["A", "B", "C"]);
+const choice = await ui.select("Pick one:", ["A", "B", "C"]);
 
 // Confirm dialog
-const ok = await conversation.ui.confirm("Delete?", "This cannot be undone");
+const ok = await ui.confirm("Delete?", "This cannot be undone");
 
 // Text input
-const name = await conversation.ui.input("Name:", "placeholder");
+const name = await ui.input("Name:", "placeholder");
 
 // Multi-line editor
-const text = await conversation.ui.editor("Edit:", "prefilled text");
+const text = await ui.editor("Edit:", "prefilled text");
 
 // Notification (non-blocking)
-conversation.ui.notify("Done!", "info");  // "info" | "warning" | "error"
+ui.notify("Done!", "info");  // "info" | "warning" | "error"
 ```
 
 #### Timed Dialogs with Countdown
@@ -1815,7 +1889,7 @@ Dialogs support a `timeout` option that auto-dismisses with a live countdown dis
 
 ```typescript
 // Dialog shows "Title (5s)" → "Title (4s)" → ... → auto-dismisses at 0
-const confirmed = await conversation.ui.confirm(
+const confirmed = await ui.confirm(
   "Timed Confirmation",
   "This dialog will auto-cancel in 5 seconds. Confirm?",
   { timeout: 5000 }
@@ -1841,7 +1915,7 @@ For more control (e.g., to distinguish timeout from user cancel), use `AbortSign
 const controller = new AbortController();
 const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-const confirmed = await conversation.ui.confirm(
+const confirmed = await ui.confirm(
   "Timed Confirmation",
   "This dialog will auto-cancel in 5 seconds. Confirm?",
   { signal: controller.signal }
@@ -1862,55 +1936,55 @@ if (confirmed) {
 
 ```typescript
 // Status in footer (persistent until cleared)
-conversation.ui.setStatus("my-ext", "Processing...");
-conversation.ui.setStatus("my-ext", undefined);  // Clear
+ui.setStatus("my-ext", "Processing...");
+ui.setStatus("my-ext", undefined);  // Clear
 
 // Working loader (shown during streaming)
-conversation.ui.setWorkingMessage("Thinking deeply...");
-conversation.ui.setWorkingMessage();  // Restore default
-conversation.ui.setWorkingVisible(false);  // Hide the built-in working loader row entirely
-conversation.ui.setWorkingVisible(true);   // Show the built-in working loader row
+ui.setWorkingMessage("Thinking deeply...");
+ui.setWorkingMessage();  // Restore default
+ui.setWorkingVisible(false);  // Hide the built-in working loader row entirely
+ui.setWorkingVisible(true);   // Show the built-in working loader row
 
 // Working indicator (shown during streaming)
-conversation.ui.setWorkingIndicator({ frames: [conversation.ui.theme.fg("accent", "●")] });  // Static dot
-conversation.ui.setWorkingIndicator({
+ui.setWorkingIndicator({ frames: [ui.theme.fg("accent", "●")] });  // Static dot
+ui.setWorkingIndicator({
   frames: [
-    conversation.ui.theme.fg("dim", "·"),
-    conversation.ui.theme.fg("muted", "•"),
-    conversation.ui.theme.fg("accent", "●"),
-    conversation.ui.theme.fg("muted", "•"),
+    ui.theme.fg("dim", "·"),
+    ui.theme.fg("muted", "•"),
+    ui.theme.fg("accent", "●"),
+    ui.theme.fg("muted", "•"),
   ],
   intervalMs: 120,
 });
-conversation.ui.setWorkingIndicator({ frames: [] });  // Hide indicator
-conversation.ui.setWorkingIndicator();  // Restore default spinner
+ui.setWorkingIndicator({ frames: [] });  // Hide indicator
+ui.setWorkingIndicator();  // Restore default spinner
 
 // Widget above editor (default)
-conversation.ui.setWidget("my-widget", ["Line 1", "Line 2"]);
+ui.setWidget("my-widget", ["Line 1", "Line 2"]);
 // Widget below editor
-conversation.ui.setWidget("my-widget", ["Line 1", "Line 2"], { placement: "belowEditor" });
-conversation.ui.setWidget("my-widget", (tui, theme) => new Text(theme.fg("accent", "Custom"), 0, 0));
-conversation.ui.setWidget("my-widget", undefined);  // Clear
+ui.setWidget("my-widget", ["Line 1", "Line 2"], { placement: "belowEditor" });
+ui.setWidget("my-widget", (tui, theme) => new Text(theme.fg("accent", "Custom"), 0, 0));
+ui.setWidget("my-widget", undefined);  // Clear
 
 // Custom footer (replaces built-in footer entirely)
-conversation.ui.setFooter((tui, theme) => ({
+ui.setFooter((tui, theme) => ({
   render(width) { return [theme.fg("dim", "Custom footer")]; },
   invalidate() {},
 }));
-conversation.ui.setFooter(undefined);  // Restore built-in footer
+ui.setFooter(undefined);  // Restore built-in footer
 
 // Terminal title
-conversation.ui.setTitle("steward - my-agent");
+ui.setTitle("steward - my-agent");
 
 // Editor text
-conversation.ui.setEditorText("Prefill text");
-const current = conversation.ui.getEditorText();
+ui.setEditorText("Prefill text");
+const current = ui.getEditorText();
 
 // Paste into editor (triggers paste handling, including collapse for large content)
-conversation.ui.pasteToEditor("pasted content");
+ui.pasteToEditor("pasted content");
 
 // Stack custom autocomplete behavior on top of the built-in provider
-conversation.ui.addAutocompleteProvider((current) => ({
+ui.addAutocompleteProvider((current) => ({
   triggerCharacters: ["#"],
   async getSuggestions(lines, line, col, options) {
     const beforeCursor = (lines[line] ?? "").slice(0, col);
@@ -1933,34 +2007,34 @@ conversation.ui.addAutocompleteProvider((current) => ({
 }));
 
 // Tool output expansion
-const wasExpanded = conversation.ui.getToolsExpanded();
-conversation.ui.setToolsExpanded(true);
-conversation.ui.setToolsExpanded(wasExpanded);
+const wasExpanded = ui.getToolsExpanded();
+ui.setToolsExpanded(true);
+ui.setToolsExpanded(wasExpanded);
 
 // Custom editor (vim mode, emacs mode, etc.)
-conversation.ui.setEditorComponent((tui, theme, keybindings) => new VimEditor(tui, theme, keybindings));
-const currentEditor = conversation.ui.getEditorComponent();
-conversation.ui.setEditorComponent((tui, theme, keybindings) =>
+ui.setEditorComponent((tui, theme, keybindings) => new VimEditor(tui, theme, keybindings));
+const currentEditor = ui.getEditorComponent();
+ui.setEditorComponent((tui, theme, keybindings) =>
   new WrappedEditor(tui, theme, keybindings, currentEditor?.(tui, theme, keybindings))
 );
-conversation.ui.setEditorComponent(undefined);  // Restore default editor
+ui.setEditorComponent(undefined);  // Restore default editor
 
 // Theme management (see themes.md for creating themes)
-const themes = conversation.ui.getAllThemes();  // [{ name: "dark", path: "/..." | undefined }, ...]
-const lightTheme = conversation.ui.getTheme("light");  // Load without switching
-const result = conversation.ui.setTheme("light");  // Switch by name
+const themes = ui.getAllThemes();  // [{ name: "dark", path: "/..." | undefined }, ...]
+const lightTheme = ui.getTheme("light");  // Load without switching
+const result = ui.setTheme("light");  // Switch by name
 if (!result.success) {
-  conversation.ui.notify(`Failed: ${result.error}`, "error");
+  ui.notify(`Failed: ${result.error}`, "error");
 }
-conversation.ui.setTheme(lightTheme!);  // Or switch by Theme object
-conversation.ui.theme.fg("accent", "styled text");  // Access current theme
+ui.setTheme(lightTheme!);  // Or switch by Theme object
+ui.theme.fg("accent", "styled text");  // Access current theme
 ```
 
-Custom working-indicator frames are rendered verbatim. If you want colors, add them to the frame strings yourself, for example with `conversation.ui.theme.fg(...)`.
+Custom working-indicator frames are rendered verbatim. If you want colors, add them to the frame strings yourself, for example with `ui.theme.fg(...)`.
 
 ### Autocomplete Providers
 
-Use `conversation.ui.addAutocompleteProvider()` to stack custom autocomplete logic on top of the built-in slash-command and path provider. Set `triggerCharacters` for custom natural triggers such as `$`.
+Use `ui.addAutocompleteProvider()` to stack custom autocomplete logic on top of the built-in slash-command and path provider. Set `triggerCharacters` for custom natural triggers such as `$`.
 
 Typical pattern:
 
@@ -1970,8 +2044,8 @@ Typical pattern:
 - delegate `applyCompletion(...)` unless you need custom insertion behavior
 
 ```typescript
-steward.on("session_start", (_event, { conversation }) => {
-  conversation.ui.addAutocompleteProvider((current) => ({
+steward.on("session_start", (_event, { ui }) => {
+  ui.addAutocompleteProvider((current) => ({
     triggerCharacters: ["#"],
     async getSuggestions(lines, cursorLine, cursorCol, options) {
       const line = lines[cursorLine] ?? "";
@@ -2005,12 +2079,12 @@ A typical real-world provider preloads the latest open GitHub issues with `gh is
 
 ### Custom Components
 
-For complex UI, use `conversation.ui.custom()`. This temporarily replaces the editor with your component until `done()` is called:
+For complex UI, use `ctx.ui.custom()`. This temporarily replaces the editor with your component until `done()` is called:
 
 ```typescript
 import { Text, Component } from "@opsyhq/tui";
 
-const result = await conversation.ui.custom<boolean>((tui, theme, keybindings, done) => {
+const result = await ui.custom<boolean>((tui, theme, keybindings, done) => {
   const text = new Text("Press Enter to confirm, Escape to cancel", 1, 1);
 
   text.onKey = (key) => {
@@ -2058,9 +2132,9 @@ class VimEditor extends CustomEditor {
 }
 
 export default function (steward: ExtensionAPI) {
-  steward.on("session_start", (_event, { conversation }) => {
-    conversation.ui.setEditorComponent((_tui, theme, keybindings) =>
-      new VimEditor(theme, keybindings)
+  steward.on("session_start", (_event, { ui }) => {
+    ui.setEditorComponent((tui, theme, keybindings) =>
+      new VimEditor(tui, theme, keybindings)
     );
   });
 }
@@ -2069,15 +2143,15 @@ export default function (steward: ExtensionAPI) {
 **Key points:**
 - Extend `CustomEditor` (not base `Editor`) to get app keybindings (escape to abort, ctrl+d, model switching)
 - Call `super.handleInput(data)` for keys you don't handle
-- Factory receives `theme` and `keybindings` from the app
-- Use `conversation.ui.getEditorComponent()` before `setEditorComponent()` to wrap the previously configured custom editor
-- Pass `undefined` to restore default: `conversation.ui.setEditorComponent(undefined)`
+- Factory receives `(tui, theme, keybindings)` from the app
+- Use `ui.getEditorComponent()` before `setEditorComponent()` to wrap the previously configured custom editor
+- Pass `undefined` to restore default: `ui.setEditorComponent(undefined)`
 
 To compose with another extension that already replaced the editor, capture the previous factory before setting yours:
 
 ```typescript
-const previous = conversation.ui.getEditorComponent();
-conversation.ui.setEditorComponent((tui, theme, keybindings) =>
+const previous = ui.getEditorComponent();
+ui.setEditorComponent((tui, theme, keybindings) =>
   new MyEditor(tui, theme, keybindings, { base: previous?.(tui, theme, keybindings) })
 );
 ```
@@ -2102,16 +2176,18 @@ steward.registerMessageRenderer("my-extension", (message, options, theme) => {
 });
 ```
 
-Messages are sent via `conversation.sendMessage()`:
+Messages are sent via `ctx.session.sendMessage()`:
 
 ```typescript
-conversation.sendMessage({
+session.sendMessage({
   customType: "my-extension",  // Matches registerMessageRenderer
   content: "Status update",
   display: true,               // Show in TUI
   details: { ... },            // Available in renderer
 });
 ```
+
+**Default rendering (no registered renderer).** Registering a renderer is optional. A `display: true` custom message with no renderer for its `customType` still appears in the TUI: it renders in a boxed message with a bold `[customType]` label header, followed by the message `content` rendered as markdown (text parts only, for array content). So you can see `/command` output without registering anything; register a renderer only when you want custom styling, an expanded view, or to surface `details`. The same fallback applies if your renderer throws or returns nothing. Messages sent with `display: false` are not rendered at all.
 
 ### Theme Colors
 
@@ -2138,12 +2214,13 @@ For syntax highlighting in custom tool renderers:
 ```typescript
 import { highlightCode, getLanguageFromPath } from "@opsyhq/steward";
 
-// Highlight code with explicit language
-const highlighted = highlightCode("const x = 1;", "typescript", theme);
+// Highlight code with explicit language (returns an array of styled lines;
+// uses the active theme internally, so no theme argument is passed)
+const lines: string[] = highlightCode("const x = 1;", "typescript");
 
 // Auto-detect language from file path
 const lang = getLanguageFromPath("/path/to/file.rs");  // "rust"
-const highlighted = highlightCode(code, lang, theme);
+const highlightedLines = highlightCode(code, lang);
 ```
 
 ## Error Handling
@@ -2154,9 +2231,101 @@ const highlighted = highlightCode(code, lang, theme);
 
 ## Mode Behavior
 
-| Mode | `conversation.mode` | `conversation.hasUI` | Notes |
-|------|---------------------|----------------------|-------|
-| Interactive | `"tui"` | `true` | Full TUI with terminal rendering |
-| Print (`-p`) | `"print"` | `false` | Extensions run but can't prompt |
+`ctx.mode` is one of four run modes. Use `ctx.mode === "tui"` before any terminal-only feature (`custom()`, component factories, terminal input, direct TUI rendering). In non-`tui` modes, dialog methods resolve to their inert defaults (`select`/`input`/`editor` return `undefined`, `confirm` returns `false`) and fire-and-forget UI calls (`notify`, `setStatus`, `setWidget`, `setTitle`) are no-ops, so guarding by mode keeps an extension from blocking on UI that cannot appear.
 
-Use `conversation.mode === "tui"` before TUI-specific features (`custom()`, component factories, terminal input). Use `conversation.hasUI` before dialog and notification methods.
+| Mode | `ctx.mode` | Notes |
+|------|-----------|-------|
+| Interactive | `"tui"` | Full TUI with terminal rendering; dialogs and custom components are available |
+| RPC | `"rpc"` | Programmatic host drives the session over RPC; no terminal UI |
+| JSON | `"json"` | Structured JSON stream output; no terminal UI |
+| Print (`-p`) | `"print"` | One-shot/headless; extensions run but cannot prompt the user |
+
+## Worked Examples
+
+These examples combine the pieces above against the real `@opsyhq/steward` surface.
+
+### Bind a session to an external conversation
+
+Use folded tags plus `steward.findSessions` / `openSession` / `createSession` to route an external chat to a stable session, with no live `ctx` in scope.
+
+```typescript
+import type { ExtensionAPI } from "@opsyhq/steward";
+
+export default function (steward: ExtensionAPI) {
+  const telegram = steward.getIntegration("telegram", "default");
+
+  telegram.on("message", async (msg) => {
+    const key = String(msg.chatId);
+    const [match] = await steward.findSessions({ "telegram:chat": key });
+
+    const session = match
+      ? await steward.openSession(match.id)
+      : await steward.createSession({
+          withSession: async (s) => { s.setTags({ "telegram:chat": key }); },
+        });
+
+    await session.sendUserMessage(msg.text);
+  });
+}
+```
+
+See [integrations.md](integrations.md#consuming-an-integration) for the integration handle surface.
+
+### Permission gate on a custom tool
+
+Block a dangerous bash command unless the user confirms, using `ctx.ui` and the `tool_call` block result.
+
+```typescript
+import type { ExtensionAPI } from "@opsyhq/steward";
+import { isToolCallEventType } from "@opsyhq/steward";
+
+export default function (steward: ExtensionAPI) {
+  steward.on("tool_call", async (event, { ui, mode }) => {
+    if (!isToolCallEventType("bash", event)) return;
+    if (!/\brm\s+-rf\b/.test(event.input.command)) return;
+
+    // In non-tui modes confirm() resolves false, which blocks fail-safe.
+    const ok = mode === "tui"
+      ? await ui.confirm("Dangerous command", `Run: ${event.input.command}?`)
+      : false;
+
+    if (!ok) return { block: true, reason: "Blocked rm -rf" };
+  });
+}
+```
+
+### Persist and restore extension state
+
+Store state in tool result `details`, then rebuild it from the branch on `session_start`.
+
+```typescript
+import type { ExtensionAPI } from "@opsyhq/steward";
+import { Type } from "typebox";
+
+export default function (steward: ExtensionAPI) {
+  let todos: string[] = [];
+
+  steward.on("session_start", (_event, { session }) => {
+    todos = [];
+    for (const entry of session.sessionManager.getBranch()) {
+      if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "todo_add") {
+        todos = (entry.message.details as { todos?: string[] })?.todos ?? todos;
+      }
+    }
+  });
+
+  steward.registerTool({
+    name: "todo_add",
+    label: "Add Todo",
+    description: "Append an item to the session todo list",
+    parameters: Type.Object({ text: Type.String() }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      todos.push(params.text);
+      return {
+        content: [{ type: "text", text: `Added: ${params.text}` }],
+        details: { todos: [...todos] },
+      };
+    },
+  });
+}
+```

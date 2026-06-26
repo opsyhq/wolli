@@ -4,7 +4,7 @@
  * This integration faces the network, holds the bot token, and emits a `message`
  * event per inbound Telegram message. It does not touch sessions or the agent; the
  * paired extension (`telegram-chat.ts`, declared under `steward.extensions`) maps those
- * events into a chat loop and is copied into the agent on onboarding. See
+ * events into a chat loop and is resolved in place by the package manager. See
  * `INTEGRATION.md` for the transport-vs-mapping split.
  *
  * Transport is grammY long polling (`@grammyjs/runner`'s `run`), so no public URL
@@ -12,7 +12,7 @@
  *
  * ## Install + configure
  *
- *   steward integrations add <agent> ./plugins/telegram
+ *   steward <agent> plugins install ./plugins/telegram
  *   # then paste the BotFather token into the guided prompt — that's it.
  *
  * Onboarding asks for the BotFather token directly, verifies it with a live `getMe()`,
