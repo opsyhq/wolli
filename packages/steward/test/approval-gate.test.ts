@@ -2,7 +2,7 @@
 // non-rememberable commands, and the fail-closed default when the dialog returns nothing.
 
 import { describe, expect, it } from "vitest";
-import { createApprovalGate } from "../src/core/approval/approval-gate.ts";
+import { createApprovalGate, createBypassGate } from "../src/core/approval/approval-gate.ts";
 import { ApprovalStore } from "../src/core/approval/approval-storage.ts";
 import type { ApprovalRequest } from "../src/core/approval/types.ts";
 import type { ExtensionUIContext } from "../src/core/extensions/types.ts";
@@ -72,5 +72,12 @@ describe("createApprovalGate", () => {
 
 		await gate(req("bash -c 'echo hi'"));
 		expect(ui.lastOptions).toEqual(["Allow once", "Deny"]);
+	});
+});
+
+describe("createBypassGate", () => {
+	it("auto-approves any request as a one-shot grant", async () => {
+		const gate = createBypassGate();
+		expect(await gate(req("rm -rf /"))).toEqual({ allowed: true, scope: "once" });
 	});
 });

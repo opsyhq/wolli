@@ -33,3 +33,8 @@ export function createApprovalGate(getUI: () => ExtensionUIContext, approvals: A
 		}
 	};
 }
+
+/** Auto-approves every escalation without prompting. `scope:"once"` so nothing is persisted. */
+export function createBypassGate(): ApprovalGate {
+	return async () => ({ allowed: true, scope: "once" });
+}
