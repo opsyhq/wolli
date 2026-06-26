@@ -98,7 +98,7 @@ export class SystemdServiceManager implements ServiceManager {
 		this.userctl(["stop", systemdUnitName(name)]);
 	}
 
-	isRunning(name: string): boolean {
+	async isRunning(name: string): Promise<boolean> {
 		if (!existsSync(unitPath(name))) return false;
 		return this.userctl(["is-active", "--quiet", systemdUnitName(name)]).status === 0;
 	}

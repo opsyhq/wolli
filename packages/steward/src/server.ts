@@ -17,19 +17,18 @@
  * service unit invoke `runDaemon`.
  */
 
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { type ServerType, serve } from "@hono/node-server";
 import type { AgentHarnessEvent } from "@opsyhq/agent";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
-import { APP_NAME, ENV_DAEMON_TOKEN, getAgentDir, VERSION } from "./config.ts";
+import { APP_NAME, getAgentDir, getDaemonHost, getDaemonToken } from "./config.ts";
 import { createAgentPluginManager } from "./core/agent-plugin-manager.ts";
 import { AgentRuntime, type AgentSession } from "./core/agent-runtime.ts";
 import { AgentSettingsManager } from "./core/agent-settings-manager.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
-import { loadDaemonConfig, saveDaemonConfig } from "./core/daemon-config.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -213,6 +212,7 @@ async function handleCommand(
 	runtime: AgentRuntime,
 	session: AgentSession,
 	cmd: DaemonCommand,
+	requestShutdown: () => void,
 ): Promise<DaemonResponse> {
 	const id = cmd.id;
 	const harness = session.harness;
@@ -248,21 +248,19 @@ async function handleCommand(
 			await runtime.reload();
 			return ok(id, "reload");
 		case "deploy": {
-			// The human's single Yes. Flip the latch, register the OS service unit, and create a fresh
-			// deployed session — persisted to disk, so the supervised daemon (which resumes the most-recent
-			// session) picks up THIS fresh one. For a real backend, start the supervised daemon now: it
-			// binds its own ephemeral port while this birth daemon keeps serving its own. With the `none`
-			// backend there is no supervisor, so this daemon stays on the fresh session.
+			// The human's single Yes: flip the latch, enable the OS unit, and create a fresh deployed
+			// session (persisted, so the restarted daemon resumes it). The client drives the stop-then-start
+			// handoff on the fixed port; with the `none` backend this daemon just stays on the fresh session.
 			const name = runtime.config.name;
-			const serviceManager = getServiceManager();
 			AgentSettingsManager.create(name).setAgentDeployed();
-			serviceManager.install(name);
+			getServiceManager().install(name);
 			const deployed = await runtime.createSession();
-			if (serviceManager.kind !== "none") {
-				serviceManager.start(name);
-			}
 			return ok(id, "deploy", sessionSnapshot(deployed));
 		}
+		case "shutdown":
+			// Ack first; self-exit on a microtask so the response flushes before the listener closes.
+			queueMicrotask(() => requestShutdown());
+			return ok(id, "shutdown");
 
 		// Model / thinking
 		case "set_thinking_level":
@@ -409,19 +407,20 @@ async function createAgentRuntime(name: string): Promise<{ runtime: AgentRuntime
 }
 
 export interface RunDaemonOptions {
-	/** Manual bind-port override for this run (debugging); 0/absent → OS-assigned ephemeral. */
+	/** Manual bind-port override for this run (debugging); absent → the fixed port from agent.json. */
 	port?: number;
 }
 
 /**
  * The `daemon <name>` runner: start the agent's `AgentRuntime`, then wrap it in a long-running HTTP/SSE
- * server clients attach to. Binds an OS-assigned ephemeral port (unless `--port` overrides), writes the
- * pid/port/token to the temp-dir config so clients can find it, and blocks on the listening server until
- * a signal tears it down. The `@opsyhq/cli` client's hidden `daemon` subcommand and every OS service unit
- * invoke this.
+ * server clients attach to. Binds the agent's fixed host/port (from agent.json, allocated at creation;
+ * `STEWARD_DAEMON_HOST` and `--port` override) and blocks on the listening server until a signal — or a
+ * `shutdown` command — tears it down. The `@opsyhq/cli` client's hidden `daemon` subcommand and every OS
+ * service unit invoke this.
  */
 export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Promise<number> {
-	if (!AgentSettingsManager.get(name)) {
+	const store = AgentSettingsManager.get(name);
+	if (!store) {
 		process.stderr.write(`Unknown agent "${name}". Create it with: ${APP_NAME} new ${name}\n`);
 		return 1;
 	}
@@ -433,41 +432,28 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
 	}
 	const { runtime } = built;
 
-	// Every daemon binds an OS-assigned ephemeral port and writes it back to the temp config, where
-	// clients discover it. This is also what lets deploy stand up the supervised daemon alongside the
-	// still-serving birth daemon: two ephemeral binds never collide. `--port` is a manual override.
-	const port = opts.port ?? 0;
+	// Fixed per-agent port + token from agent.json; `--port` and STEWARD_DAEMON_TOKEN override.
+	const port = opts.port ?? store.config.port;
+	const token = getDaemonToken() || store.config.token;
 
-	// Bearer token for the wire: the STEWARD_DAEMON_TOKEN override, else a fresh 256-bit hex.
-	const token = process.env[ENV_DAEMON_TOKEN]?.trim() || randomBytes(32).toString("hex");
-	saveDaemonConfig(name, {
-		pid: process.pid,
-		port,
-		token,
-		startedAt: new Date().toISOString(),
-		version: VERSION,
-	});
-
-	const server = await runDaemonMode(runtime, { port, token });
-
-	// serve()'s callback patched the config with the OS-assigned port once listening.
-	const boundPort = loadDaemonConfig(name)?.port ?? port;
-	console.log(`${APP_NAME} daemon for "${name}" listening on http://127.0.0.1:${boundPort}`);
-
+	let server: ServerType | undefined;
 	let shuttingDown = false;
-	const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+	const shutdown = async (exitCode: number): Promise<void> => {
 		if (shuttingDown) return;
 		shuttingDown = true;
-		server.close();
+		server?.close();
 		await runtime.cleanup();
-		// No deleteDaemonConfig here: the config is a health-validated discovery hint, and a deploy
-		// handoff's supervised successor may already own it.
-		process.exit(signal === "SIGINT" ? 130 : 143);
+		process.exit(exitCode);
 	};
-	process.on("SIGTERM", () => void shutdown("SIGTERM"));
-	process.on("SIGINT", () => void shutdown("SIGINT"));
 
-	// The listening server keeps the event loop alive; block until a signal exits.
+	server = await runDaemonMode(runtime, { port, token, requestShutdown: () => void shutdown(0) });
+
+	console.log(`${APP_NAME} daemon for "${name}" listening on http://${getDaemonHost()}:${port}`);
+
+	process.on("SIGTERM", () => void shutdown(143));
+	process.on("SIGINT", () => void shutdown(130));
+
+	// The listening server keeps the event loop alive; block until a signal/shutdown exits.
 	return new Promise<number>(() => {});
 }
 
@@ -479,7 +465,7 @@ export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Prom
  */
 export async function runDaemonMode(
 	runtime: AgentRuntime,
-	{ port, token }: { port: number; token: string },
+	{ port, token, requestShutdown }: { port: number; token: string; requestShutdown: () => void },
 ): Promise<ServerType> {
 	const startedAt = new Date().toISOString();
 
@@ -935,7 +921,7 @@ export async function runDaemonMode(
 			return c.json(err(cmd.id, cmd.type, e instanceof Error ? e.message : String(e)));
 		}
 		try {
-			return c.json(await handleCommand(runtime, session, cmd));
+			return c.json(await handleCommand(runtime, session, cmd, requestShutdown));
 		} catch (e) {
 			return c.json(err(cmd.id, cmd.type, e instanceof Error ? e.message : String(e)));
 		}
@@ -961,17 +947,17 @@ export async function runDaemonMode(
 	});
 
 	// ---- Serve ------------------------------------------------------------
-	// Patch the resolved port back into the config — for `port: 0` the real port is only known once the
-	// OS assigns it (read off serve()'s `info.port`).
-	const writePortBack = (port: number): void => {
-		const existing = loadDaemonConfig(runtime.config.name);
-		if (existing) saveDaemonConfig(runtime.config.name, { ...existing, port });
-	};
-
-	const server = await new Promise<ServerType>((resolve) => {
-		const s = serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, (info) => {
-			writePortBack(info.port);
-			resolve(s);
+	// Bind the agent's fixed host/port. The port is known up front (no patch-back); a clash with another
+	// process surfaces as EADDRINUSE, which we report clearly and fail loud on.
+	const host = getDaemonHost();
+	const server = await new Promise<ServerType>((resolve, reject) => {
+		const s = serve({ fetch: app.fetch, hostname: host, port }, () => resolve(s));
+		s.on("error", (e: NodeJS.ErrnoException) => {
+			if (e.code === "EADDRINUSE") {
+				console.error(`${APP_NAME} daemon for "${runtime.config.name}": port ${port} already in use.`);
+				process.exit(1);
+			}
+			reject(e);
 		});
 	});
 

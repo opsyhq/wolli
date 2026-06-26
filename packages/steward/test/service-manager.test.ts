@@ -5,18 +5,31 @@
  * not register a real OS service).
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ENV_SERVICE_MANAGER } from "../src/config.ts";
-import { deleteDaemonConfig, saveDaemonConfig } from "../src/core/daemon-config.ts";
+import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { buildLaunchAgentPlist, launchAgentLabel } from "../src/core/service/launchd.ts";
 import { daemonLaunchCommand, detectServiceManager, getServiceManager } from "../src/core/service/service-manager.ts";
 import { buildSystemdUnit, systemdUnitName } from "../src/core/service/systemd.ts";
 
 const AGENT = "svc-test-agent";
 
+let home: string;
+
+beforeEach(() => {
+	home = mkdtempSync(join(tmpdir(), "steward-svc-"));
+	process.env.STEWARD_HOME = home;
+	process.env.STEWARD_SHARED_DIR = join(home, "shared");
+});
+
 afterEach(() => {
 	delete process.env[ENV_SERVICE_MANAGER];
-	deleteDaemonConfig(AGENT);
+	delete process.env.STEWARD_HOME;
+	delete process.env.STEWARD_SHARED_DIR;
+	rmSync(home, { recursive: true, force: true });
 });
 
 describe("detectServiceManager", () => {
@@ -103,32 +116,25 @@ describe("buildSystemdUnit", () => {
 describe("none backend", () => {
 	const none = getServiceManager("none");
 
-	it("install/uninstall are inert (no OS supervisor)", () => {
+	it("install/uninstall/start are inert (no OS supervisor)", () => {
 		expect(() => none.install(AGENT)).not.toThrow();
 		expect(() => none.uninstall(AGENT)).not.toThrow();
+		expect(() => none.start(AGENT)).not.toThrow();
 	});
 
-	it("reports running from a live config pid", () => {
-		expect(none.isRunning(AGENT)).toBe(false);
-		saveDaemonConfig(AGENT, {
-			pid: process.pid,
-			port: 1,
-			token: "t",
-			startedAt: new Date().toISOString(),
-			version: "0",
-		});
-		expect(none.isRunning(AGENT)).toBe(true);
+	it("isRunning is false for an unknown agent", async () => {
+		expect(await none.isRunning("no-such-agent-xyz")).toBe(false);
 	});
 
-	it("stop clears a stale config whose pid is gone", () => {
-		saveDaemonConfig(AGENT, {
-			pid: 2147483647, // far above any real pid → SIGTERM throws ESRCH
-			port: 1,
-			token: "t",
-			startedAt: new Date().toISOString(),
-			version: "0",
-		});
-		none.stop(AGENT);
-		expect(none.isRunning(AGENT)).toBe(false);
+	it("isRunning is false when no daemon is listening on the agent's port", async () => {
+		AgentSettingsManager.createAgent({ name: AGENT });
+		// No daemon was started, so the agent's fixed port has nothing answering /health.
+		expect(await none.isRunning(AGENT)).toBe(false);
+	});
+
+	it("stop is a best-effort no-op when nothing is running", async () => {
+		AgentSettingsManager.createAgent({ name: AGENT });
+		expect(() => none.stop(AGENT)).not.toThrow();
+		expect(() => none.stop("no-such-agent-xyz")).not.toThrow();
 	});
 });

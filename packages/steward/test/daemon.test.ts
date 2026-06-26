@@ -57,11 +57,19 @@ function makeRuntime(): { runtime: AgentRuntime; registration: ReturnType<typeof
  * Build + start a runtime, wrap it in a daemon on an ephemeral port (which opens the initial session),
  * then capture that session's id. Returns the faux provider.
  */
+let shutdownRequests = 0;
+
 async function startDaemon(opts: { deploy?: boolean } = {}): Promise<ReturnType<typeof registerFauxProvider>> {
 	if (opts.deploy) AgentSettingsManager.create(AGENT).setAgentDeployed();
 	const { runtime, registration } = makeRuntime();
 	activeRuntime = runtime;
-	activeServer = await runDaemonMode(runtime, { port: 0, token: TOKEN });
+	activeServer = await runDaemonMode(runtime, {
+		port: 0,
+		token: TOKEN,
+		requestShutdown: () => {
+			shutdownRequests++;
+		},
+	});
 	sessionId = (await agentState()).sessions[0].sessionId;
 	return registration;
 }
@@ -237,6 +245,7 @@ beforeEach(() => {
 	process.env.STEWARD_SERVICE_MANAGER = "none";
 	// The package/onboarding verbs install local fixtures only — never let resolution hit the network.
 	process.env.STEWARD_OFFLINE = "1";
+	shutdownRequests = 0;
 	AgentSettingsManager.createAgent({ name: AGENT });
 });
 
@@ -322,6 +331,15 @@ describe("daemon HTTP/SSE server", () => {
 		const res = await control({ type: "does_not_exist" });
 		expect(res).toMatchObject({ success: false });
 		expect(res.error).toContain("Unknown command");
+	});
+
+	it("acks a shutdown command and then triggers the daemon's self-exit", async () => {
+		await startDaemon();
+		const res = await control({ type: "shutdown" });
+		expect(res).toMatchObject({ command: "shutdown", success: true });
+		// The exit runs on a microtask after the response flushes; let it drain.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(shutdownRequests).toBe(1);
 	});
 
 	it("emits a hello snapshot when a client attaches", async () => {

@@ -1,11 +1,14 @@
 /**
  * none backend — the unsupported-OS fallback (no launchd/systemd). There is no supervisor, so
  * `install`/`start` are inert: the daemon that handled deploy keeps running for this session, and a
- * client re-spawns one on demand (`Agent.open`) rather than the backend supervising it.
- * `stop`/`isRunning` act directly on the daemon config's pid.
+ * client re-spawns one on demand (`Agent.connect`) rather than the backend supervising it.
+ * `stop`/`isRunning` act on the agent's fixed port (from agent.json): a `/health` probe for liveness,
+ * a `shutdown` request to stop.
  */
 
-import { deleteDaemonConfig, loadDaemonConfig } from "../daemon-config.ts";
+import { isHealthy, requestDaemonShutdown } from "../../client.ts";
+import { getDaemonHost, getDaemonToken } from "../../config.ts";
+import { AgentSettingsManager } from "../agent-settings-manager.ts";
 import type { ServiceManager } from "./service-manager.ts";
 
 export class NoneServiceManager implements ServiceManager {
@@ -20,28 +23,21 @@ export class NoneServiceManager implements ServiceManager {
 	}
 
 	start(_name: string): void {
-		// No supervisor to start; the daemon lifecycle is the client's (Agent.open) concern.
+		// No supervisor to start; the daemon lifecycle is the client's (Agent.connect) concern.
 	}
 
 	stop(name: string): void {
-		const config = loadDaemonConfig(name);
-		if (!config) return;
-		try {
-			process.kill(config.pid, "SIGTERM");
-		} catch {
-			// Already gone — drop the stale config so a future probe doesn't trust it.
-			deleteDaemonConfig(name);
-		}
+		const store = AgentSettingsManager.get(name);
+		if (!store) return;
+		void requestDaemonShutdown(
+			`http://${getDaemonHost()}:${store.config.port}`,
+			getDaemonToken() || store.config.token,
+		);
 	}
 
-	isRunning(name: string): boolean {
-		const config = loadDaemonConfig(name);
-		if (!config) return false;
-		try {
-			process.kill(config.pid, 0);
-			return true;
-		} catch {
-			return false;
-		}
+	async isRunning(name: string): Promise<boolean> {
+		const store = AgentSettingsManager.get(name);
+		if (!store) return false;
+		return isHealthy(`http://${getDaemonHost()}:${store.config.port}`);
 	}
 }

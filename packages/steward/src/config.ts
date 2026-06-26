@@ -69,8 +69,12 @@ export const ENV_HOME = `${APP_NAME.toUpperCase()}_HOME`;
 export const ENV_SHARED_AGENT_DIR = `${APP_NAME.toUpperCase()}_SHARED_DIR`;
 
 // Override for a daemon's bearer token, e.g. STEWARD_DAEMON_TOKEN. When set, the
-// daemon authenticates with this value instead of minting an ephemeral one.
+// daemon authenticates with this value instead of the token persisted in agent.json.
 export const ENV_DAEMON_TOKEN = `${APP_NAME.toUpperCase()}_DAEMON_TOKEN`;
+
+// Override for the host the daemon binds, e.g. STEWARD_DAEMON_HOST. Defaults to loopback
+// (`127.0.0.1`); set `0.0.0.0` to make the daemon reachable off-box (VPS use).
+export const ENV_DAEMON_HOST = `${APP_NAME.toUpperCase()}_DAEMON_HOST`;
 
 // Force the OS service backend, e.g. STEWARD_SERVICE_MANAGER=none|launchd|systemd. Overrides
 // the platform autodetect — `none` keeps deploy from registering a real launchd/systemd unit
@@ -215,17 +219,22 @@ export function getWorkspaceDir(name: string): string {
 }
 
 // =============================================================================
-// Ephemeral daemon runtime state (OS temp dir, cleared on reboot)
+// Daemon runtime (host/token/logs)
 // =============================================================================
 
-/** Root dir for daemon runtime descriptors, e.g. $TMPDIR/steward-daemons. */
+/** Root dir for daemon log files (launchd/systemd stdout/stderr), e.g. $TMPDIR/steward-daemons. */
 export function getDaemonRuntimeDir(): string {
 	return join(tmpdir(), `${APP_NAME}-daemons`);
 }
 
-/** Path to an agent's ephemeral daemon descriptor (the running daemon's pid/port/token). */
-export function getAgentDaemonPath(name: string): string {
-	return join(getDaemonRuntimeDir(), `${name}.json`);
+/** The host the daemon binds (STEWARD_DAEMON_HOST), defaulting to loopback. */
+export function getDaemonHost(): string {
+	return process.env[ENV_DAEMON_HOST]?.trim() || "127.0.0.1";
+}
+
+/** The STEWARD_DAEMON_TOKEN override, if set — callers fall back to the agent's persisted token. */
+export function getDaemonToken(): string | undefined {
+	return process.env[ENV_DAEMON_TOKEN]?.trim();
 }
 
 // =============================================================================

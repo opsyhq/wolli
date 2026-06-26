@@ -12,6 +12,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
@@ -168,13 +169,17 @@ function sharedDefaultModelReference(): string | undefined {
 // agent.json schema
 // =============================================================================
 
-export const AGENT_SCHEMA_VERSION = 1;
+export const AGENT_SCHEMA_VERSION = 2;
 
 export const AgentConfigSchema = Type.Object({
 	schemaVersion: Type.Number(),
 	name: Type.String(),
 	purpose: Type.String(),
 	createdAt: Type.String(),
+	/** The fixed port the agent's daemon binds, allocated at creation (required; missing → fails loud). */
+	port: Type.Number(),
+	/** The bearer token for the daemon's `/events` + `/control`, minted at creation. */
+	token: Type.String(),
 	/**
 	 * The single human-held latch. `null` (or absent) means the agent is still in
 	 * its birth phase — it maintains its own files but may not act unattended. An
@@ -287,12 +292,24 @@ export class AgentSettingsManager {
 		mkdirSync(getSessionsDir(name), { recursive: true });
 		mkdirSync(getWorkspaceDir(name), { recursive: true });
 
+		// A random high port, skipping any already claimed by another agent. Not a live bind: the daemon
+		// fails loud on EADDRINUSE if it is taken when it actually binds.
+		const usedPorts = new Set(AgentSettingsManager.list().map((store) => store.config.port));
+		let port = 0;
+		for (let i = 0; i < 1000 && !port; i++) {
+			const candidate = 20000 + Math.floor(Math.random() * 40001);
+			if (!usedPorts.has(candidate)) port = candidate;
+		}
+		if (!port) throw new Error("Could not allocate a free port for the agent.");
+
 		const config: AgentConfig = {
 			schemaVersion: AGENT_SCHEMA_VERSION,
 			name,
 			purpose: purpose ?? "",
 			createdAt: new Date().toISOString(),
 			deployedAt: null,
+			port,
+			token: randomBytes(32).toString("hex"),
 			...(model ? { settings: { defaultModel: model } } : {}),
 		};
 		AgentSettingsManager.saveConfig(name, config);

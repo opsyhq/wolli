@@ -1,11 +1,10 @@
 /**
  * `new <name>` — create an agent, then drop into its birth conversation.
  *
- * Creates the home tree, then opens a daemon client and runs the interactive birth session seeded
- * with the opener. Birth is daemon-first: abandoning a forming agent leaves only a temp daemon
- * config + a detached daemon that idles out — no OS service unit (those land only at deploy). The
- * daemon binds an OS-assigned ephemeral port and writes it to the temp config; clients discover it
- * there, so no port is reserved up front.
+ * Creates the home tree (allocating the agent's fixed port + token into agent.json), then opens a
+ * daemon client and runs the interactive birth session seeded with the opener. Birth is daemon-first:
+ * abandoning a forming agent leaves only a detached daemon that idles out — no OS service unit (those
+ * land only at deploy). The daemon binds the fixed port from agent.json.
  */
 
 import { APP_NAME, Steward } from "@opsyhq/steward";

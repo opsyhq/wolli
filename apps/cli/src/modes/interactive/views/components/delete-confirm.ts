@@ -46,18 +46,18 @@ export class DeleteConfirm implements Component, Focusable {
 			return;
 		}
 		if (matchesKey(data, "enter")) {
-			this.submit();
+			void this.submit();
 			return;
 		}
 		this.input.handleInput(data);
 	}
 
-	private submit(): void {
+	private async submit(): Promise<void> {
 		if (this.input.getValue().trim() !== this.agent.name) {
 			this.status.setText(theme.fg("warning", `Name doesn't match. Type ${this.agent.name} to confirm.`));
 			return;
 		}
-		const result = this.agent.delete();
+		const result = await this.agent.delete();
 		if (!result.ok) {
 			this.status.setText(theme.fg("warning", result.error ?? "Delete failed."));
 			return;

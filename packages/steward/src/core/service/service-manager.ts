@@ -4,7 +4,13 @@
  * (the unsupported-OS fallback). The unit runs the same `daemon <name>` subcommand a client spawns.
  */
 
-import { ENV_DAEMON_TOKEN, ENV_HOME, ENV_SERVICE_MANAGER, ENV_SHARED_AGENT_DIR } from "../../config.ts";
+import {
+	ENV_DAEMON_HOST,
+	ENV_DAEMON_TOKEN,
+	ENV_HOME,
+	ENV_SERVICE_MANAGER,
+	ENV_SHARED_AGENT_DIR,
+} from "../../config.ts";
 import { LaunchdServiceManager } from "./launchd.ts";
 import { NoneServiceManager } from "./none.ts";
 import { SystemdServiceManager } from "./systemd.ts";
@@ -21,8 +27,8 @@ export interface ServiceManager {
 	start(name: string): void;
 	/** Stop the running service without removing its unit. */
 	stop(name: string): void;
-	/** Whether the service's daemon is loaded/active. */
-	isRunning(name: string): boolean;
+	/** Whether the service's daemon is loaded/active. (`none` probes `/health`, hence async.) */
+	isRunning(name: string): Promise<boolean>;
 }
 
 /** Pick a backend from the platform, honoring the `STEWARD_SERVICE_MANAGER` override. */
@@ -49,17 +55,16 @@ export function getServiceManager(kind: ServiceKind = detectServiceManager()): S
 /**
  * The command the OS unit runs: the current node binary + this CLI's entry + `daemon <name>`.
  * Resolved from `process.execPath` + `process.argv[1]` — both point at the running `steward` CLI
- * inside the daemon that installs. No port: the supervised daemon binds an OS-assigned ephemeral
- * port and writes it to the temp config, where clients discover it.
+ * inside the daemon that installs. No port: the supervised daemon reads its fixed port from agent.json.
  */
 export function daemonLaunchCommand(name: string): string[] {
 	return [process.execPath, process.argv[1], "daemon", name];
 }
 
-/** The subset of env the service inherits so it resolves the same homes/credentials as the installer. */
+/** The subset of env the service inherits so it resolves the same homes/credentials/bind host as the installer. */
 export function serviceEnvironment(): Record<string, string> {
 	const environment: Record<string, string> = {};
-	for (const key of [ENV_HOME, ENV_SHARED_AGENT_DIR, ENV_DAEMON_TOKEN]) {
+	for (const key of [ENV_HOME, ENV_SHARED_AGENT_DIR, ENV_DAEMON_TOKEN, ENV_DAEMON_HOST]) {
 		const value = process.env[key];
 		if (value) environment[key] = value;
 	}

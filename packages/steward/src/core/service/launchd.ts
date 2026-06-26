@@ -107,7 +107,7 @@ export class LaunchdServiceManager implements ServiceManager {
 		spawnSync("launchctl", ["bootout", `${domainTarget()}/${launchAgentLabel(name)}`], { encoding: "utf-8" });
 	}
 
-	isRunning(name: string): boolean {
+	async isRunning(name: string): Promise<boolean> {
 		if (!existsSync(plistPath(name))) return false;
 		const result = spawnSync("launchctl", ["print", `${domainTarget()}/${launchAgentLabel(name)}`], {
 			encoding: "utf-8",

@@ -1,6 +1,6 @@
 /**
  * `delete <name>` — type-the-name confirm, then tear the agent down via `Agent.delete()` (uninstall
- * the OS service, stop any running daemon, remove the home dir, drop the daemon config).
+ * the OS service, shut down any running daemon, remove the home dir).
  */
 
 import { createInterface } from "node:readline";
@@ -28,7 +28,7 @@ export async function runDelete(positionals: string[]): Promise<number> {
 		return 1;
 	}
 
-	const result = agent.delete();
+	const result = await agent.delete();
 	if (!result.ok) {
 		process.stderr.write(`Failed to delete agent "${name}": ${result.error ?? "unknown error"}\n`);
 		return 1;

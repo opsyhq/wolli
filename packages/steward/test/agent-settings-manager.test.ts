@@ -52,6 +52,23 @@ describe("AgentSettingsManager round-trip", () => {
 		expect(loaded).toEqual(created);
 	});
 
+	it("allocates a fixed port + token at creation, distinct per agent", () => {
+		const a = AgentSettingsManager.createAgent({ name: "alpha" }).config;
+		const b = AgentSettingsManager.createAgent({ name: "beta" }).config;
+		expect(typeof a.port).toBe("number");
+		expect(a.port).toBeGreaterThan(0);
+		expect(a.token).toMatch(/^[0-9a-f]{64}$/);
+		expect(b.port).not.toBe(a.port);
+		expect(b.token).not.toBe(a.token);
+	});
+
+	it("fails loud loading a config missing the required port/token", () => {
+		AgentSettingsManager.createAgent({ name: "old" });
+		const legacy = { schemaVersion: 1, name: "old", purpose: "", createdAt: new Date().toISOString() };
+		writeFileSync(getAgentConfigPath("old"), `${JSON.stringify(legacy, null, 2)}\n`, "utf-8");
+		expect(() => AgentSettingsManager.create("old")).toThrow(/Invalid agent config/);
+	});
+
 	it("defaults purpose to an empty string when omitted (the agent distills it in-chat)", () => {
 		const created = AgentSettingsManager.createAgent({ name: "scribe" }).config;
 		expect(created.purpose).toBe("");
@@ -137,7 +154,14 @@ describe("delete", () => {
 describe("legacy configs", () => {
 	it("loads a pre-deployedAt config (treated as not deployed)", () => {
 		AgentSettingsManager.createAgent({ name: "old" });
-		const legacy = { schemaVersion: 1, name: "old", purpose: "old agent", createdAt: new Date().toISOString() };
+		const legacy = {
+			schemaVersion: 1,
+			name: "old",
+			purpose: "old agent",
+			createdAt: new Date().toISOString(),
+			port: 23456,
+			token: "legacy-token",
+		};
 		writeFileSync(getAgentConfigPath("old"), `${JSON.stringify(legacy, null, 2)}\n`, "utf-8");
 		const store = AgentSettingsManager.create("old");
 		expect(store.config.deployedAt).toBeUndefined();

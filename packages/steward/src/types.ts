@@ -48,6 +48,9 @@ export type DaemonCommand =
 	// The single post-confirm deploy commit: flip the latch, install the OS service, swap to a
 	// fresh deployed session. Returns the fresh snapshot (config now reads as deployed).
 	| { id?: string; type: "deploy" }
+	// Ask the daemon to self-exit gracefully (the pid-free replacement for SIGTERM): it acks, then
+	// closes its listener and exits, freeing the fixed port. Drives the stop-then-start deploy handoff.
+	| { id?: string; type: "shutdown" }
 
 	// State
 	| { id?: string; type: "get_state" }
