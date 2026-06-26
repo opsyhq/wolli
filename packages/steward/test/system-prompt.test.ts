@@ -81,7 +81,29 @@ describe("birth instruction (deploy)", () => {
 		AgentSettingsManager.create("scribe").setAgentDeployed();
 		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
 		expect(prompt).not.toContain("not yet deployed");
-		expect(prompt).toContain("deployed: you may now act");
+		expect(prompt).toContain("## Extending yourself");
+	});
+});
+
+describe("always-on guidance", () => {
+	it("includes the Extending yourself block whether forming or deployed", () => {
+		const forming = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
+		expect(forming).toContain("## Extending yourself");
+
+		AgentSettingsManager.create("scribe").setAgentDeployed();
+		const deployed = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
+		expect(deployed).toContain("## Extending yourself");
+	});
+
+	it("enumerates the full doc set", () => {
+		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
+		expect(prompt).toContain("docs/extensions.md");
+		expect(prompt).toContain("docs/integrations.md");
+		expect(prompt).toContain("docs/skills.md");
+		expect(prompt).toContain("docs/prompt-templates.md");
+		expect(prompt).toContain("docs/themes.md");
+		expect(prompt).toContain("docs/plugins.md");
+		expect(prompt).toContain("docs/sdk.md");
 	});
 });
 

@@ -21,8 +21,8 @@
  *      discarded for message_end; persistence rides the interceptor, so a mutating message_end uses it).
  */
 
-import { readFileSync } from "node:fs";
-import { basename } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import {
 	type Api,
 	type AssistantMessage,
@@ -1122,6 +1122,10 @@ export class AgentRuntime {
 		// Read curated files ONCE and freeze them into the prompt. Mid-session edits persist to disk
 		// but only enter a session's prompt when it is next built.
 		const { soul, memory, user } = loadMemory(name);
+		// Agent-home override, appended last to the frozen prompt. Agent-home ONLY — no project path,
+		// no trust gate. Re-read on each session build, like curated memory (frozen-snapshot rule).
+		const appendPath = join(agentDir, "APPEND_SYSTEM.md");
+		const appendSystemPrompt = existsSync(appendPath) ? readFileSync(appendPath, "utf-8") : undefined;
 		const selectedTools = [...baseTools, ...extensionTools].map((t) => t.name);
 		const systemPromptOptions: BuildSystemPromptOptions = {
 			config,
@@ -1131,6 +1135,7 @@ export class AgentRuntime {
 			user,
 			skills: this._skills,
 			selectedTools,
+			appendSystemPrompt,
 		};
 		const systemPrompt = buildSystemPrompt(systemPromptOptions);
 		return { baseTools, extensionTools, systemPrompt, systemPromptOptions };
