@@ -228,6 +228,23 @@ describe("extension subsystem wiring", () => {
 		await runtime.cleanup();
 	});
 
+	it("appends APPEND_SYSTEM.md from the agent home to the system prompt", async () => {
+		writeFileSync(join(getAgentDir(AGENT), "APPEND_SYSTEM.md"), "OVERRIDE: speak only in haiku.", "utf-8");
+		const { runtime, registration } = makeRuntime();
+		await runtime.start();
+		let captured = "";
+		registration.setResponses([
+			(context) => {
+				captured = context.systemPrompt ?? "";
+				return fauxAssistantMessage("ok");
+			},
+		]);
+		const conversation = await runtime.createSession();
+		await conversation.harness.prompt("hello");
+		expect(captured).toContain("OVERRIDE: speak only in haiku.");
+		await runtime.cleanup();
+	});
+
 	it("registers extension tools on the harness and fires session_start on create", async () => {
 		const { runtime } = makeRuntime();
 		await runtime.start();
