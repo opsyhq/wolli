@@ -2,6 +2,7 @@ import {
 	type AssistantMessage,
 	clampThinkingLevel,
 	type ImageContent,
+	isContextOverflow,
 	type Model,
 	streamSimple,
 	type UserMessage,
@@ -18,7 +19,15 @@ import type {
 	ThinkingLevel,
 } from "../types.ts";
 import { collectEntriesForBranchSummary, generateBranchSummary } from "./compaction/branch-summarization.ts";
-import { compact, DEFAULT_COMPACTION_SETTINGS, prepareCompaction } from "./compaction/compaction.ts";
+import {
+	calculateContextTokens,
+	compact,
+	DEFAULT_COMPACTION_SETTINGS,
+	estimateContextTokens,
+	getLatestCompactionEntry,
+	prepareCompaction,
+	shouldCompact,
+} from "./compaction/compaction.ts";
 import { convertToLlm } from "./messages.ts";
 import { formatPromptTemplateInvocation } from "./prompt-templates.ts";
 import { formatSkillInvocation } from "./skills.ts";
@@ -32,6 +41,7 @@ import type {
 	AgentHarnessResources,
 	AgentHarnessStreamOptions,
 	AgentHarnessStreamOptionsPatch,
+	CompactionSettings,
 	ExecutionEnv,
 	NavigateTreeResult,
 	PendingSessionWrite,
@@ -188,6 +198,7 @@ export class AgentHarness<
 	private systemPrompt: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>["systemPrompt"];
 	private streamOptions: AgentHarnessStreamOptions;
 	private getApiKeyAndHeaders?: AgentHarnessOptions["getApiKeyAndHeaders"];
+	private getCompactionSettings: () => CompactionSettings;
 	private resources: AgentHarnessResources<TSkill, TPromptTemplate>;
 	private tools = new Map<string, TTool>();
 	private activeToolNames: string[];
@@ -199,6 +210,14 @@ export class AgentHarness<
 	private handlers = new Map<string, Set<AgentHarnessHandler>>();
 	// Optional pre-persistence interceptor for `message_end`. See onMessageEnd().
 	private messageEndInterceptor?: (message: AgentMessage) => Promise<void> | void;
+	// Auto-compaction state. `_lastAssistantMessage` is the latest assistant message_end,
+	// inspected by the post-run compaction check. `_overflowRecoveryAttempted` enforces the
+	// one-shot overflow compact-and-retry per user turn. The two abort controllers back
+	// `abortCompaction()` (manual + auto).
+	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
+	private _overflowRecoveryAttempted = false;
+	private _compactionAbortController?: AbortController;
+	private _autoCompactionAbortController?: AbortController;
 
 	constructor(options: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>) {
 		this.env = options.env;
@@ -207,6 +226,7 @@ export class AgentHarness<
 		this.streamOptions = cloneStreamOptions(options.streamOptions);
 		this.systemPrompt = options.systemPrompt;
 		this.getApiKeyAndHeaders = options.getApiKeyAndHeaders;
+		this.getCompactionSettings = options.getCompactionSettings ?? (() => DEFAULT_COMPACTION_SETTINGS);
 		this.validateUniqueNames(
 			(options.tools ?? []).map((tool) => tool.name),
 			"Duplicate tool name(s)",
@@ -520,6 +540,16 @@ export class AgentHarness<
 				await this.messageEndInterceptor(event.message);
 			}
 			await this.session.appendMessage(event.message);
+			// Track the finalized assistant message for the post-run compaction check. A
+			// successful (non-error) response clears the one-shot overflow-recovery latch so a
+			// later overflow in the same turn can recover; a failed retry keeps it set, ending
+			// the one-shot. Mirrors coding-agent's `_handleAgentEvent`.
+			if (event.message.role === "assistant") {
+				this._lastAssistantMessage = event.message;
+				if (event.message.stopReason !== "error") {
+					this._overflowRecoveryAttempted = false;
+				}
+			}
 			await this.emitAny(event, signal);
 			return;
 		}
@@ -565,7 +595,6 @@ export class AgentHarness<
 		text: string,
 		options?: { images?: ImageContent[] },
 	): Promise<AssistantMessage> {
-		let activeTurnState = turnState;
 		let messages: AgentMessage[] = [createUserMessage(text, options?.images)];
 		if (this.nextTurnQueue.length > 0) {
 			const queuedMessages = this.nextTurnQueue.splice(0);
@@ -586,60 +615,306 @@ export class AgentHarness<
 		});
 		if (beforeResult?.messages) messages = [...messages, ...beforeResult.messages];
 
-		const abortController = new AbortController();
-		const getTurnState = () => activeTurnState;
-		const setTurnState = (nextTurnState: AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>) => {
-			activeTurnState = nextTurnState;
-		};
-		this.runAbortController = abortController;
-		const runResultPromise = (async () => {
-			try {
-				return await runAgentLoop(
-					messages,
-					this.createContext(turnState, beforeResult?.systemPrompt),
-					this.createLoopConfig(getTurnState, setTurnState),
-					(event) => this.handleAgentEvent(event, abortController.signal),
-					abortController.signal,
-					this.createStreamFn(getTurnState),
-				);
-			} catch (error) {
-				try {
-					return await this.emitRunFailure(
-						activeTurnState.model,
-						error,
-						abortController.signal.aborted,
-						abortController.signal,
-					);
-				} catch (failureError) {
-					const cause = new AggregateError(
-						[toError(error), toError(failureError)],
-						"Agent run failed and failure reporting failed",
-					);
-					throw new AgentHarnessError("unknown", cause.message, cause);
-				}
-			}
-		})();
-		try {
-			const newMessages = await runResultPromise;
-			for (let i = newMessages.length - 1; i >= 0; i--) {
-				const message = newMessages[i]!;
-				if (message.role === "assistant") {
-					return message;
-				}
-			}
-			throw new AgentHarnessError("invalid_state", "AgentHarness prompt completed without an assistant message");
-		} finally {
-			try {
+		let activeTurnState = turnState;
+		let systemPrompt = beforeResult?.systemPrompt;
+		let lastAssistant: AssistantMessage | undefined;
+		// First pass runs the user turn; each later pass realises coding-agent's `agent.continue()`,
+		// re-entering the loop with the freshly-compacted context and no new user message. The loop
+		// repeats while `_handlePostAgentRun` reports an auto-compaction retry (overflow) or queued
+		// messages still to deliver. Mirrors coding-agent's `_runAgentPrompt` loop.
+		let firstPass = true;
+		do {
+			if (!firstPass) {
 				await this.flushPendingSessionWrites();
-			} finally {
-				this.runAbortController = undefined;
+				activeTurnState = await this.createTurnState();
+				// Drop the persisted trailing overflow entry so an overflow retry resumes from the last
+				// valid (user/tool-result) message — the harness has no mutable agent.state.messages to
+				// splice. `isContextOverflow` is the discriminator: it is true for every overflow shape
+				// (error, silent "stop", or "length"), and false for a successful threshold response whose
+				// queued messages will end the context on a user message instead.
+				const contextMessages = activeTurnState.messages;
+				const last = contextMessages[contextMessages.length - 1];
+				if (last?.role === "assistant" && isContextOverflow(last, this.model?.contextWindow ?? 0)) {
+					activeTurnState.messages = contextMessages.slice(0, -1);
+				}
+				messages = [];
+				systemPrompt = undefined;
 			}
+			firstPass = false;
+
+			const passTurnState = activeTurnState;
+			const abortController = new AbortController();
+			const getTurnState = () => activeTurnState;
+			const setTurnState = (nextTurnState: AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>) => {
+				activeTurnState = nextTurnState;
+			};
+			this.runAbortController = abortController;
+			this.phase = "turn";
+			const runResultPromise = (async () => {
+				try {
+					return await runAgentLoop(
+						messages,
+						this.createContext(passTurnState, systemPrompt),
+						this.createLoopConfig(getTurnState, setTurnState),
+						(event) => this.handleAgentEvent(event, abortController.signal),
+						abortController.signal,
+						this.createStreamFn(getTurnState),
+					);
+				} catch (error) {
+					try {
+						return await this.emitRunFailure(
+							activeTurnState.model,
+							error,
+							abortController.signal.aborted,
+							abortController.signal,
+						);
+					} catch (failureError) {
+						const cause = new AggregateError(
+							[toError(error), toError(failureError)],
+							"Agent run failed and failure reporting failed",
+						);
+						throw new AgentHarnessError("unknown", cause.message, cause);
+					}
+				}
+			})();
+			try {
+				const newMessages = await runResultPromise;
+				lastAssistant = undefined;
+				for (let i = newMessages.length - 1; i >= 0; i--) {
+					const message = newMessages[i]!;
+					if (message.role === "assistant") {
+						lastAssistant = message;
+						break;
+					}
+				}
+				if (!lastAssistant) {
+					throw new AgentHarnessError(
+						"invalid_state",
+						"AgentHarness prompt completed without an assistant message",
+					);
+				}
+			} finally {
+				try {
+					await this.flushPendingSessionWrites();
+				} finally {
+					this.runAbortController = undefined;
+				}
+			}
+		} while (await this._handlePostAgentRun());
+		return lastAssistant!;
+	}
+
+	/**
+	 * Post-run hook: inspect the last assistant message and run an auto-compaction when it overflows
+	 * (compact-and-retry) or trips the threshold. Returns true when the caller should continue the
+	 * turn (a retry is pending, or queued messages await delivery). Compaction subset of
+	 * coding-agent's `_handlePostAgentRun`.
+	 */
+	private async _handlePostAgentRun(): Promise<boolean> {
+		const msg = this._lastAssistantMessage;
+		this._lastAssistantMessage = undefined;
+		if (!msg) return false;
+		if (await this._checkCompaction(msg)) return true;
+		return this.hasQueuedMessages();
+	}
+
+	/** Whether either delivery queue (steer/follow-up) still holds a message. Mirrors `agent.hasQueuedMessages()`. */
+	private hasQueuedMessages(): boolean {
+		return this.steerQueue.length > 0 || this.followUpQueue.length > 0;
+	}
+
+	/**
+	 * Decide whether compaction is needed after a turn and run it.
+	 *
+	 * Two cases:
+	 * 1. Overflow: the model returned a context-overflow error -> compact, then auto-retry once.
+	 * 2. Threshold: context is over the configured threshold -> compact, no auto-retry.
+	 *
+	 * @param assistantMessage The assistant message to check.
+	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt checks). Default: true.
+	 */
+	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
+		const settings = this.getCompactionSettings();
+		if (!settings.enabled) return false;
+
+		// Skip if the message was aborted (user cancelled) - unless skipAbortedCheck is false.
+		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return false;
+
+		const contextWindow = this.model?.contextWindow ?? 0;
+
+		// Skip the overflow check if the message came from a different model (e.g. the user switched
+		// from a smaller- to a larger-context model after the overflow): the stale error must not
+		// trigger compaction for the new model.
+		const sameModel =
+			this.model && assistantMessage.provider === this.model.provider && assistantMessage.model === this.model.id;
+
+		// Skip both checks when this assistant message predates the latest compaction boundary, so a
+		// stale pre-compaction usage/error can't re-trigger compaction on the first post-compaction turn.
+		const compactionEntry = getLatestCompactionEntry(await this.session.getBranch());
+		const assistantIsFromBeforeCompaction =
+			compactionEntry !== null && assistantMessage.timestamp <= new Date(compactionEntry.timestamp).getTime();
+		if (assistantIsFromBeforeCompaction) {
+			return false;
+		}
+
+		// Case 1: Overflow - the model returned a context-overflow error.
+		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
+			if (this._overflowRecoveryAttempted) {
+				// Deliberately a lone `compaction_end` with no preceding `compaction_start`: the one-shot
+				// recovery already ran on the first overflow, so this only reports the terminal failure.
+				await this.emitOwn({
+					type: "compaction_end",
+					reason: "overflow",
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+					errorMessage:
+						"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+				});
+				return false;
+			}
+
+			this._overflowRecoveryAttempted = true;
+			// The error message stays persisted for history but is dropped from the retry context by the
+			// continuation pass in executeTurn (the harness has no mutable agent.state.messages to splice).
+			return await this._runAutoCompaction("overflow", true);
+		}
+
+		// Case 2: Threshold - context is getting large. For error messages (no usage data), estimate
+		// from the last successful response so sessions that hit persistent API errors can still compact.
+		let contextTokens: number;
+		if (assistantMessage.stopReason === "error") {
+			const { messages } = await this.session.buildContext();
+			const estimate = estimateContextTokens(messages);
+			if (estimate.lastUsageIndex === null) return false;
+			// Verify the usage source is post-compaction; kept pre-compaction messages carry stale
+			// usage (the old, larger context) that would falsely trip compaction right after one ran.
+			const usageMsg = messages[estimate.lastUsageIndex]!;
+			if (
+				compactionEntry &&
+				usageMsg.role === "assistant" &&
+				usageMsg.timestamp <= new Date(compactionEntry.timestamp).getTime()
+			) {
+				return false;
+			}
+			contextTokens = estimate.tokens;
+		} else {
+			contextTokens = calculateContextTokens(assistantMessage.usage);
+		}
+		if (shouldCompact(contextTokens, contextWindow, settings)) {
+			return await this._runAutoCompaction("threshold", false);
+		}
+		return false;
+	}
+
+	/**
+	 * Run auto-compaction, bracketed by `compaction_start`/`compaction_end`. Returns true when the
+	 * turn should continue: a pending retry (overflow), or queued messages awaiting delivery.
+	 */
+	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
+		const settings = this.getCompactionSettings();
+
+		await this.emitOwn({ type: "compaction_start", reason });
+		this._autoCompactionAbortController = new AbortController();
+		const previousPhase = this.phase;
+		this.phase = "compaction";
+
+		try {
+			const model = this.model;
+			if (!model) {
+				await this.emitOwn({ type: "compaction_end", reason, result: undefined, aborted: false, willRetry: false });
+				return false;
+			}
+
+			const auth = await this.getApiKeyAndHeaders?.(model);
+			if (!auth) {
+				await this.emitOwn({ type: "compaction_end", reason, result: undefined, aborted: false, willRetry: false });
+				return false;
+			}
+
+			const pathEntries = await this.session.getBranch();
+			const preparationResult = prepareCompaction(pathEntries, settings);
+			if (!preparationResult.ok) throw preparationResult.error;
+			const preparation = preparationResult.value;
+			if (!preparation) {
+				await this.emitOwn({ type: "compaction_end", reason, result: undefined, aborted: false, willRetry: false });
+				return false;
+			}
+
+			const hookResult = await this.emitHook({
+				type: "session_before_compact",
+				preparation,
+				branchEntries: pathEntries,
+				customInstructions: undefined,
+				signal: this._autoCompactionAbortController.signal,
+			});
+			if (hookResult?.cancel) {
+				await this.emitOwn({ type: "compaction_end", reason, result: undefined, aborted: true, willRetry: false });
+				return false;
+			}
+
+			const provided = hookResult?.compaction;
+			const compactResult = provided
+				? { ok: true as const, value: provided }
+				: await compact(
+						preparation,
+						model,
+						auth.apiKey,
+						auth.headers,
+						undefined,
+						this._autoCompactionAbortController.signal,
+						this.thinkingLevel,
+					);
+			if (!compactResult.ok) throw compactResult.error;
+
+			if (this._autoCompactionAbortController.signal.aborted) {
+				await this.emitOwn({ type: "compaction_end", reason, result: undefined, aborted: true, willRetry: false });
+				return false;
+			}
+
+			const result = compactResult.value;
+			const entryId = await this.session.appendCompaction(
+				result.summary,
+				result.firstKeptEntryId,
+				result.tokensBefore,
+				result.details,
+				provided !== undefined,
+			);
+			const entry = await this.session.getEntry(entryId);
+			if (entry?.type === "compaction") {
+				await this.emitOwn({ type: "session_compact", compactionEntry: entry, fromHook: provided !== undefined });
+			}
+
+			await this.emitOwn({ type: "compaction_end", reason, result, aborted: false, willRetry });
+
+			if (willRetry) return true;
+			// Auto-compaction can complete while queued messages wait; continue once to deliver them.
+			return this.hasQueuedMessages();
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : "compaction failed";
+			await this.emitOwn({
+				type: "compaction_end",
+				reason,
+				result: undefined,
+				aborted: false,
+				willRetry: false,
+				errorMessage:
+					reason === "overflow"
+						? `Context overflow recovery failed: ${errorMessage}`
+						: `Auto-compaction failed: ${errorMessage}`,
+			});
+			return false;
+		} finally {
+			this._autoCompactionAbortController = undefined;
+			this.phase = previousPhase;
 		}
 	}
 
 	async prompt(text: string, options?: { images?: ImageContent[] }): Promise<AssistantMessage> {
 		if (this.phase !== "idle") throw new AgentHarnessError("busy", "AgentHarness is busy");
 		this.phase = "turn";
+		// Re-arm the one-shot overflow-recovery latch for this user-initiated turn.
+		this._overflowRecoveryAttempted = false;
 		const finishRunPromise = this.startRunPromise();
 		try {
 			const turnState = await this.createTurnState();
@@ -744,13 +1019,15 @@ export class AgentHarness<
 	): Promise<{ summary: string; firstKeptEntryId: string; tokensBefore: number; details?: unknown }> {
 		if (this.phase !== "idle") throw new AgentHarnessError("busy", "compact() requires idle harness");
 		this.phase = "compaction";
+		this._compactionAbortController = new AbortController();
+		await this.emitOwn({ type: "compaction_start", reason: "manual" });
 		try {
 			const model = this.model;
 			if (!model) throw new AgentHarnessError("invalid_state", "No model set for compaction");
 			const auth = await this.getApiKeyAndHeaders?.(model);
 			if (!auth) throw new AgentHarnessError("auth", "No auth available for compaction");
 			const branchEntries = await this.session.getBranch();
-			const preparationResult = prepareCompaction(branchEntries, DEFAULT_COMPACTION_SETTINGS);
+			const preparationResult = prepareCompaction(branchEntries, this.getCompactionSettings());
 			if (!preparationResult.ok) throw preparationResult.error;
 			const preparation = preparationResult.value;
 			if (!preparation) throw new AgentHarnessError("compaction", "Nothing to compact");
@@ -759,7 +1036,7 @@ export class AgentHarness<
 				preparation,
 				branchEntries,
 				customInstructions,
-				signal: new AbortController().signal,
+				signal: this._compactionAbortController.signal,
 			});
 			if (hookResult?.cancel) throw new AgentHarnessError("compaction", "Compaction cancelled");
 			const provided = hookResult?.compaction;
@@ -771,9 +1048,11 @@ export class AgentHarness<
 						auth.apiKey,
 						auth.headers,
 						customInstructions,
-						undefined,
+						this._compactionAbortController.signal,
 						this.thinkingLevel,
 					);
+			if (this._compactionAbortController.signal.aborted)
+				throw new AgentHarnessError("compaction", "Compaction cancelled");
 			if (!compactResult.ok) throw compactResult.error;
 			const result = compactResult.value;
 			const entryId = await this.session.appendCompaction(
@@ -787,12 +1066,40 @@ export class AgentHarness<
 			if (entry?.type === "compaction") {
 				await this.emitOwn({ type: "session_compact", compactionEntry: entry, fromHook: provided !== undefined });
 			}
+			await this.emitOwn({ type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false });
 			return result;
 		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
+			await this.emitOwn({
+				type: "compaction_end",
+				reason: "manual",
+				result: undefined,
+				aborted,
+				willRetry: false,
+				errorMessage: aborted ? undefined : `Compaction failed: ${message}`,
+			});
 			throw normalizeHarnessError(error, "compaction");
 		} finally {
+			this._compactionAbortController = undefined;
 			this.phase = "idle";
 		}
+	}
+
+	/** Cancel an in-progress compaction (manual or auto). */
+	abortCompaction(): void {
+		this._compactionAbortController?.abort();
+		this._autoCompactionAbortController?.abort();
+	}
+
+	/** Whether a compaction (manual or auto) is currently running. */
+	get isCompacting(): boolean {
+		return this.phase === "compaction";
+	}
+
+	/** Whether auto-compaction is enabled (read live from the injected compaction settings). */
+	get autoCompactionEnabled(): boolean {
+		return this.getCompactionSettings().enabled;
 	}
 
 	async navigateTree(

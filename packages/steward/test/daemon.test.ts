@@ -371,6 +371,33 @@ describe("daemon HTTP/SSE server", () => {
 		expect(streamed).not.toContain("settled");
 	});
 
+	it("forwards compaction_start/end over SSE, keeps session_compact internal, and round-trips abort_compaction", async () => {
+		const registration = await startDaemon();
+		// One turn, then the manual-compaction summary call (both draw from the faux queue).
+		registration.setResponses([() => fauxAssistantMessage("a turn"), () => fauxAssistantMessage("## Goal\nsummary")]);
+
+		const client = newSse();
+		await client.connect(sessionEventsUrl(), { token: TOKEN });
+		await client.waitFor((e) => e.event === "hello");
+		await control({ type: "prompt", message: "hi" });
+		await client.waitFor((e) => dataType(e) === "agent_end");
+
+		const compacted = await control({ type: "compact" });
+		expect(compacted).toMatchObject({ command: "compact", success: true });
+		await client.waitFor((e) => dataType(e) === "compaction_end");
+
+		const streamed = client.events.map(dataType).filter(Boolean);
+		expect(streamed).toContain("compaction_start");
+		expect(streamed).toContain("compaction_end");
+		// session_compact is an internal own-event — it must not cross the wire.
+		expect(streamed).not.toContain("session_compact");
+		expect(FORWARDED_EVENT_TYPES.has("compaction_start")).toBe(true);
+		expect(FORWARDED_EVENT_TYPES.has("compaction_end")).toBe(true);
+
+		const aborted = await control({ type: "abort_compaction" });
+		expect(aborted).toMatchObject({ command: "abort_compaction", success: true });
+	});
+
 	it("replays buffered events on reconnect with Last-Event-ID", async () => {
 		const registration = await startDaemon();
 		registration.setResponses([() => fauxAssistantMessage("buffered turn")]);

@@ -606,6 +606,22 @@ export interface SessionTreeEvent {
 	fromHook?: boolean;
 }
 
+export type CompactionReason = "manual" | "threshold" | "overflow";
+
+export interface CompactionStartEvent {
+	type: "compaction_start";
+	reason: CompactionReason;
+}
+
+export interface CompactionEndEvent {
+	type: "compaction_end";
+	reason: CompactionReason;
+	result?: CompactResult;
+	aborted: boolean;
+	willRetry: boolean;
+	errorMessage?: string;
+}
+
 export interface ModelUpdateEvent {
 	type: "model_update";
 	model: Model<any>;
@@ -654,6 +670,8 @@ export type AgentHarnessOwnEvent<
 	| ToolResultEvent
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
+	| CompactionStartEvent
+	| CompactionEndEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent
 	| ModelUpdateEvent
@@ -717,6 +735,8 @@ export type AgentHarnessEventResultMap = {
 	tool_result: ToolResultPatch | undefined;
 	session_before_compact: SessionBeforeCompactResult | undefined;
 	session_compact: undefined;
+	compaction_start: undefined;
+	compaction_end: undefined;
 	session_before_tree: SessionBeforeTreeResult | undefined;
 	session_tree: undefined;
 	model_update: undefined;
@@ -827,6 +847,11 @@ export interface AgentHarnessOptions<
 	getApiKeyAndHeaders?: (
 		model: Model<any>,
 	) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
+	/**
+	 * Live compaction settings, read on each auto-compaction decision (threshold + overflow) and
+	 * each manual `compact()`. Defaults to {@link DEFAULT_COMPACTION_SETTINGS} when omitted.
+	 */
+	getCompactionSettings?: () => CompactionSettings;
 	/** Curated stream/provider request options. Snapshotted at turn start. */
 	streamOptions?: AgentHarnessStreamOptions;
 	model: Model<any>;

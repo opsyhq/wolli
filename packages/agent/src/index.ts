@@ -21,6 +21,7 @@ export {
 	findTurnStartIndex,
 	generateSummary,
 	getLastAssistantUsage,
+	getLatestCompactionEntry,
 	prepareCompaction,
 	serializeConversation,
 	shouldCompact,

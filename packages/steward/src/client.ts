@@ -408,6 +408,9 @@ export class SessionHandle {
 	private queue: { steer: AgentMessage[]; followUp: AgentMessage[] } = { steer: [], followUp: [] };
 	private resourceSummary: ResourceSummary = { extensions: 0, skills: 0, prompts: 0, commands: 0, diagnostics: [] };
 	private commands: SlashCommandInfo[] = [];
+	// Compaction in-flight, tracked off the forwarded compaction_start/end frames so callers can
+	// route input to the queue while a compaction runs (mirrors coding-agent's session.isCompacting).
+	private compacting = false;
 
 	private readonly handlers = new Set<(e: AgentHarnessEvent) => void>();
 	onUiRequest?: (req: ExtensionUIRequest) => void;
@@ -461,6 +464,12 @@ export class SessionHandle {
 			case "queue_update":
 				this.queue = { steer: evt.steer, followUp: evt.followUp };
 				break;
+			case "compaction_start":
+				this.compacting = true;
+				break;
+			case "compaction_end":
+				this.compacting = false;
+				break;
 		}
 		for (const handler of this.handlers) handler(evt);
 	}
@@ -498,6 +507,16 @@ export class SessionHandle {
 
 	compact(customInstructions?: string): Promise<unknown> {
 		return this.agent.send(this.sessionId, { type: "compact", customInstructions });
+	}
+
+	/** Cancel an in-progress compaction (manual or auto). */
+	abortCompaction(): Promise<unknown> {
+		return this.agent.send(this.sessionId, { type: "abort_compaction" });
+	}
+
+	/** Whether a compaction is currently running (tracked off compaction_start/end frames). */
+	get isCompacting(): boolean {
+		return this.compacting;
 	}
 
 	abort(): Promise<unknown> {

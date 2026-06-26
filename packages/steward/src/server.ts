@@ -231,6 +231,9 @@ async function handleCommand(
 			return ok(id, "abort", await harness.abort());
 		case "compact":
 			return ok(id, "compact", await harness.compact(cmd.customInstructions));
+		case "abort_compaction":
+			harness.abortCompaction();
+			return ok(id, "abort_compaction");
 		case "wait_for_idle":
 			await harness.waitForIdle();
 			return ok(id, "wait_for_idle");

@@ -54,6 +54,12 @@ export interface TerminalSettings {
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
 }
 
+export interface CompactionSettings {
+	enabled?: boolean; // default: true
+	reserveTokens?: number; // default: 16384
+	keepRecentTokens?: number; // default: 20000
+}
+
 /**
  * The shared defaults + per-agent override surface. Pruned to the set steward/apps
  * actually read: model/thinking, resource lists (plugin-manager), tooling/telemetry
@@ -65,6 +71,7 @@ export interface Settings {
 	defaultModel?: string;
 	defaultThinkingLevel?: ThinkingLevelSetting;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
+	compaction?: CompactionSettings; // auto-compaction toggle + token thresholds (global defaults)
 	// resource lists (plugin-manager)
 	plugins?: PluginSource[]; // Array of npm/git/local plugin sources (string or object with filtering)
 	extensions?: string[]; // Array of local extension file paths or directories
@@ -460,6 +467,26 @@ export class AgentSettingsManager {
 		return this.merged.enabledModels;
 	}
 
+	getCompactionEnabled(): boolean {
+		return this.merged.compaction?.enabled ?? true;
+	}
+
+	getCompactionReserveTokens(): number {
+		return this.merged.compaction?.reserveTokens ?? 16384;
+	}
+
+	getCompactionKeepRecentTokens(): number {
+		return this.merged.compaction?.keepRecentTokens ?? 20000;
+	}
+
+	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+		return {
+			enabled: this.getCompactionEnabled(),
+			reserveTokens: this.getCompactionReserveTokens(),
+			keepRecentTokens: this.getCompactionKeepRecentTokens(),
+		};
+	}
+
 	// --- setters (write the override into agent.json.settings) ---------------
 
 	setPlugins(plugins: PluginSource[]): void {
@@ -475,6 +502,12 @@ export class AgentSettingsManager {
 			} else {
 				delete settings.enabledModels;
 			}
+		});
+	}
+
+	setCompactionEnabled(enabled: boolean): void {
+		this.updateSettings((settings) => {
+			settings.compaction = { ...settings.compaction, enabled };
 		});
 	}
 
