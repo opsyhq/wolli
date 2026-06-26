@@ -129,6 +129,15 @@ function getAssistantUsage(msg: AgentMessage): Usage | undefined {
 	return undefined;
 }
 
+/** Scan a branch (root->leaf) from the end for the most recent compaction entry. */
+export function getLatestCompactionEntry(entries: SessionTreeEntry[]): CompactionEntry | null {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type === "compaction") return entry;
+	}
+	return null;
+}
+
 /** Return usage from the last successful assistant message in session entries. */
 export function getLastAssistantUsage(entries: SessionTreeEntry[]): Usage | undefined {
 	for (let i = entries.length - 1; i >= 0; i--) {

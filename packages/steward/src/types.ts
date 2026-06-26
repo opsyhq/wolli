@@ -13,6 +13,8 @@ import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type {
 	AgentEvent,
 	AgentMessage,
+	CompactionEndEvent,
+	CompactionStartEvent,
 	ModelUpdateEvent,
 	QueueUpdateEvent,
 	ThinkingLevel,
@@ -39,6 +41,7 @@ export type DaemonCommand =
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort" }
 	| { id?: string; type: "compact"; customInstructions?: string }
+	| { id?: string; type: "abort_compaction" }
 	| { id?: string; type: "wait_for_idle" }
 	| { id?: string; type: "clear_queue" }
 	// Additive: create a fresh session and return its snapshot. Every other resident session stays
@@ -243,6 +246,8 @@ export type DaemonEvent =
 	| QueueUpdateEvent
 	| ModelUpdateEvent
 	| ThinkingLevelUpdateEvent
+	| CompactionStartEvent
+	| CompactionEndEvent
 	| ScopedModelsUpdateEvent;
 
 /**
@@ -266,6 +271,8 @@ export const FORWARDED_EVENT_TYPES: ReadonlySet<DaemonEvent["type"]> = new Set([
 	"queue_update",
 	"model_update",
 	"thinking_level_update",
+	"compaction_start",
+	"compaction_end",
 	// Host-originated daemon event
 	"scoped_models_update",
 ]);

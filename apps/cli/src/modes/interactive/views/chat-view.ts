@@ -134,6 +134,9 @@ function isAssistantMessage(message: AgentMessage): message is AssistantMessage 
 	return (message as { role?: string }).role === "assistant";
 }
 
+/** A message typed while a compaction was running, flushed once it ends. */
+type CompactionQueuedMessage = { text: string; mode: "steer" | "followUp" };
+
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
 	setExpanded(expanded: boolean): void;
@@ -198,6 +201,13 @@ export class ChatView extends Container implements AppView {
 
 	private unsubscribe?: () => void;
 	private busy = false;
+	// Compaction UI state. `autoCompactionLoader` is the status-line spinner shown while a compaction
+	// runs; `autoCompactionEscapeHandler` saves the editor's prior Escape handler so it can be restored
+	// after compaction (Escape cancels the compaction meanwhile); `compactionQueuedMessages` holds input
+	// typed during a compaction, flushed when it ends.
+	private autoCompactionLoader?: Loader;
+	private autoCompactionEscapeHandler?: () => void;
+	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
 	private streamingComponent?: AssistantMessageComponent;
 	private lastSigintTime = 0;
 	private lastBackArrowTime = 0;
@@ -613,6 +623,18 @@ export class ChatView extends Container implements AppView {
 			}
 		}
 
+		// Queue input typed during a compaction (extension commands still run immediately).
+		if (this.session.isCompacting) {
+			if (this.isExtensionCommand(trimmed)) {
+				this.editor.addToHistory?.(trimmed);
+				this.editor.setText("");
+				await this.session.prompt(trimmed);
+			} else {
+				this.queueCompactionMessage(trimmed, "steer");
+			}
+			return;
+		}
+
 		// While a turn is streaming, a typed message steers (queues) it instead of starting a
 		// new turn: it shows in the pending area, then promotes to a bubble when drained.
 		if (this.busy) {
@@ -735,7 +757,6 @@ export class ChatView extends Container implements AppView {
 			this.ui.requestRender();
 			return;
 		}
-		this.statusContainer.clear();
 		try {
 			await this.session.compact(customInstructions);
 		} catch (error) {
@@ -1797,6 +1818,58 @@ export class ChatView extends Container implements AppView {
 					void this.finalizeDeploy();
 				}
 				break;
+			case "compaction_start": {
+				// Keep the editor active; submissions are queued during compaction. Repurpose Escape to
+				// cancel the compaction, saving the prior handler to restore at compaction_end.
+				this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
+				this.defaultEditor.onEscape = () => {
+					void this.session.abortCompaction();
+				};
+				this.statusContainer.clear();
+				const cancelHint = `(${keyDisplayText("app.interrupt")} to cancel)`;
+				const label =
+					event.reason === "manual"
+						? `Compacting context... ${cancelHint}`
+						: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
+				this.autoCompactionLoader = new Loader(
+					this.ui,
+					(spinner) => theme.fg("accent", spinner),
+					(text) => theme.fg("muted", text),
+					label,
+				);
+				this.statusContainer.addChild(this.autoCompactionLoader);
+				break;
+			}
+			case "compaction_end": {
+				// Restore the editor's prior Escape handler (undefined by default in steward).
+				this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
+				this.autoCompactionEscapeHandler = undefined;
+				if (this.autoCompactionLoader) {
+					this.autoCompactionLoader.stop();
+					this.autoCompactionLoader = undefined;
+					this.statusContainer.clear();
+				}
+				if (event.aborted) {
+					if (event.reason === "manual") {
+						this.showError("Compaction cancelled");
+					} else {
+						this.showStatus("Auto-compaction cancelled");
+					}
+				} else if (event.result) {
+					// The compacted summary is part of the rebuilt session context (the engine emits it as
+					// the first message), so repainting renders it once — no separate summary append.
+					void this.rebuildChatFromMessages();
+				} else if (event.errorMessage) {
+					if (event.reason === "manual") {
+						this.showError(event.errorMessage);
+					} else {
+						this.chatContainer.addChild(new Spacer(1));
+						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
+					}
+				}
+				void this.flushCompactionQueue({ willRetry: event.willRetry });
+				break;
+			}
 			default:
 				return;
 		}
@@ -2011,23 +2084,37 @@ export class ChatView extends Container implements AppView {
 	 */
 	private getAllQueuedMessages(): { steering: string[]; followUp: string[] } {
 		return {
-			steering: this.session
-				.getSteeringMessages()
-				.map((m) => this.getUserMessageText(m))
-				.filter((t) => t.length > 0),
-			followUp: this.session
-				.getFollowUpMessages()
-				.map((m) => this.getUserMessageText(m))
-				.filter((t) => t.length > 0),
+			steering: [
+				...this.session
+					.getSteeringMessages()
+					.map((m) => this.getUserMessageText(m))
+					.filter((t) => t.length > 0),
+				...this.compactionQueuedMessages.filter((msg) => msg.mode === "steer").map((msg) => msg.text),
+			],
+			followUp: [
+				...this.session
+					.getFollowUpMessages()
+					.map((m) => this.getUserMessageText(m))
+					.filter((t) => t.length > 0),
+				...this.compactionQueuedMessages.filter((msg) => msg.mode === "followUp").map((msg) => msg.text),
+			],
 		};
 	}
 
-	/** Clear all queued messages and return their contents (the `clear_queue` verb round-trips). */
+	/**
+	 * Clear all queued messages (session queue + compaction queue) and return their contents (the
+	 * `clear_queue` verb round-trips for the session queue).
+	 */
 	private async clearAllQueues(): Promise<{ steering: string[]; followUp: string[] }> {
 		const { steering, followUp } = await this.session.clearQueue();
+		const compactionSteering = this.compactionQueuedMessages.filter((msg) => msg.mode === "steer").map((msg) => msg.text);
+		const compactionFollowUp = this.compactionQueuedMessages
+			.filter((msg) => msg.mode === "followUp")
+			.map((msg) => msg.text);
+		this.compactionQueuedMessages = [];
 		return {
-			steering: steering.map((m) => this.getUserMessageText(m)).filter((t) => t.length > 0),
-			followUp: followUp.map((m) => this.getUserMessageText(m)).filter((t) => t.length > 0),
+			steering: [...steering.map((m) => this.getUserMessageText(m)).filter((t) => t.length > 0), ...compactionSteering],
+			followUp: [...followUp.map((m) => this.getUserMessageText(m)).filter((t) => t.length > 0), ...compactionFollowUp],
 		};
 	}
 
@@ -2053,6 +2140,18 @@ export class ChatView extends Container implements AppView {
 	private async handleFollowUp(): Promise<void> {
 		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
 		if (!text) return;
+
+		// Queue input typed during a compaction (extension commands still run immediately).
+		if (this.session.isCompacting) {
+			if (this.isExtensionCommand(text)) {
+				this.editor.addToHistory?.(text);
+				this.editor.setText("");
+				await this.session.prompt(text);
+			} else {
+				this.queueCompactionMessage(text, "followUp");
+			}
+			return;
+		}
 
 		// Alt+Enter queues a follow-up message (waits until agent finishes)
 		if (this.busy) {
@@ -2092,6 +2191,111 @@ export class ChatView extends Container implements AppView {
 		this.updatePendingMessagesDisplay();
 		this.ui.requestRender();
 		return allQueued.length;
+	}
+
+	/** Whether `text` is a registered extension command (run immediately even during compaction). */
+	private isExtensionCommand(text: string): boolean {
+		if (!text.startsWith("/")) return false;
+		const spaceIndex = text.indexOf(" ");
+		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+		return this.session.getCommands().some((command) => command.name === commandName && command.source === "extension");
+	}
+
+	/** Hold a message typed during a compaction; it is flushed when the compaction ends. */
+	private queueCompactionMessage(text: string, mode: "steer" | "followUp"): void {
+		this.compactionQueuedMessages.push({ text, mode });
+		this.editor.addToHistory?.(text);
+		this.editor.setText("");
+		this.updatePendingMessagesDisplay();
+		this.showStatus("Queued message for after compaction");
+	}
+
+	/**
+	 * Flush messages queued during a compaction once it ends. When a retry is pending the messages
+	 * ride the retry turn (steer/follow-up); otherwise the first non-command message starts a fresh
+	 * turn and the rest queue behind it. Extension commands run immediately on either path.
+	 */
+	private async flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void> {
+		if (this.compactionQueuedMessages.length === 0) {
+			return;
+		}
+
+		const queuedMessages = [...this.compactionQueuedMessages];
+		this.compactionQueuedMessages = [];
+		this.updatePendingMessagesDisplay();
+
+		const restoreQueue = (error: unknown) => {
+			void this.session.clearQueue();
+			this.compactionQueuedMessages = queuedMessages;
+			this.updatePendingMessagesDisplay();
+			this.showError(
+				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		};
+
+		try {
+			if (options?.willRetry) {
+				// A retry is pending: queue the messages for the retry turn.
+				for (const message of queuedMessages) {
+					if (this.isExtensionCommand(message.text)) {
+						await this.session.prompt(message.text);
+					} else if (message.mode === "followUp") {
+						await this.session.prompt(message.text, { streamingBehavior: "followUp" });
+					} else {
+						await this.session.prompt(message.text, { streamingBehavior: "steer" });
+					}
+				}
+				this.updatePendingMessagesDisplay();
+				return;
+			}
+
+			// Find the first non-extension-command message to use as the prompt that starts the turn.
+			const firstPromptIndex = queuedMessages.findIndex((message) => !this.isExtensionCommand(message.text));
+			if (firstPromptIndex === -1) {
+				// All extension commands - execute them all.
+				for (const message of queuedMessages) {
+					await this.session.prompt(message.text);
+				}
+				return;
+			}
+
+			const preCommands = queuedMessages.slice(0, firstPromptIndex);
+			const firstPrompt = queuedMessages[firstPromptIndex]!;
+			const rest = queuedMessages.slice(firstPromptIndex + 1);
+
+			for (const message of preCommands) {
+				await this.session.prompt(message.text);
+			}
+
+			// Send the first prompt (starts streaming).
+			const promptPromise = this.session.prompt(firstPrompt.text).catch((error) => {
+				restoreQueue(error);
+			});
+
+			// Queue the remaining messages behind it.
+			for (const message of rest) {
+				if (this.isExtensionCommand(message.text)) {
+					await this.session.prompt(message.text);
+				} else if (message.mode === "followUp") {
+					await this.session.prompt(message.text, { streamingBehavior: "followUp" });
+				} else {
+					await this.session.prompt(message.text, { streamingBehavior: "steer" });
+				}
+			}
+			this.updatePendingMessagesDisplay();
+			void promptPromise;
+		} catch (error) {
+			restoreQueue(error);
+		}
+	}
+
+	/** Clear the chat log and repaint it from the (compacted) session context. Mirrors coding-agent's `rebuildChatFromMessages`. */
+	private async rebuildChatFromMessages(): Promise<void> {
+		this.chatContainer.clear();
+		const context = await this.session.buildSessionContext();
+		this.renderSessionContext(context);
 	}
 
 	private beginAssistantMessage(): void {

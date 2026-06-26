@@ -1075,6 +1075,7 @@ export class AgentRuntime {
 			tools: [...tooling.baseTools, ...tooling.extensionTools],
 			resources: toHarnessResources(this._skills, this._promptTemplates),
 			getApiKeyAndHeaders: (requestModel) => this.resolveRequestAuth(requestModel, args.metadata.id),
+			getCompactionSettings: () => this._settingsManager.getCompactionSettings(),
 		});
 		agentSession.attachHarness(harness, tooling);
 		agentSession.wireExtensionEvents();
