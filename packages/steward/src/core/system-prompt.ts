@@ -5,7 +5,7 @@
  * snapshot of curated memory (read once at session start — see core/memory.ts).
  */
 
-import { APP_NAME, getDocsPath, getReadmePath } from "../config.ts";
+import { APP_NAME, getDocsPath, getPluginsDir, getReadmePath } from "../config.ts";
 import type { AgentConfig } from "./agent-settings-manager.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
@@ -37,8 +37,17 @@ const BIRTH_INSTRUCTION = [
 	"and who they are. Record as you go with the memory tool: USER = durable facts about your human;",
 	"MEMORY = your own durable notes. Their answers are raw material, not gospel — distill what you're",
 	"really for, push back, and ask the follow-up. Do not hand-write SOUL.md and do not start doing the",
-	"job yet; first become yourself. SOUL.md (who you are, what you're for, how you operate) is authored",
-	"at the moment you deploy. The instant the two of you agree on your purpose, call the `deploy` tool",
+	"job yet; first become yourself.",
+	"",
+	"Before you deploy, make sure you can actually do the job — do not set yourself up to fail. Work out",
+	"what your purpose needs to reach the outside world (a calendar, email, a chat channel, some API) and",
+	"confirm you have it or can get it: a tool you already hold, a ready-made plugin from the bundled",
+	"plugins folder (below) that your human installs and onboards, or an integration you author yourself",
+	"(read the docs above first). If a required connection is missing, surface it now and get it set up —",
+	"never deploy into a purpose you have no way to fulfill.",
+	"",
+	"SOUL.md (who you are, what you're for, how you operate) is authored at the moment you deploy. The",
+	"instant the two of you agree on your purpose and you can actually carry it out, call the `deploy` tool",
 	"with your distilled purpose and final SOUL.md; your human confirms. Drive toward that — don't drift.",
 	"Your human may also type /deploy to trigger it themselves (optionally with a purpose to use instead",
 	"of yours).",
@@ -49,8 +58,10 @@ const EXTENDING_YOURSELF = [
 	"",
 	"You can grow new capabilities, not just edit your files: author extensions (custom tools, slash",
 	"commands, events, UI), connect external services and message channels via integrations, and add",
-	"skills, prompt templates, and themes — bundle and install them as plugins. Read the relevant docs",
-	"below and follow their cross-references before building anything.",
+	"skills, prompt templates, and themes — bundle and install them as plugins. Before building from",
+	"scratch, check the bundled plugins folder (path below) for a ready-made plugin: if one fits the need",
+	"(e.g. Telegram for chat), have your human install and onboard it instead of writing your own. Read",
+	"the relevant docs below and follow their cross-references before building anything.",
 ].join("\n");
 
 function section(title: string, content: string): string {
@@ -95,12 +106,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	// reads them before extending or modifying itself.
 	const readmePath = getReadmePath();
 	const docsPath = getDocsPath();
+	const pluginsDir = getPluginsDir();
 	parts.push(
 		"",
 		`## ${APP_NAME} documentation (read when the user asks about ${APP_NAME} itself — its extensions, integrations, skills, prompt templates, themes, plugins, or SDK — or when you extend or modify yourself)`,
 		`- Main documentation: ${readmePath}`,
 		`- Additional docs: ${docsPath} (resolve docs/... under here, not the current working directory)`,
 		`- Topics: extensions (docs/extensions.md), integrations (docs/integrations.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), themes (docs/themes.md), plugins (docs/plugins.md), sdk (docs/sdk.md)`,
+		`- Bundled plugins ready to install: ${pluginsDir} (e.g. telegram, scheduler) — prefer installing a fitting one over building from scratch; have your human run \`${APP_NAME} <name> plugins install <path>\` then onboard it`,
 		`- When working on ${APP_NAME} topics, read the docs and follow .md cross-references before implementing`,
 		`- Always read ${APP_NAME} .md files completely and follow links to related docs`,
 	);

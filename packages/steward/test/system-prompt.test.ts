@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getPluginsDir } from "../src/config.ts";
 import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { loadMemory } from "../src/core/memory.ts";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
@@ -77,6 +78,12 @@ describe("birth instruction (deploy)", () => {
 		expect(prompt).toContain("/deploy");
 	});
 
+	it("gates deploy on being able to do the job", () => {
+		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
+		expect(prompt).toContain("make sure you can actually do the job");
+		expect(prompt).toContain("never deploy into a purpose you have no way to fulfill");
+	});
+
 	it("omits the birth instruction once deployed", () => {
 		AgentSettingsManager.create("scribe").setAgentDeployed();
 		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
@@ -104,6 +111,12 @@ describe("always-on guidance", () => {
 		expect(prompt).toContain("docs/themes.md");
 		expect(prompt).toContain("docs/plugins.md");
 		expect(prompt).toContain("docs/sdk.md");
+	});
+
+	it("points at the bundled plugins folder", () => {
+		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
+		expect(prompt).toContain("Bundled plugins ready to install");
+		expect(prompt).toContain(getPluginsDir());
 	});
 });
 
