@@ -41,6 +41,7 @@ import {
 	type AutocompleteProviderFactory,
 	BUILTIN_SLASH_COMMANDS,
 	createBashExecutionMessage,
+	createCompactionSummaryMessage,
 	createHostEnvironment,
 	type EditorFactory,
 	ensureTool,
@@ -1856,9 +1857,17 @@ export class ChatView extends Container implements AppView {
 						this.showStatus("Auto-compaction cancelled");
 					}
 				} else if (event.result) {
-					// The compacted summary is part of the rebuilt session context (the engine emits it as
-					// the first message), so repainting renders it once — no separate summary append.
-					void this.rebuildChatFromMessages();
+					// Repaint the compacted context, then append the summary at the boundary so the
+					// [compaction] marker lands where the user is, not just at messages[0] off-screen
+					// above the kept window. Mirrors coding-agent's compaction_end result branch; the
+					// rebuild is awaited first because steward's runs against the daemon.
+					const result = event.result;
+					void this.rebuildChatFromMessages().then(() => {
+						this.addMessageToChat(
+							createCompactionSummaryMessage(result.summary, result.tokensBefore, new Date().toISOString()),
+						);
+						this.ui.requestRender();
+					});
 				} else if (event.errorMessage) {
 					if (event.reason === "manual") {
 						this.showError(event.errorMessage);

@@ -194,7 +194,7 @@ export {
 	USER_BUDGET,
 	writeMemoryFile,
 } from "./core/memory.ts";
-export { convertToLlm, createBashExecutionMessage } from "./core/messages.ts";
+export { convertToLlm, createBashExecutionMessage, createCompactionSummaryMessage } from "./core/messages.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
 export {
 	defaultModelPerProvider,
