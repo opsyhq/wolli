@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_SANDBOX } from "../src/config.ts";
+import { createBypassGate } from "../src/core/approval/approval-gate.ts";
 import type { ApprovalGate } from "../src/core/approval/types.ts";
 import { startContainer } from "../src/core/environments/container.ts";
 import { createDockerEnvironment } from "../src/core/environments/docker.ts";
@@ -196,6 +197,17 @@ describe("createGatedEnvironment", () => {
 			/Escalation to host blocked: denied by user/,
 		);
 		expect(ran).toEqual([]);
+	});
+
+	it("runs the command with the bypass gate without any UI prompt", async () => {
+		const ran: string[] = [];
+		const gated = createGatedEnvironment(
+			baseEnv((c) => ran.push(c)),
+			createBypassGate(),
+		);
+
+		await gated.exec("rm -rf /", "/work", { onData: () => {} });
+		expect(ran).toEqual(["rm -rf /"]);
 	});
 });
 

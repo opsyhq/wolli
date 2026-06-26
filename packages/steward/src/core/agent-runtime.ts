@@ -49,13 +49,19 @@ import {
 	type ThinkingLevel,
 } from "@opsyhq/agent";
 import type { NodeExecutionEnv } from "@opsyhq/agent/node";
-import { getAgentApprovalsPath, getAgentDir, getAgentIntegrationsPath, getSessionsDir } from "../config.ts";
+import {
+	bypassPermissions,
+	getAgentApprovalsPath,
+	getAgentDir,
+	getAgentIntegrationsPath,
+	getSessionsDir,
+} from "../config.ts";
 import type { AuthSelectorProvider } from "../types.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { openBrowser } from "../utils/open-browser.ts";
 import { createAgentPluginManager } from "./agent-plugin-manager.ts";
 import { type AgentConfig, AgentSettingsManager, isDeployed } from "./agent-settings-manager.ts";
-import { createApprovalGate } from "./approval/approval-gate.ts";
+import { createApprovalGate, createBypassGate } from "./approval/approval-gate.ts";
 import { ApprovalStore } from "./approval/approval-storage.ts";
 import type { AuthStorage } from "./auth-storage.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
@@ -970,10 +976,12 @@ export class AgentRuntime {
 		// shared across sessions and survives reload. Daemon-owned control state is write-denied.
 		this._approvals ??= ApprovalStore.create(name);
 		const controlState = [getAgentApprovalsPath(name), getSessionsDir(name)];
-		const sharedGate = createApprovalGate(() => {
-			for (const session of this._sessions.values()) return session.ui;
-			return noOpUIContext;
-		}, this._approvals);
+		const sharedGate = bypassPermissions()
+			? createBypassGate()
+			: createApprovalGate(() => {
+					for (const session of this._sessions.values()) return session.ui;
+					return noOpUIContext;
+				}, this._approvals);
 		this._environments = await createEnvironments(agentDir, { gate: sharedGate, denyWrite: controlState });
 
 		const { extensions, errors, runtime } = loader.getExtensions();
@@ -1043,7 +1051,7 @@ export class AgentRuntime {
 		// UI. The heavy sandbox proxy is a process-global memoized singleton, so this is cheap.
 		const controlState = [getAgentApprovalsPath(name), getSessionsDir(name)];
 		const approvals = this._approvals ?? ApprovalStore.create(name);
-		const gate = createApprovalGate(() => ui, approvals);
+		const gate = bypassPermissions() ? createBypassGate() : createApprovalGate(() => ui, approvals);
 		const environments = await createEnvironments(agentDir, { gate, denyWrite: controlState });
 
 		const agentSession = new AgentSession(this, {

@@ -84,6 +84,16 @@ export const ENV_SERVICE_MANAGER = `${APP_NAME.toUpperCase()}_SERVICE_MANAGER`;
 // opt-in only — `auto`/unset never spins up a container).
 export const ENV_SANDBOX = `${APP_NAME.toUpperCase()}_SANDBOX`;
 
+// Skip host-escalation prompts: STEWARD_BYPASS_PERMISSIONS=1 auto-approves every host command. The
+// sandbox stays the default target; `host` is still a distinct target, its gate just never blocks.
+// Loud opt-in only — the analog to `claude --dangerously-skip-permissions`.
+export const ENV_BYPASS_PERMISSIONS = `${APP_NAME.toUpperCase()}_BYPASS_PERMISSIONS`;
+
+export function bypassPermissions(): boolean {
+	const v = process.env[ENV_BYPASS_PERMISSIONS]?.trim();
+	return v === "1" || v === "true";
+}
+
 // Image for the docker sandbox backend, e.g. STEWARD_CONTAINER_IMAGE. Falls back to
 // DEFAULT_CONTAINER_IMAGE when unset.
 export const ENV_CONTAINER_IMAGE = `${APP_NAME.toUpperCase()}_CONTAINER_IMAGE`;

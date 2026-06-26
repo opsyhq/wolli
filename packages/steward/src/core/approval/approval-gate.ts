@@ -33,3 +33,13 @@ export function createApprovalGate(getUI: () => ExtensionUIContext, approvals: A
 		}
 	};
 }
+
+/**
+ * Bypass variant: auto-approves every host escalation without prompting. Selected by a loud opt-in
+ * (STEWARD_BYPASS_PERMISSIONS) — the analog to Claude Code's --dangerously-skip-permissions. The
+ * sandbox stays the default target; `host` remains gated, the gate just never blocks. `scope:"once"`
+ * so nothing is persisted to approvals.json.
+ */
+export function createBypassGate(): ApprovalGate {
+	return async () => ({ allowed: true, scope: "once" });
+}
