@@ -3,20 +3,11 @@
  * own autocomplete in bare-command mode — any letter opens the menu, Tab completes to /command, a
  * single Enter runs it, unknown input errors.
  *
- * Beyond `new`/`quit`, the bar surfaces the auth + model commands (`model`, `thinking`, `login`,
- * `logout`). Unlike their in-session counterparts, these operate on the GLOBAL credential + settings
- * tier in-process, so every change persists as the shared default that agents inherit rather than
- * into one agent's storage.
+ * The `model`/`thinking`/`login`/`logout` commands mirror the in-session ones but run against the
+ * global tier in-process, so each change persists the shared default that agents inherit.
  */
 
-import {
-  type Api,
-  getSupportedThinkingLevels,
-  type Model,
-  type OAuthLoginCallbacks,
-  type OAuthProviderId,
-  type OAuthSelectPrompt,
-} from "@earendil-works/pi-ai";
+import { type Api, getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@opsyhq/agent";
 import {
   type Agent,
@@ -75,10 +66,8 @@ export class DashboardView extends Container implements AppView {
   private editor!: CustomEditor;
   private list?: SelectList;
   private overlay?: OverlayHandle;
-  // Auth + model selection on the dashboard operate on GLOBAL storage in-process (no agent/daemon):
-  // the global credential tier (~/.steward/agent/auth.json) and a registry over it. Everything the
-  // selectors persist lands in the shared defaults, the fallback every agent inherits.
-  private globalAuth!: AuthStorage;
+  // The global credential tier + a registry over it; the auth/model commands read and persist here.
+  private auth!: AuthStorage;
   private registry!: ModelRegistry;
 
   constructor(keybindings: KeybindingsManager) {
@@ -88,8 +77,8 @@ export class DashboardView extends Container implements AppView {
 
   onMount(ctx: ViewContext): void {
     this.ctx = ctx;
-    this.globalAuth = AuthStorage.create();
-    this.registry = ModelRegistry.create(this.globalAuth);
+    this.auth = AuthStorage.create();
+    this.registry = ModelRegistry.create(this.auth);
 
     // Focus the bar by hand (the view is the focus target). Bare-command mode (prefix "") lets the
     // editor's own autocomplete drive the menu without a leading slash.
@@ -195,8 +184,8 @@ export class DashboardView extends Container implements AppView {
     else if (name === "quit") this.ctx.quit();
     else if (name === "model") this.showModelSelector();
     else if (name === "thinking") this.showThinkingSelector();
-    else if (name === "login") this.showLoginFlow();
-    else if (name === "logout") void this.showLogoutFlow();
+    else if (name === "login") this.handleLoginCommand();
+    else if (name === "logout") this.handleLogoutCommand();
     else this.showStatus(theme.fg("warning", `Unknown command: ${name}`));
   }
 
@@ -224,53 +213,32 @@ export class DashboardView extends Container implements AppView {
     this.overlay = this.ctx.tui.showOverlay(create, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
   }
 
-  // ---------------------------------------------------------------------------
-  // Global auth + model selection. These mirror the in-session `/model`, `/thinking`,
-  // `/scoped-models`, `/login`, `/logout` flows from ChatView, but wired to the in-process
-  // global tier (this.globalAuth + this.registry) so every write persists to the shared
-  // defaults instead of one agent's storage.
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Swap the bar for a selector in `editorContainer`, focus it (the TUI routes input there), and
-   * restore the bar when `done` fires. Mirrors ChatView.showSelector; `focus` may be an inner
-   * component (e.g. the thinking selector's list) so the bordered wrapper still renders.
-   */
+  /** Swap the bar for a selector; `done` restores the bar and hands focus back to the view. */
   private showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
-    const { component, focus } = create(() => this.restoreBar());
+    const done = () => {
+      this.editorContainer.clear();
+      this.editorContainer.addChild(this.editor);
+      this.ctx.tui.setFocus(this);
+      this.ctx.tui.requestRender();
+    };
+    const { component, focus } = create(done);
     this.editorContainer.clear();
     this.editorContainer.addChild(component);
     this.ctx.tui.setFocus(focus);
     this.ctx.tui.requestRender();
   }
 
-  /** Tear down a selector/dialog: restore the (cleared) bar, re-focus the view, reset the footer. */
-  private restoreBar(): void {
-    this.editorContainer.clear();
-    this.editor.setText("");
-    this.editorContainer.addChild(this.editor);
-    this.editor.focused = true;
-    this.renderFooter();
-    this.ctx.tui.setFocus(this);
-    this.ctx.tui.requestRender();
-  }
-
-  /** Single-line text dialog (API key entry, OAuth prompts), swapped into the bar like a selector. */
-  private promptInput(title: string, placeholder?: string): Promise<string | undefined> {
+  /** Text dialog (API key + OAuth prompts), resolving on submit or cancel. */
+  private showExtensionInput(title: string, placeholder?: string): Promise<string | undefined> {
     return new Promise((resolve) => {
-      const input = new ExtensionInputComponent(
-        title,
-        placeholder,
-        (value) => {
-          this.restoreBar();
-          resolve(value);
-        },
-        () => {
-          this.restoreBar();
-          resolve(undefined);
-        },
-        { tui: this.ctx.tui },
-      );
+      const done = (value?: string) => {
+        this.editorContainer.clear();
+        this.editorContainer.addChild(this.editor);
+        this.ctx.tui.setFocus(this);
+        this.ctx.tui.requestRender();
+        resolve(value);
+      };
+      const input = new ExtensionInputComponent(title, placeholder, done, () => done(), { tui: this.ctx.tui });
       this.editorContainer.clear();
       this.editorContainer.addChild(input);
       this.ctx.tui.setFocus(input);
@@ -278,22 +246,17 @@ export class DashboardView extends Container implements AppView {
     });
   }
 
-  /** Pick-one dialog used by OAuth `onSelect`, swapped into the bar like a selector. */
-  private promptSelect(title: string, options: string[]): Promise<string | undefined> {
+  /** Pick-one dialog used by OAuth `onSelect`. */
+  private showExtensionSelector(title: string, options: string[]): Promise<string | undefined> {
     return new Promise((resolve) => {
-      const selector = new ExtensionSelectorComponent(
-        title,
-        options,
-        (option) => {
-          this.restoreBar();
-          resolve(option);
-        },
-        () => {
-          this.restoreBar();
-          resolve(undefined);
-        },
-        { tui: this.ctx.tui },
-      );
+      const done = (value?: string) => {
+        this.editorContainer.clear();
+        this.editorContainer.addChild(this.editor);
+        this.ctx.tui.setFocus(this);
+        this.ctx.tui.requestRender();
+        resolve(value);
+      };
+      const selector = new ExtensionSelectorComponent(title, options, done, () => done(), { tui: this.ctx.tui });
       this.editorContainer.clear();
       this.editorContainer.addChild(selector);
       this.ctx.tui.setFocus(selector);
@@ -301,27 +264,25 @@ export class DashboardView extends Container implements AppView {
     });
   }
 
-  /** Resolve the shared default `provider/model` reference to a concrete model from the candidate list. */
-  private currentDefaultModel(available: Model<Api>[]): Model<Api> | undefined {
-    const modelId = getDefaultModel();
-    if (!modelId) return undefined;
+  /** The saved default model resolved against `available` (preselection + thinking levels). */
+  private defaultModel(available: Model<Api>[]): Model<Api> | undefined {
+    const id = getDefaultModel();
+    if (!id) return undefined;
     const provider = getDefaultProvider();
-    const reference = provider ? `${provider}/${modelId}` : modelId;
-    return findExactModelReferenceMatch(reference, available);
+    return findExactModelReferenceMatch(provider ? `${provider}/${id}` : id, available);
   }
 
-  /** `/model` — pick the default model new sessions inherit (persisted to the shared defaults). */
+  /** `/model` — set the default model agents inherit. */
   private showModelSelector(initialSearchInput?: string): void {
     const available = this.registry.getAvailable();
     if (available.length === 0) {
       this.showStatus("No models available — use /login to add a provider.");
       return;
     }
-    const current = this.currentDefaultModel(available);
     this.showSelector((done) => {
       const selector = new ModelSelectorComponent(
         this.ctx.tui,
-        current,
+        this.defaultModel(available),
         available,
         [],
         (model) => {
@@ -329,53 +290,58 @@ export class DashboardView extends Container implements AppView {
           done();
           this.showStatus(`Default model: ${model.provider}/${model.id}`);
         },
-        () => done(),
+        done,
         initialSearchInput,
       );
       return { component: selector, focus: selector };
     });
   }
 
-  /** `/thinking` — pick the default thinking level (persisted to the shared defaults). */
+  /** `/thinking` — set the default thinking level. */
   private showThinkingSelector(): void {
-    const current = this.currentDefaultModel(this.registry.getAvailable());
-    const levels = (current ? getSupportedThinkingLevels(current) : THINKING_LEVELS) as ThinkingLevel[];
-    const currentLevel = (getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL) as ThinkingLevel;
+    const model = this.defaultModel(this.registry.getAvailable());
+    const levels = (model ? getSupportedThinkingLevels(model) : THINKING_LEVELS) as ThinkingLevel[];
+    const current = (getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL) as ThinkingLevel;
     this.showSelector((done) => {
       const selector = new ThinkingSelectorComponent(
-        currentLevel,
+        current,
         levels,
         (level) => {
           setSharedDefaultThinkingLevel(level);
           done();
           this.showStatus(`Default thinking level: ${level}`);
         },
-        () => done(),
+        done,
       );
       return { component: selector, focus: selector.getSelectList() };
     });
   }
 
-  /** `/login` — pick an auth method, then a provider, then run the global login. */
-  private showLoginFlow(): void {
-    const subscriptionLabel = "Use a subscription";
-    const apiKeyLabel = "Use an API key";
+  /** `/login` — pick an auth method, then a provider. */
+  private handleLoginCommand(): void {
     this.showSelector((done) => {
       const selector = new ExtensionSelectorComponent(
         "Select authentication method:",
-        [subscriptionLabel, apiKeyLabel],
+        ["Use a subscription", "Use an API key"],
         (option) => {
           done();
-          void this.showLoginProviderSelector(option === subscriptionLabel ? "oauth" : "api_key");
+          this.showLoginProviderSelector(option === "Use a subscription" ? "oauth" : "api_key");
         },
-        () => done(),
+        done,
       );
       return { component: selector, focus: selector };
     });
   }
 
-  private async showLoginProviderSelector(authType: "oauth" | "api_key"): Promise<void> {
-    const providers = this.loginProviderOptions(authType);
+  private showLoginProviderSelector(authType: "oauth" | "api_key"): void {
+    const oauthIds = new Set(this.auth.getOAuthProviders().map((p) => p.id));
+    const providers = (
+      authType === "oauth"
+        ? this.auth.getOAuthProviders().map((p) => ({ id: p.id, name: p.name }))
+        : [...new Set(this.registry.getAll().map((m) => m.provider))]
+            .filter((id) => isApiKeyLoginProvider(id, oauthIds))
+            .map((id) => ({ id, name: this.registry.getProviderDisplayName(id) }))
+    ).sort((a, b) => a.name.localeCompare(b.name));
     if (providers.length === 0) {
       this.showStatus(authType === "oauth" ? "No subscription providers available." : "No API key providers available.");
       return;
@@ -383,75 +349,58 @@ export class DashboardView extends Container implements AppView {
     this.showSelector((done) => {
       const selector = new ExtensionSelectorComponent(
         "Select a provider:",
-        providers.map((provider) => provider.name),
+        providers.map((p) => p.name),
         async (label) => {
           done();
           const provider = providers.find((p) => p.name === label);
           if (!provider) return;
           try {
-            await this.runLogin(provider.id, provider.authType, provider.name);
+            await this.login(provider.id, authType, provider.name);
             this.showStatus(`Logged in to ${provider.name}.`);
           } catch (error) {
             this.showStatus(theme.fg("warning", error instanceof Error ? error.message : String(error)));
           }
         },
-        () => done(),
+        done,
       );
       return { component: selector, focus: selector };
     });
   }
 
-  /**
-   * Login-eligible providers: every OAuth provider plus every API-key model provider. Mirrors
-   * AgentRuntime.getLoginProviderOptions, but reads the in-process global registry/auth.
-   */
-  private loginProviderOptions(authType?: "oauth" | "api_key"): { id: string; name: string; authType: "oauth" | "api_key" }[] {
-    const oauthProviders = this.globalAuth.getOAuthProviders();
-    const oauthProviderIds = new Set(oauthProviders.map((provider) => provider.id));
-    const options: { id: string; name: string; authType: "oauth" | "api_key" }[] = oauthProviders.map((provider) => ({
-      id: provider.id,
-      name: provider.name,
-      authType: "oauth",
-    }));
-    for (const providerId of new Set(this.registry.getAll().map((model) => model.provider))) {
-      if (!isApiKeyLoginProvider(providerId, oauthProviderIds)) continue;
-      options.push({ id: providerId, name: this.registry.getProviderDisplayName(providerId), authType: "api_key" });
-    }
-    const filtered = authType ? options.filter((option) => option.authType === authType) : options;
-    return filtered.sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  /**
-   * Run the login against the global credential tier. OAuth routes its prompts through the local
-   * dialogs (browser + paste/select); API-key reads the key inline. Mirrors AgentRuntime.login.
-   */
-  private async runLogin(provider: string, authType: "oauth" | "api_key", displayName: string): Promise<void> {
+  /** Run the login in-process against the global tier — the dashboard's `session.login`. */
+  private async login(provider: string, authType: "oauth" | "api_key", name: string): Promise<void> {
     if (authType === "oauth") {
-      const callbacks: OAuthLoginCallbacks = {
+      await this.auth.login(provider, {
         onAuth: (info) => {
           openBrowser(info.url);
           this.showStatus(info.instructions ? `${info.url}\n${info.instructions}` : info.url);
         },
         onDeviceCode: (info) => this.showStatus(`Enter code ${info.userCode} at ${info.verificationUri}`),
-        onPrompt: async (prompt) => (await this.promptInput(prompt.message, prompt.placeholder)) ?? "",
+        onPrompt: async (prompt) => (await this.showExtensionInput(prompt.message, prompt.placeholder)) ?? "",
         onProgress: (message) => this.showStatus(message),
-        onSelect: async (prompt: OAuthSelectPrompt) => {
-          const selectedLabel = await this.promptSelect(prompt.message, prompt.options.map((option) => option.label));
-          return prompt.options.find((option) => option.label === selectedLabel)?.id;
+        onSelect: async (prompt) => {
+          const label = await this.showExtensionSelector(
+            prompt.message,
+            prompt.options.map((o) => o.label),
+          );
+          return prompt.options.find((o) => o.label === label)?.id;
         },
-      };
-      await this.globalAuth.login(provider as OAuthProviderId, callbacks);
+      });
     } else {
-      const key = (await this.promptInput(`Enter API key for ${displayName}`))?.trim();
+      const key = (await this.showExtensionInput(`Enter API key for ${name}`))?.trim();
       if (!key) throw new Error("API key cannot be empty.");
-      this.globalAuth.set(provider, { type: "api_key", key });
+      this.auth.set(provider, { type: "api_key", key });
     }
     this.registry.refresh();
   }
 
-  /** `/logout` — pick a globally stored provider and remove its credential. */
-  private async showLogoutFlow(): Promise<void> {
-    const providers = this.logoutProviderOptions();
+  /** `/logout` — remove a stored provider credential. */
+  private handleLogoutCommand(): void {
+    const providers = this.auth
+      .list()
+      .filter((id) => this.auth.get(id))
+      .map((id) => ({ id, name: this.registry.getProviderDisplayName(id) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
     if (providers.length === 0) {
       this.showStatus("No stored credentials to remove.");
       return;
@@ -459,28 +408,19 @@ export class DashboardView extends Container implements AppView {
     this.showSelector((done) => {
       const selector = new ExtensionSelectorComponent(
         "Log out of which provider?",
-        providers.map((provider) => provider.name),
+        providers.map((p) => p.name),
         (label) => {
           done();
           const provider = providers.find((p) => p.name === label);
           if (!provider) return;
-          this.globalAuth.logout(provider.id);
+          this.auth.logout(provider.id);
           this.registry.refresh();
           this.showStatus(`Logged out of ${provider.name}.`);
         },
-        () => done(),
+        done,
       );
       return { component: selector, focus: selector };
     });
-  }
-
-  private logoutProviderOptions(): { id: string; name: string }[] {
-    const options: { id: string; name: string }[] = [];
-    for (const providerId of this.globalAuth.list()) {
-      if (!this.globalAuth.get(providerId)) continue;
-      options.push({ id: providerId, name: this.registry.getProviderDisplayName(providerId) });
-    }
-    return options.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /** List at the top; bar + status + footer pinned to the bottom, a filler between. The menu renders
