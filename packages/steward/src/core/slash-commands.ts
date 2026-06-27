@@ -48,5 +48,9 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
  */
 export const HOME_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "new", description: "Create a new agent" },
+	{ name: "model", description: "Set the default model for agents" },
+	{ name: "thinking", description: "Set the default thinking level" },
+	{ name: "login", description: "Log in to a model provider" },
+	{ name: "logout", description: "Log out of a model provider" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];

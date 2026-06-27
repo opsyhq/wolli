@@ -14,6 +14,7 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import {
@@ -162,6 +163,40 @@ export function getDefaultModel(): string | undefined {
 /** The shared default model scope, read from `~/.steward/agent/settings.json`. */
 export function getEnabledModels(): string[] | undefined {
 	return loadSharedDefaults().enabledModels;
+}
+
+/** The shared default thinking level, read from `~/.steward/agent/settings.json`. */
+export function getDefaultThinkingLevel(): ThinkingLevelSetting | undefined {
+	return loadSharedDefaults().defaultThinkingLevel;
+}
+
+/**
+ * Read-modify-write the shared defaults file (`~/.steward/agent/settings.json`), then drop the cache
+ * so the next read re-hits disk. These shared setters are the global counterpart to the per-agent
+ * `AgentSettingsManager` instance setters, which only ever write an agent's own `agent.json`.
+ */
+function updateSharedDefaults(patch: (settings: Settings) => void): void {
+	const settings = structuredClone(loadSharedDefaults());
+	patch(settings);
+	const path = getSettingsPath();
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
+	clearSharedDefaultsCache();
+}
+
+/** Persist the shared default model as separate `defaultProvider` + bare `defaultModel` (the shared-file convention). */
+export function setSharedDefaultModel(provider: string, modelId: string): void {
+	updateSharedDefaults((settings) => {
+		settings.defaultProvider = provider;
+		settings.defaultModel = modelId;
+	});
+}
+
+/** Persist the shared default thinking level. */
+export function setSharedDefaultThinkingLevel(level: ThinkingLevelSetting): void {
+	updateSharedDefaults((settings) => {
+		settings.defaultThinkingLevel = level;
+	});
 }
 
 /** The shared default model as a `provider/modelId` reference (or bare model id). */

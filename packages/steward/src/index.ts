@@ -37,9 +37,13 @@ export {
 	type CreateAgentOptions,
 	getDefaultModel,
 	getDefaultProvider,
+	getDefaultThinkingLevel,
 	isDeployed,
 	isValidAgentName,
 	type Settings,
+	setSharedDefaultModel,
+	setSharedDefaultThinkingLevel,
+	type ThinkingLevelSetting,
 } from "./core/agent-settings-manager.ts";
 export {
 	type ApiKeyCredential,
@@ -52,7 +56,7 @@ export {
 // Engine surface consumed by the @opsyhq/cli daemon client (Phase 2, Slice 1): the interactive
 // TUI + the built-in tool renderers were lifted into apps/cli and reach back for these helpers.
 export { executeBash } from "./core/bash-executor.ts";
-export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, isValidThinkingLevel } from "./core/defaults.ts";
+export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, isValidThinkingLevel, THINKING_LEVELS } from "./core/defaults.ts";
 export type { ResourceDiagnostic, ResourceSummary } from "./core/diagnostics.ts";
 // The Environment seam: the single backend every file/shell tool consumes. Extensions reach the
 // session's instance via ctx.environment; createHostEnvironment builds the unconfined host backend
@@ -195,7 +199,7 @@ export {
 	writeMemoryFile,
 } from "./core/memory.ts";
 export { convertToLlm, createBashExecutionMessage, createCompactionSummaryMessage } from "./core/messages.ts";
-export { ModelRegistry } from "./core/model-registry.ts";
+export { isApiKeyLoginProvider, ModelRegistry } from "./core/model-registry.ts";
 export {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
@@ -313,6 +317,7 @@ export { stripAnsi } from "./utils/ansi.ts";
 export { applyExifOrientation } from "./utils/exif-orientation.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "./utils/fs-watch.ts";
+export { openBrowser } from "./utils/open-browser.ts";
 export { formatPathRelativeToCwdOrAbsolute, resolvePath } from "./utils/paths.ts";
 export { loadPhoton, type PhotonImageType } from "./utils/photon.ts";
 export { ensureTool } from "./utils/tools-manager.ts";
