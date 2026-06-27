@@ -226,6 +226,11 @@ export interface EditorTheme {
 export interface EditorOptions {
 	paddingX?: number;
 	autocompleteMaxVisible?: number;
+	/**
+	 * Marker that flags a command line for the menu. Default "/" opens it on a leading slash (chat);
+	 * "" treats every line as a command line — menu opens on the first letter, one Enter runs it.
+	 */
+	commandMenuPrefix?: string;
 }
 
 const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
@@ -286,6 +291,8 @@ export class Editor implements Component, Focusable {
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
+	// See EditorOptions.commandMenuPrefix.
+	private commandMenuPrefix: string = "/";
 
 	// Paste tracking for large pastes
 	private pastes: Map<number, string> = new Map();
@@ -332,6 +339,7 @@ export class Editor implements Component, Focusable {
 		this.paddingX = Number.isFinite(paddingX) ? Math.max(0, Math.floor(paddingX)) : 0;
 		const maxVisible = options.autocompleteMaxVisible ?? 5;
 		this.autocompleteMaxVisible = Number.isFinite(maxVisible) ? Math.max(3, Math.min(20, Math.floor(maxVisible))) : 5;
+		this.commandMenuPrefix = options.commandMenuPrefix ?? "/";
 	}
 
 	/** Set of currently valid paste IDs, for marker-aware segmentation. */
@@ -694,7 +702,7 @@ export class Editor implements Component, Focusable {
 					this.state.cursorLine = result.cursorLine;
 					this.setCursorCol(result.cursorCol);
 
-					if (this.autocompletePrefix.startsWith("/")) {
+					if (this.autocompletePrefix.startsWith(this.commandMenuPrefix)) {
 						this.cancelAutocomplete();
 						// Fall through to submit
 					} else {
@@ -2074,7 +2082,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	private isInSlashCommandContext(textBeforeCursor: string): boolean {
-		return this.isSlashMenuAllowed() && textBeforeCursor.trimStart().startsWith("/");
+		return this.isSlashMenuAllowed() && textBeforeCursor.trimStart().startsWith(this.commandMenuPrefix);
 	}
 
 	// Autocomplete methods
@@ -2111,7 +2119,7 @@ export class Editor implements Component, Focusable {
 		prefix: string,
 		items: Array<{ value: string; label: string; description?: string }>,
 	): SelectList {
-		const layout = prefix.startsWith("/") ? SLASH_COMMAND_SELECT_LIST_LAYOUT : undefined;
+		const layout = prefix.startsWith(this.commandMenuPrefix) ? SLASH_COMMAND_SELECT_LIST_LAYOUT : undefined;
 		return new SelectList(items, this.autocompleteMaxVisible, this.theme.selectList, layout);
 	}
 
