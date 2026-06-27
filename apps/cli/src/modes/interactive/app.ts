@@ -96,7 +96,7 @@ export class App {
 		switch (route.to) {
 			case "dashboard":
 				this.closeChat();
-				await this.show(new DashboardView());
+				await this.show(new DashboardView(this.keybindings));
 				return;
 			case "agent": {
 				this.closeChat();
@@ -116,7 +116,7 @@ export class App {
 			case "chat": {
 				const agent = this.steward.get(route.name);
 				if (!agent) {
-					await this.show(new DashboardView());
+					await this.show(new DashboardView(this.keybindings));
 					return;
 				}
 				await agent.connect();
