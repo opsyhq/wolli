@@ -7,6 +7,12 @@
  *
  * The on-disk path comes from `getAuthPath()` (the shared
  * `~/.steward/agent/auth.json`).
+ *
+ * A store may hold an optional `fallback` store it defers to on a per-provider
+ * miss: the agent tier (`~/.steward/agents/<name>/auth.json`) is built with the
+ * global tier as its fallback, so an agent overrides the shared credential per
+ * provider and inherits it for the rest. Reads delegate to `fallback`; writes
+ * never touch it.
  */
 
 import {
@@ -202,17 +208,21 @@ export class AuthStorage {
 	private data: AuthStorageData = {};
 	private runtimeOverrides: Map<string, string> = new Map();
 	private fallbackResolver?: (provider: string) => string | undefined;
+	// The lower credential tier this store defers to on a per-provider miss (the agent tier's
+	// `fallback` is the global store). Distinct from `fallbackResolver` (the models.json resolver).
+	private fallback?: AuthStorage;
 	private loadError: Error | null = null;
 	private errors: Error[] = [];
 	private storage: AuthStorageBackend;
 
-	private constructor(storage: AuthStorageBackend) {
+	private constructor(storage: AuthStorageBackend, fallback?: AuthStorage) {
 		this.storage = storage;
+		this.fallback = fallback;
 		this.reload();
 	}
 
-	static create(authPath?: string): AuthStorage {
-		return new AuthStorage(new FileAuthStorageBackend(authPath ?? getAuthPath()));
+	static create(authPath?: string, fallback?: AuthStorage): AuthStorage {
+		return new AuthStorage(new FileAuthStorageBackend(authPath ?? getAuthPath()), fallback);
 	}
 
 	static fromStorage(storage: AuthStorageBackend): AuthStorage {
@@ -300,10 +310,10 @@ export class AuthStorage {
 	}
 
 	/**
-	 * Get credential for a provider.
+	 * Get credential for a provider. Defers to the fallback tier when this tier lacks it.
 	 */
 	get(provider: string): AuthCredential | undefined {
-		return this.data[provider] ?? undefined;
+		return this.data[provider] ?? this.fallback?.get(provider);
 	}
 
 	/**
@@ -343,6 +353,8 @@ export class AuthStorage {
 	hasAuth(provider: string): boolean {
 		if (this.runtimeOverrides.has(provider)) return true;
 		if (this.data[provider]) return true;
+		// Defer the env/resolver check to the fallback tier (its own data → env → resolver chain).
+		if (this.fallback) return this.fallback.hasAuth(provider);
 		if (getEnvApiKey(provider)) return true;
 		if (this.fallbackResolver?.(provider)) return true;
 		return false;
@@ -358,6 +370,12 @@ export class AuthStorage {
 
 		if (this.runtimeOverrides.has(provider)) {
 			return { configured: false, source: "runtime", label: "--api-key" };
+		}
+
+		// This tier owns nothing for the provider — defer the env/resolver check to the fallback tier
+		// (its own env/resolver logic), mirroring getApiKey/hasAuth precedence (runtime override first).
+		if (this.fallback) {
+			return this.fallback.getAuthStatus(provider);
 		}
 
 		const envKeys = findEnvKeys(provider);
@@ -461,8 +479,9 @@ export class AuthStorage {
 	 * 1. Runtime override (CLI --api-key)
 	 * 2. API key from auth.json
 	 * 3. OAuth token from auth.json (auto-refreshed with locking)
-	 * 4. Environment variable
-	 * 5. Fallback resolver (models.json custom providers)
+	 * 4. Fallback tier (its own data → env → resolver chain), when this store is layered
+	 * 5. Environment variable
+	 * 6. Fallback resolver (models.json custom providers)
 	 */
 	async getApiKey(providerId: string, options?: { includeFallback?: boolean }): Promise<string | undefined> {
 		// Runtime override takes highest priority
@@ -513,6 +532,12 @@ export class AuthStorage {
 				// Token not expired, use current access token
 				return provider.getApiKey(cred);
 			}
+		}
+
+		// No credential in this tier — defer to the fallback tier, which runs its own
+		// data → env → resolver chain (and refreshes against its own file).
+		if (this.fallback) {
+			return this.fallback.getApiKey(providerId, options);
 		}
 
 		// Fall back to environment variable

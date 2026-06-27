@@ -183,6 +183,11 @@ export function getAgentIntegrationsPath(name: string): string {
 	return join(getAgentDir(name), "integrations.json");
 }
 
+/** Path to an agent's auth.json (per-agent API keys + OAuth tokens; the agent credential tier). */
+export function getAgentAuthPath(name: string): string {
+	return join(getAgentDir(name), "auth.json");
+}
+
 /** Path to an agent's integrations dir (where installed integration packages are symlinked/discovered). */
 export function getAgentIntegrationsDir(name: string): string {
 	return join(getAgentDir(name), "integrations");

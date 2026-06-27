@@ -24,7 +24,7 @@ import type { AgentHarnessEvent } from "@opsyhq/agent";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
-import { APP_NAME, getAgentDir, getDaemonHost, getDaemonToken } from "./config.ts";
+import { APP_NAME, getAgentAuthPath, getAgentDir, getDaemonHost, getDaemonToken } from "./config.ts";
 import { createAgentPluginManager } from "./core/agent-plugin-manager.ts";
 import { AgentRuntime, type AgentSession } from "./core/agent-runtime.ts";
 import { AgentSettingsManager } from "./core/agent-settings-manager.ts";
@@ -374,7 +374,10 @@ async function handleCommand(
 async function createAgentRuntime(name: string): Promise<{ runtime: AgentRuntime } | { error: string }> {
 	const store = AgentSettingsManager.create(name);
 
-	const authStorage = AuthStorage.create();
+	// Per-agent credentials override the shared store per provider: the agent tier
+	// (`~/.steward/agents/<name>/auth.json`) defers to the global tier on a per-provider miss.
+	const globalAuth = AuthStorage.create();
+	const authStorage = AuthStorage.create(getAgentAuthPath(name), globalAuth);
 	// Integration accounts are per-agent (`~/.steward/agents/<name>/integrations.json`).
 	const integrationAccounts = IntegrationAccountStorage.create(name);
 	// Integration runtime state is per-agent, one file per service (`~/.steward/agents/<name>/store/`).
@@ -398,10 +401,11 @@ async function createAgentRuntime(name: string): Promise<{ runtime: AgentRuntime
 	}
 	const model = resolved.model;
 
-	// Auth precedence (handled by AuthStorage): runtime → auth.json (api key / OAuth) → env var.
-	// hasAuth() doesn't refresh tokens — it just checks something exists. If it returns false, every
-	// credential source (including the env var) is absent, so the only actionable hint is to log in.
-	if (!authStorage.hasAuth(model.provider)) {
+	// Auth precedence (handled by the layered AuthStorage): agent tier → global tier, each runtime →
+	// auth.json (api key / OAuth) → env var. hasConfiguredAuth() doesn't refresh tokens — it just checks
+	// something exists across both tiers plus any models.json provider key. If it returns false, every
+	// credential source is absent, so the only actionable hint is to log in.
+	if (!modelRegistry.hasConfiguredAuth(model)) {
 		return { error: `No credentials found for provider "${model.provider}". Log in with the steward CLI.` };
 	}
 
