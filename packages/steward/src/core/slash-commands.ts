@@ -38,17 +38,16 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 ];
 
 /**
- * steward's dashboard (home screen) slash commands — the ones `DashboardView.handleSubmit`
- * intercepts on submit, surfaced to the editor autocomplete the same way `BUILTIN_SLASH_COMMANDS`
+ * steward's dashboard (home screen) slash commands — the ones `DashboardView.runCommand`
+ * dispatches on submit, surfaced to the editor autocomplete the same way `BUILTIN_SLASH_COMMANDS`
  * are in chat.
  *
- * Kept in lockstep with the `handleSubmit` if-chain so the menu only ever offers real commands.
+ * Kept in lockstep with the `runCommand` if-chain so the menu only ever offers real commands.
  * Lives here (beside `BUILTIN_SLASH_COMMANDS`, not in apps/cli) as shared front-end command
  * metadata a future desktop client can reuse.
  */
 export const HOME_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "new", description: "Create a new agent" },
-	{ name: "delete", description: "Delete the selected agent" },
 	{ name: "help", description: "List the available commands" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];

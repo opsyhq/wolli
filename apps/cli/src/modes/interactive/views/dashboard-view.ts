@@ -1,6 +1,8 @@
 /**
  * Dashboard: browse the agent list with the arrows, or type into the command bar to search the
- * command menu (new/delete/help/quit) and run one. Unknown input reports an error.
+ * command menu (new/help/quit) and run one. The bar reuses the editor's own autocomplete
+ * machinery in bare-command mode (commandMenuPrefix ""), so any letter opens the menu, Tab completes
+ * to /command, and a single Enter runs the highlighted one. Unknown input reports an error.
  */
 
 import {
@@ -13,10 +15,14 @@ import {
   theme,
 } from "@opsyhq/steward";
 import {
+  type AutocompleteItem,
+  type AutocompleteProvider,
+  type AutocompleteSuggestions,
   Box,
   type Component,
   Container,
   type Focusable,
+  fuzzyFilter,
   Input,
   matchesKey,
   type OverlayHandle,
@@ -28,7 +34,6 @@ import {
 import type { KeybindingsManager } from "../../../keybindings-manager.ts";
 import { type AppView, BIRTH_OPENER, type ViewContext } from "../app.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
-import { DeleteConfirm } from "./components/delete-confirm.ts";
 
 export class DashboardView extends Container implements AppView {
   private ctx!: ViewContext;
@@ -36,12 +41,10 @@ export class DashboardView extends Container implements AppView {
   private readonly headerContainer = new Container();
   private readonly bodyContainer = new Container();
   private readonly editorContainer = new Container();
-  private readonly menuContainer = new Container();
   private readonly statusContainer = new Container();
   private readonly footerContainer = new Container();
   private editor!: CustomEditor;
   private list?: SelectList;
-  private commandMenu?: SelectList;
   private overlay?: OverlayHandle;
 
   constructor(keybindings: KeybindingsManager) {
@@ -53,18 +56,27 @@ export class DashboardView extends Container implements AppView {
     this.ctx = ctx;
 
     // The view is the TUI focus target and multiplexes input, so focus the bar by hand to render its
-    // cursor. The bar drives its own command menu (below) rather than the editor's slash autocomplete.
-    this.editor = new CustomEditor(ctx.tui, getEditorTheme(), this.keybindings, { paddingX: 1 });
+    // cursor. The bar runs in bare-command mode: the editor's own autocomplete drives the menu (no
+    // leading slash needed), and HomeCommandProvider supplies + completes the commands.
+    this.editor = new CustomEditor(ctx.tui, getEditorTheme(), this.keybindings, {
+      paddingX: 1,
+      commandMenuPrefix: "",
+    });
     this.editor.focused = true;
+    this.editor.setAutocompleteProvider(new HomeCommandProvider());
     this.editor.onEscape = () => this.editor.setText("");
-    this.editor.onChange = (text) => this.updateCommandMenu(text);
+    // Clear any stale error and reflect the browse/command hint split on every keystroke.
+    this.editor.onChange = () => {
+      this.statusContainer.clear();
+      this.renderFooter();
+    };
+    this.editor.onSubmit = (text) => this.runCommand(text);
 
+    // Children are mounted for invalidation; render() (below) composes them with a filler that
+    // pins the bar to the bottom, so their add order here does not drive layout.
     this.addChild(this.headerContainer);
-    this.addChild(new Spacer(1));
     this.addChild(this.bodyContainer);
-    this.addChild(new Spacer(1));
     this.addChild(this.editorContainer);
-    this.addChild(this.menuContainer);
     this.addChild(this.statusContainer);
     this.addChild(this.footerContainer);
     this.editorContainer.addChild(this.editor);
@@ -110,26 +122,6 @@ export class DashboardView extends Container implements AppView {
     this.bodyContainer.addChild(this.list);
   }
 
-  /** Rebuild the command menu from the bar text (any substring, no slash needed) and clear any error. */
-  private updateCommandMenu(text: string): void {
-    this.statusContainer.clear();
-    this.menuContainer.clear();
-    const query = text.trim().replace(/^\//, "").toLowerCase();
-    if (text.trim() === "") {
-      this.commandMenu = undefined;
-      this.renderFooter();
-      return;
-    }
-    const matches = HOME_SLASH_COMMANDS.filter((command) => command.name.toLowerCase().includes(query));
-    this.commandMenu = new SelectList(
-      matches.map((command) => ({ value: command.name, label: command.name, description: command.description })),
-      8,
-      getSelectListTheme(),
-    );
-    this.menuContainer.addChild(this.commandMenu);
-    this.renderFooter();
-  }
-
   private renderFooter(): void {
     this.footerContainer.clear();
     const hints = this.isBrowsing()
@@ -140,7 +132,7 @@ export class DashboardView extends Container implements AppView {
           rawKeyHint("type", "to search commands"),
           rawKeyHint("ctrl+c", "quit"),
         ]
-      : [rawKeyHint("↑/↓", "select"), rawKeyHint("enter", "run"), rawKeyHint("esc", "clear")];
+      : [rawKeyHint("↑/↓", "select"), rawKeyHint("tab", "complete"), rawKeyHint("enter", "run"), rawKeyHint("esc", "clear")];
     this.footerContainer.addChild(new Text(hints.join(theme.fg("muted", " · ")), 1, 0));
   }
 
@@ -150,6 +142,9 @@ export class DashboardView extends Container implements AppView {
       return;
     }
     if (this.isBrowsing()) {
+      // Browsing means the user has moved on from any command feedback (e.g. an unknown-command
+      // error), so drop the stale status line.
+      this.statusContainer.clear();
       if (matchesKey(data, "tab") || matchesKey(data, "right")) {
         const selected = this.list?.getSelectedItem();
         if (selected) void this.ctx.navigate({ to: "agent", name: selected.value });
@@ -162,36 +157,19 @@ export class DashboardView extends Container implements AppView {
       this.editor.handleInput(data);
       return;
     }
-    // Command mode: drive the menu. up/down move it, tab completes the highlighted command, enter runs
-    // it. Reading the menu here (not via editor.onSubmit) avoids the editor's submit clearing it first.
-    if (matchesKey(data, "up") || matchesKey(data, "down")) {
-      this.commandMenu?.handleInput(data);
-      return;
-    }
-    if (matchesKey(data, "tab")) {
-      const selected = this.commandMenu?.getSelectedItem();
-      if (selected) this.editor.setText(selected.value);
-      return;
-    }
-    if (matchesKey(data, "enter")) {
-      this.runCommand();
-      return;
-    }
+    // Command mode: the editor owns everything — the menu (↑/↓), Tab completion, typing, and Enter
+    // (which completes the highlighted command and submits it via onSubmit in one keystroke).
     this.editor.handleInput(data);
   }
 
-  /** Run the highlighted command, or report the bar text as an unknown command. */
-  private runCommand(): void {
-    const selected = this.commandMenu?.getSelectedItem();
-    if (!selected) {
-      this.showStatus(theme.fg("warning", `Unknown command: ${this.editor.getText().trim()}`));
-      return;
-    }
-    this.editor.setText("");
-    if (selected.value === "new") this.openCreate();
-    else if (selected.value === "delete") this.openDelete();
-    else if (selected.value === "help") this.openHelp();
-    else if (selected.value === "quit") this.ctx.quit();
+  /** Run the command the bar submitted (a completed /name, or raw text the user never completed). */
+  private runCommand(text: string): void {
+    const name = text.trim().replace(/^\//, "");
+    if (name === "") return;
+    if (name === "new") this.openCreate();
+    else if (name === "help") this.openHelp();
+    else if (name === "quit") this.ctx.quit();
+    else this.showStatus(theme.fg("warning", `Unknown command: ${name}`));
   }
 
   private showStatus(line: string): void {
@@ -219,31 +197,6 @@ export class DashboardView extends Container implements AppView {
     this.overlay = this.ctx.tui.showOverlay(create, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
   }
 
-  private openDelete(): void {
-    const selected = this.list?.getSelectedItem();
-    if (!selected) return;
-    const agent = this.ctx.steward.get(selected.value);
-    if (!agent) return;
-
-    this.editor.focused = false;
-    const confirm = new DeleteConfirm(agent, {
-      onCancel: () => {
-        this.overlay?.hide();
-        this.editor.focused = true;
-      },
-      onDeleted: () => {
-        this.overlay?.hide();
-        this.editor.focused = true;
-        this.renderHeader();
-        this.renderBody();
-        this.renderFooter();
-        this.ctx.tui.requestRender();
-      },
-      onQuit: () => this.ctx.quit(),
-    });
-    this.overlay = this.ctx.tui.showOverlay(confirm, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
-  }
-
   private openHelp(): void {
     this.editor.focused = false;
     const help = new Help({
@@ -256,12 +209,74 @@ export class DashboardView extends Container implements AppView {
     this.overlay = this.ctx.tui.showOverlay(help, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
   }
 
+  /**
+   * Lay the agent list out at the top and pin the command bar — plus the status and footer below
+   * it — to the bottom of the screen, with a filler between them. The bar's autocomplete menu
+   * renders inside editorContainer, so it grows upward into the filler and stays above the footer.
+   */
+  render(width: number): string[] {
+    const header = this.headerContainer.render(width);
+    const body = this.bodyContainer.render(width);
+    const bar = this.editorContainer.render(width);
+    const status = this.statusContainer.render(width);
+    const footer = this.footerContainer.render(width);
+    // One blank line of breathing room under the header, then a filler that absorbs the rest of the
+    // height so the bar block lands at the bottom.
+    const used = header.length + 1 + body.length + bar.length + status.length + footer.length;
+    const rows = this.ctx?.tui.terminal.rows ?? used + 1;
+    const filler = new Array(Math.max(0, rows - used)).fill("");
+    return [...header, "", ...body, ...filler, ...bar, ...status, ...footer];
+  }
+
   focusTarget(): Component {
     return this;
   }
 
   onUnmount(): void {
     this.overlay?.hide();
+  }
+}
+
+/**
+ * Feeds the command bar's editor: treats the whole line as a command query (no leading slash needed),
+ * fuzzy-filters HOME_SLASH_COMMANDS, and completes the picked one to "/name " so it dispatches through
+ * onSubmit just like chat's slash commands. Returns null on an empty bar so the menu stays closed while
+ * browsing.
+ */
+class HomeCommandProvider implements AutocompleteProvider {
+  async getSuggestions(
+    lines: string[],
+    cursorLine: number,
+    cursorCol: number,
+  ): Promise<AutocompleteSuggestions | null> {
+    const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
+    if (before.trim() === "") return null;
+    const query = before.trimStart().replace(/^\//, "");
+    const matches = fuzzyFilter([...HOME_SLASH_COMMANDS], query, (command) => command.name);
+    if (matches.length === 0) return null;
+    return {
+      items: matches.map((command) => ({
+        value: command.name,
+        label: command.name,
+        description: command.description,
+      })),
+      prefix: before,
+    };
+  }
+
+  applyCompletion(
+    lines: string[],
+    cursorLine: number,
+    cursorCol: number,
+    item: AutocompleteItem,
+    prefix: string,
+  ): { lines: string[]; cursorLine: number; cursorCol: number } {
+    const currentLine = lines[cursorLine] ?? "";
+    const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+    const afterCursor = currentLine.slice(cursorCol);
+    const newLines = [...lines];
+    newLines[cursorLine] = `${beforePrefix}/${item.value} ${afterCursor}`;
+    return { lines: newLines, cursorLine, cursorCol: beforePrefix.length + item.value.length + 2 };
   }
 }
 
