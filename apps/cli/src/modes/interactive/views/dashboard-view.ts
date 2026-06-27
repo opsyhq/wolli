@@ -1,9 +1,6 @@
 /**
- * Dashboard: an agent list you browse with the arrows, plus a persistent command bar. Typing `/`
- * opens the fuzzy command menu; Enter runs the selected command (`/new`, `/delete`, `/help`,
- * `/quit`). This mirrors the chat screen's slash-command machinery — the same `CustomEditor` +
- * `CombinedAutocompleteProvider` + a `handleSubmit` if-chain kept in lockstep with
- * `HOME_SLASH_COMMANDS`.
+ * Dashboard: browse the agent list with the arrows, or type into the command bar to search the
+ * command menu (new/delete/help/quit) and run one. Unknown input reports an error.
  */
 
 import {
@@ -17,7 +14,6 @@ import {
 } from "@opsyhq/steward";
 import {
   Box,
-  CombinedAutocompleteProvider,
   type Component,
   Container,
   type Focusable,
@@ -26,7 +22,6 @@ import {
   type OverlayHandle,
   type SelectItem,
   SelectList,
-  type SlashCommand,
   Spacer,
   Text,
 } from "@opsyhq/tui";
@@ -41,9 +36,12 @@ export class DashboardView extends Container implements AppView {
   private readonly headerContainer = new Container();
   private readonly bodyContainer = new Container();
   private readonly editorContainer = new Container();
+  private readonly menuContainer = new Container();
+  private readonly statusContainer = new Container();
   private readonly footerContainer = new Container();
   private editor!: CustomEditor;
   private list?: SelectList;
+  private commandMenu?: SelectList;
   private overlay?: OverlayHandle;
 
   constructor(keybindings: KeybindingsManager) {
@@ -54,20 +52,20 @@ export class DashboardView extends Container implements AppView {
   onMount(ctx: ViewContext): void {
     this.ctx = ctx;
 
-    // The persistent command bar mirrors chat (`chat-view.ts`): the same CustomEditor, focused so
-    // its cursor renders even though the view (not the editor) is the TUI focus target.
+    // The view is the TUI focus target and multiplexes input, so focus the bar by hand to render its
+    // cursor. The bar drives its own command menu (below) rather than the editor's slash autocomplete.
     this.editor = new CustomEditor(ctx.tui, getEditorTheme(), this.keybindings, { paddingX: 1 });
     this.editor.focused = true;
-    this.editor.onSubmit = (text) => this.handleSubmit(text);
     this.editor.onEscape = () => this.editor.setText("");
-    this.editor.onChange = () => this.renderFooter();
-    this.setupAutocompleteProvider();
+    this.editor.onChange = (text) => this.updateCommandMenu(text);
 
     this.addChild(this.headerContainer);
     this.addChild(new Spacer(1));
     this.addChild(this.bodyContainer);
     this.addChild(new Spacer(1));
     this.addChild(this.editorContainer);
+    this.addChild(this.menuContainer);
+    this.addChild(this.statusContainer);
     this.addChild(this.footerContainer);
     this.editorContainer.addChild(this.editor);
 
@@ -76,22 +74,9 @@ export class DashboardView extends Container implements AppView {
     this.renderFooter();
   }
 
-  /**
-   * Build the slash-command autocomplete from `HOME_SLASH_COMMANDS`, mirroring chat's
-   * `createBaseAutocompleteProvider`. No session here, so there are no dynamic commands and no `fd`
-   * (fuzzy `@`-file search stays dormant); slash-command filtering uses the provider's fuzzy filter.
-   */
-  private setupAutocompleteProvider(): void {
-    const commands: SlashCommand[] = HOME_SLASH_COMMANDS.map((command) => ({
-      name: command.name,
-      description: command.description,
-    }));
-    this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(commands, process.cwd(), null));
-  }
-
-  /** Empty bar with no command dropdown: arrows browse the agent list. Otherwise the editor owns input. */
+  /** Empty bar: the arrows browse the agent list. Otherwise the bar owns input and drives the menu. */
   private isBrowsing(): boolean {
-    return this.editor.getText() === "" && !this.editor.isShowingAutocomplete();
+    return this.editor.getText().trim() === "";
   }
 
   private renderHeader(): void {
@@ -111,13 +96,12 @@ export class DashboardView extends Container implements AppView {
     if (agents.length === 0) {
       this.list = undefined;
       this.bodyContainer.addChild(
-        new Text(theme.fg("dim", "No agents yet — type /new to create your first one."), 1, 0),
+        new Text(theme.fg("dim", "No agents yet — type new to create your first one."), 1, 0),
       );
       return;
     }
     const items: SelectItem[] = agents.map((agent) => ({
       value: agent.name,
-      // Lead with a deployment badge, reusing the ●/○ glyphs from the agent detail view.
       label: `${isDeployed(agent.config) ? theme.fg("success", "●") : theme.fg("dim", "○")} ${agent.name}`,
       description: agent.config.purpose.trim().replace(/\s+/g, " "),
     }));
@@ -126,7 +110,26 @@ export class DashboardView extends Container implements AppView {
     this.bodyContainer.addChild(this.list);
   }
 
-  /** Mode-aware key legend: browse hints when the bar is empty, dropdown hints once typing. */
+  /** Rebuild the command menu from the bar text (any substring, no slash needed) and clear any error. */
+  private updateCommandMenu(text: string): void {
+    this.statusContainer.clear();
+    this.menuContainer.clear();
+    const query = text.trim().replace(/^\//, "").toLowerCase();
+    if (text.trim() === "") {
+      this.commandMenu = undefined;
+      this.renderFooter();
+      return;
+    }
+    const matches = HOME_SLASH_COMMANDS.filter((command) => command.name.toLowerCase().includes(query));
+    this.commandMenu = new SelectList(
+      matches.map((command) => ({ value: command.name, label: command.name, description: command.description })),
+      8,
+      getSelectListTheme(),
+    );
+    this.menuContainer.addChild(this.commandMenu);
+    this.renderFooter();
+  }
+
   private renderFooter(): void {
     this.footerContainer.clear();
     const hints = this.isBrowsing()
@@ -134,10 +137,10 @@ export class DashboardView extends Container implements AppView {
           rawKeyHint("↑/↓", "browse"),
           rawKeyHint("enter", "chat"),
           rawKeyHint("tab", "details"),
-          rawKeyHint("/", "commands"),
+          rawKeyHint("type", "to search commands"),
           rawKeyHint("ctrl+c", "quit"),
         ]
-      : [rawKeyHint("↑/↓", "select"), rawKeyHint("enter", "run"), rawKeyHint("esc", "cancel")];
+      : [rawKeyHint("↑/↓", "select"), rawKeyHint("enter", "run"), rawKeyHint("esc", "clear")];
     this.footerContainer.addChild(new Text(hints.join(theme.fg("muted", " · ")), 1, 0));
   }
 
@@ -146,8 +149,6 @@ export class DashboardView extends Container implements AppView {
       this.ctx.quit();
       return;
     }
-    // Browsing: arrows move the agent list, enter opens its chat, tab/→ opens details. Any other
-    // key (letters, `/`) falls through to the editor — typing starts; `/` opens the command menu.
     if (this.isBrowsing()) {
       if (matchesKey(data, "tab") || matchesKey(data, "right")) {
         const selected = this.list?.getSelectedItem();
@@ -158,52 +159,56 @@ export class DashboardView extends Container implements AppView {
         this.list.handleInput(data);
         return;
       }
+      this.editor.handleInput(data);
+      return;
     }
-    // Command mode (or a fall-through key): the editor owns input, so its autocomplete dropdown's
-    // up/down/enter/tab/esc behave exactly as in chat.
+    // Command mode: drive the menu. up/down move it, tab completes the highlighted command, enter runs
+    // it. Reading the menu here (not via editor.onSubmit) avoids the editor's submit clearing it first.
+    if (matchesKey(data, "up") || matchesKey(data, "down")) {
+      this.commandMenu?.handleInput(data);
+      return;
+    }
+    if (matchesKey(data, "tab")) {
+      const selected = this.commandMenu?.getSelectedItem();
+      if (selected) this.editor.setText(selected.value);
+      return;
+    }
+    if (matchesKey(data, "enter")) {
+      this.runCommand();
+      return;
+    }
     this.editor.handleInput(data);
   }
 
-  /**
-   * Dispatch a submitted command, mirroring chat's `handleSubmit` if-chain. Kept in lockstep with
-   * `HOME_SLASH_COMMANDS`. There is no prompt target on the dashboard, so unknown input just clears.
-   */
-  private handleSubmit(text: string): void {
-    const trimmed = text.trim();
-    // Clear the bar up front: every branch (and unknown input) clears it, and there is no
-    // empty-guard or argument-carrying command to keep the text around for, unlike chat.
+  /** Run the highlighted command, or report the bar text as an unknown command. */
+  private runCommand(): void {
+    const selected = this.commandMenu?.getSelectedItem();
+    if (!selected) {
+      this.showStatus(theme.fg("warning", `Unknown command: ${this.editor.getText().trim()}`));
+      return;
+    }
     this.editor.setText("");
-    if (trimmed === "/new") {
-      this.openCreate();
-      return;
-    }
-    if (trimmed === "/delete") {
-      this.openDelete();
-      return;
-    }
-    if (trimmed === "/help") {
-      this.openHelp();
-      return;
-    }
-    if (trimmed === "/quit") {
-      this.ctx.quit();
-      return;
-    }
+    if (selected.value === "new") this.openCreate();
+    else if (selected.value === "delete") this.openDelete();
+    else if (selected.value === "help") this.openHelp();
+    else if (selected.value === "quit") this.ctx.quit();
+  }
+
+  private showStatus(line: string): void {
+    this.statusContainer.clear();
+    this.statusContainer.addChild(new Text(line, 1, 0));
+    this.ctx.tui.requestRender();
   }
 
   private openCreate(): void {
-    // Drop the bar's cursor while the overlay owns input, else both emit a marker and the TUI's
-    // bottom-most one wrongly lands in the bar behind the overlay. Restored on every close path.
+    // Drop the bar's cursor while the overlay owns input, else the TUI's bottom-most marker lands in
+    // the bar behind it. Restored on every close path.
     this.editor.focused = false;
     const create = new CreateAgent({
       create: (name) => this.ctx.steward.create(name),
       onCreated: (agent) => {
         this.overlay?.hide();
-        void this.ctx.navigate({
-          to: "chat",
-          name: agent.name,
-          initialAssistantMessage: BIRTH_OPENER,
-        });
+        void this.ctx.navigate({ to: "chat", name: agent.name, initialAssistantMessage: BIRTH_OPENER });
       },
       onCancel: () => {
         this.overlay?.hide();
@@ -211,12 +216,7 @@ export class DashboardView extends Container implements AppView {
       },
       onQuit: () => this.ctx.quit(),
     });
-    this.overlay = this.ctx.tui.showOverlay(create, {
-      anchor: "center",
-      width: "50%",
-      minWidth: 40,
-      maxHeight: "60%",
-    });
+    this.overlay = this.ctx.tui.showOverlay(create, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
   }
 
   private openDelete(): void {
@@ -234,7 +234,6 @@ export class DashboardView extends Container implements AppView {
       onDeleted: () => {
         this.overlay?.hide();
         this.editor.focused = true;
-        // Re-render counts + list; deleting the last agent drops to the empty state.
         this.renderHeader();
         this.renderBody();
         this.renderFooter();
@@ -242,12 +241,7 @@ export class DashboardView extends Container implements AppView {
       },
       onQuit: () => this.ctx.quit(),
     });
-    this.overlay = this.ctx.tui.showOverlay(confirm, {
-      anchor: "center",
-      width: "50%",
-      minWidth: 40,
-      maxHeight: "60%",
-    });
+    this.overlay = this.ctx.tui.showOverlay(confirm, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
   }
 
   private openHelp(): void {
@@ -259,12 +253,7 @@ export class DashboardView extends Container implements AppView {
       },
       onQuit: () => this.ctx.quit(),
     });
-    this.overlay = this.ctx.tui.showOverlay(help, {
-      anchor: "center",
-      width: "50%",
-      minWidth: 40,
-      maxHeight: "60%",
-    });
+    this.overlay = this.ctx.tui.showOverlay(help, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
   }
 
   focusTarget(): Component {
@@ -293,15 +282,11 @@ class CreateAgent implements Component, Focusable {
   constructor(callbacks: CreateAgentCallbacks) {
     this.callbacks = callbacks;
     this.box.addChild(new Text(theme.fg("accent", "New agent"), 1, 0));
-    this.box.addChild(
-      new Text(theme.fg("dim", "What would you like to name the agent?"), 1, 0),
-    );
+    this.box.addChild(new Text(theme.fg("dim", "What would you like to name the agent?"), 1, 0));
     this.box.addChild(this.input);
     this.box.addChild(this.status);
     this.box.addChild(new Spacer(1));
-    this.box.addChild(
-      new Text(theme.fg("dim", "enter create · esc cancel"), 1, 0),
-    );
+    this.box.addChild(new Text(theme.fg("dim", "enter create · esc cancel"), 1, 0));
   }
 
   get focused(): boolean {
@@ -333,12 +318,7 @@ class CreateAgent implements Component, Focusable {
     try {
       this.callbacks.onCreated(this.callbacks.create(name));
     } catch (error) {
-      this.status.setText(
-        theme.fg(
-          "warning",
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
+      this.status.setText(theme.fg("warning", error instanceof Error ? error.message : String(error)));
     }
   }
 
@@ -367,11 +347,11 @@ class Help implements Component, Focusable {
     this.box.addChild(new Text(theme.fg("accent", "Commands"), 1, 0));
     for (const command of HOME_SLASH_COMMANDS) {
       this.box.addChild(
-        new Text(`${theme.fg("accent", `/${command.name}`)}  ${theme.fg("dim", command.description)}`, 1, 0),
+        new Text(`${theme.fg("accent", command.name)}  ${theme.fg("dim", command.description)}`, 1, 0),
       );
     }
     this.box.addChild(new Spacer(1));
-    this.box.addChild(new Text(theme.fg("dim", "↑/↓ browse · enter chat · tab details"), 1, 0));
+    this.box.addChild(new Text(theme.fg("dim", "type a command to search · ↑/↓ select · enter run"), 1, 0));
     this.box.addChild(new Spacer(1));
     this.box.addChild(new Text(theme.fg("dim", "esc close"), 1, 0));
   }
