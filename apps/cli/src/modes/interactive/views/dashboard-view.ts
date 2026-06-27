@@ -90,12 +90,6 @@ export class DashboardView extends Container implements AppView {
   private renderHeader(): void {
     this.headerContainer.clear();
     this.headerContainer.addChild(new Text(theme.bold("Agents"), 1, 0));
-    const agents = this.ctx.steward.list();
-    if (agents.length === 0) return;
-    const deployed = agents.filter((agent) => isDeployed(agent.config)).length;
-    this.headerContainer.addChild(
-      new Text(theme.fg("dim", `${agents.length} ${agents.length === 1 ? "agent" : "agents"} · ${deployed} deployed`), 1, 0),
-    );
   }
 
   private renderBody(): void {
@@ -161,7 +155,6 @@ export class DashboardView extends Container implements AppView {
     const name = text.trim().replace(/^\//, "");
     if (name === "") return;
     if (name === "new") this.openCreate();
-    else if (name === "help") this.openHelp();
     else if (name === "quit") this.ctx.quit();
     else this.showStatus(theme.fg("warning", `Unknown command: ${name}`));
   }
@@ -188,18 +181,6 @@ export class DashboardView extends Container implements AppView {
       onQuit: () => this.ctx.quit(),
     });
     this.overlay = this.ctx.tui.showOverlay(create, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
-  }
-
-  private openHelp(): void {
-    this.editor.focused = false;
-    const help = new Help({
-      onClose: () => {
-        this.overlay?.hide();
-        this.editor.focused = true;
-      },
-      onQuit: () => this.ctx.quit(),
-    });
-    this.overlay = this.ctx.tui.showOverlay(help, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
   }
 
   /** List at the top; bar + status + footer pinned to the bottom, a filler between. The menu renders
@@ -333,47 +314,3 @@ class CreateAgent implements Component, Focusable {
   }
 }
 
-interface HelpCallbacks {
-  onClose: () => void;
-  onQuit: () => void;
-}
-
-// Command reference modal; dashboard-only, co-located with CreateAgent above.
-class Help implements Component, Focusable {
-  private readonly callbacks: HelpCallbacks;
-  private readonly box = new Box(2, 1, (t) => theme.bg("selectedBg", t));
-  public focused = false;
-
-  constructor(callbacks: HelpCallbacks) {
-    this.callbacks = callbacks;
-    this.box.addChild(new Text(theme.fg("accent", "Commands"), 1, 0));
-    for (const command of HOME_SLASH_COMMANDS) {
-      this.box.addChild(
-        new Text(`${theme.fg("accent", command.name)}  ${theme.fg("dim", command.description)}`, 1, 0),
-      );
-    }
-    this.box.addChild(new Spacer(1));
-    this.box.addChild(new Text(theme.fg("dim", "type a command to search · ↑/↓ select · enter run"), 1, 0));
-    this.box.addChild(new Spacer(1));
-    this.box.addChild(new Text(theme.fg("dim", "esc close"), 1, 0));
-  }
-
-  handleInput(data: string): void {
-    if (matchesKey(data, "ctrl+c")) {
-      this.callbacks.onQuit();
-      return;
-    }
-    if (matchesKey(data, "escape") || matchesKey(data, "enter")) {
-      this.callbacks.onClose();
-      return;
-    }
-  }
-
-  render(width: number): string[] {
-    return this.box.render(width);
-  }
-
-  invalidate(): void {
-    this.box.invalidate();
-  }
-}

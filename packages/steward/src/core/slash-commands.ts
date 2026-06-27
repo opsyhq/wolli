@@ -48,6 +48,5 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
  */
 export const HOME_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "new", description: "Create a new agent" },
-	{ name: "help", description: "List the available commands" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];
