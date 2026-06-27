@@ -227,10 +227,8 @@ export interface EditorOptions {
 	paddingX?: number;
 	autocompleteMaxVisible?: number;
 	/**
-	 * Marker that identifies a command line for the autocomplete menu. Defaults to "/", so the
-	 * command menu only opens once the line starts with a slash (chat's behavior). Pass "" to
-	 * treat every line as a command line — the menu opens on the first letter and a single Enter
-	 * completes-and-runs the highlighted command (the dashboard command bar).
+	 * Marker that flags a command line for the menu. Default "/" opens it on a leading slash (chat);
+	 * "" treats every line as a command line — menu opens on the first letter, one Enter runs it.
 	 */
 	commandMenuPrefix?: string;
 }
@@ -293,8 +291,7 @@ export class Editor implements Component, Focusable {
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
-	// Marker that identifies a command line (see EditorOptions.commandMenuPrefix). "/" by default;
-	// "" makes every line a command line.
+	// See EditorOptions.commandMenuPrefix.
 	private commandMenuPrefix: string = "/";
 
 	// Paste tracking for large pastes
