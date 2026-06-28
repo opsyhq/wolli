@@ -39,15 +39,8 @@ export {
 	AgentConfigSchema,
 	AgentSettingsManager,
 	type CreateAgentOptions,
-	getDefaultModel,
-	getDefaultProvider,
-	getDefaultThinkingLevel,
 	isDeployed,
 	isValidAgentName,
-	type Settings,
-	setSharedDefaultModel,
-	setSharedDefaultThinkingLevel,
-	type ThinkingLevelSetting,
 } from "./core/agent-settings-manager.ts";
 export {
 	type ApiKeyCredential,
@@ -247,6 +240,9 @@ export type {
 	SessionTreeNode,
 } from "./core/session-manager.ts";
 export { SessionManager } from "./core/session-manager.ts";
+// The global settings tier: `SettingsManager` (exposed as `Wolli.settings`) + the `Settings` shape it
+// reads/writes. The shared-defaults helpers stay off the surface — only the daemon client persists here.
+export { type Settings, SettingsManager, type ThinkingLevelSetting } from "./core/settings-manager.ts";
 export {
 	formatSkillsForPrompt,
 	type LoadSkillsOptions,

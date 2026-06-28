@@ -14,13 +14,10 @@ import {
   type AuthSelectorProvider,
   defaultModelPerProvider,
   findExactModelReferenceMatch,
-  getDefaultModel,
-  getDefaultProvider,
   isApiKeyLoginProvider,
   LoginDialogComponent,
   OAuthSelectorComponent,
   rawKeyHint,
-  setSharedDefaultModel,
   theme,
   VERSION,
 } from "@opsyhq/wolli";
@@ -37,9 +34,12 @@ export class OnboardingView extends Container implements AppView {
   private readonly footerContainer = new Container();
   private active?: Component;
 
-  /** The global credential tier + a registry over it, same ones the dashboard reads + writes through. */
+  /** The global credential + settings tiers + a registry over them, same ones the dashboard reads + writes through. */
   private get auth() {
     return this.ctx.wolli.auth;
+  }
+  private get settings() {
+    return this.ctx.wolli.settings;
   }
   private get registry() {
     return this.ctx.wolli.registry;
@@ -89,9 +89,9 @@ export class OnboardingView extends Container implements AppView {
 
   /** The saved default model resolved against `available`. */
   private defaultModel(available: Model<Api>[]): Model<Api> | undefined {
-    const id = getDefaultModel();
+    const id = this.settings.getDefaultModel();
     if (!id) return undefined;
-    const provider = getDefaultProvider();
+    const provider = this.settings.getDefaultProvider();
     return findExactModelReferenceMatch(provider ? `${provider}/${id}` : id, available);
   }
 
@@ -218,7 +218,7 @@ export class OnboardingView extends Container implements AppView {
       (m) => defaultModelPerProvider[m.provider as keyof typeof defaultModelPerProvider] === m.id,
     );
     const chosen = existing ?? preferred ?? available[0];
-    setSharedDefaultModel(chosen.provider, chosen.id);
+    this.settings.setDefaultModelAndProvider(chosen.provider, chosen.id);
     const selector = new ExtensionSelectorComponent(
       `Default model: ${chosen.provider}/${chosen.id}. Change anytime with /model.`,
       ["Open dashboard", "Pick a different model"],
@@ -240,7 +240,7 @@ export class OnboardingView extends Container implements AppView {
       available,
       [],
       (model) => {
-        setSharedDefaultModel(model.provider, model.id);
+        this.settings.setDefaultModelAndProvider(model.provider, model.id);
         this.finish();
       },
       () => this.showModelStep(),

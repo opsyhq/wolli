@@ -14,9 +14,6 @@ import {
   type AuthSelectorProvider,
   DEFAULT_THINKING_LEVEL,
   findExactModelReferenceMatch,
-  getDefaultModel,
-  getDefaultProvider,
-  getDefaultThinkingLevel,
   getEditorTheme,
   getSelectListTheme,
   HOME_SLASH_COMMANDS,
@@ -25,8 +22,6 @@ import {
   LoginDialogComponent,
   OAuthSelectorComponent,
   rawKeyHint,
-  setSharedDefaultModel,
-  setSharedDefaultThinkingLevel,
   theme,
   THINKING_LEVELS,
 } from "@opsyhq/wolli";
@@ -71,9 +66,12 @@ export class DashboardView extends Container implements AppView {
     this.keybindings = keybindings;
   }
 
-  /** The global credential tier + a registry over it; the auth/model commands read and persist here. */
+  /** The global credential + settings tiers + a registry over them; the auth/model commands read and persist here. */
   private get auth() {
     return this.ctx.wolli.auth;
+  }
+  private get settings() {
+    return this.ctx.wolli.settings;
   }
   private get registry() {
     return this.ctx.wolli.registry;
@@ -247,9 +245,9 @@ export class DashboardView extends Container implements AppView {
 
   /** The saved default model resolved against `available` (preselection + thinking levels). */
   private defaultModel(available: Model<Api>[]): Model<Api> | undefined {
-    const id = getDefaultModel();
+    const id = this.settings.getDefaultModel();
     if (!id) return undefined;
-    const provider = getDefaultProvider();
+    const provider = this.settings.getDefaultProvider();
     return findExactModelReferenceMatch(provider ? `${provider}/${id}` : id, available);
   }
 
@@ -267,7 +265,7 @@ export class DashboardView extends Container implements AppView {
         available,
         [],
         (model) => {
-          setSharedDefaultModel(model.provider, model.id);
+          this.settings.setDefaultModelAndProvider(model.provider, model.id);
           done();
           this.showStatus(`Default model: ${model.provider}/${model.id}`);
         },
@@ -282,13 +280,13 @@ export class DashboardView extends Container implements AppView {
   private showThinkingSelector(): void {
     const model = this.defaultModel(this.registry.getAvailable());
     const levels = (model ? getSupportedThinkingLevels(model) : THINKING_LEVELS) as ThinkingLevel[];
-    const current = (getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL) as ThinkingLevel;
+    const current = (this.settings.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL) as ThinkingLevel;
     this.showSelector((done) => {
       const selector = new ThinkingSelectorComponent(
         current,
         levels,
         (level) => {
-          setSharedDefaultThinkingLevel(level);
+          this.settings.setDefaultThinkingLevel(level);
           done();
           this.showStatus(`Default thinking level: ${level}`);
         },

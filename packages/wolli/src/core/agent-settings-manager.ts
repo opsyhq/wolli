@@ -1,20 +1,17 @@
 /**
- * Per-agent identity + settings, unified.
+ * Per-agent identity + settings.
  *
  * `AgentSettingsManager` owns the whole `agent.json` for one agent: its identity
  * (name/purpose/createdAt/deployedAt) AND a `settings` override block. The top-level
- * shared `~/.wolli/agent/settings.json` holds the defaults; each agent's `settings`
- * block deep-merges over those defaults, recomputed on load. There is no per-child
- * `settings.json` — runtime mutations write the override straight into `agent.json`.
- *
- * This folds together what used to be three modules (agent-config.ts, settings-manager.ts,
- * settings.ts): identity IO + the typed settings surface + the shared-defaults reader.
+ * shared `~/.wolli/agent/settings.json` (the global tier, in settings-manager.ts) holds the
+ * defaults; each agent's `settings` block deep-merges over those defaults, recomputed on load.
+ * There is no per-child `settings.json` — runtime mutations write the override straight into
+ * `agent.json`. The shared `Settings` types + the shared-defaults reader live in settings-manager.ts.
  */
 
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import {
@@ -23,189 +20,19 @@ import {
 	getAgentsRoot,
 	getMemoryPath,
 	getSessionsDir,
-	getSettingsPath,
 	getSoulPath,
 	getUserMemoryPath,
 	getWorkspaceDir,
 } from "../config.ts";
-
-// =============================================================================
-// Settings (the pruned live set)
-// =============================================================================
-
-export type ThinkingLevelSetting = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-
-/**
- * Plugin source for npm/git/local plugins.
- * - String form: load all resources from the plugin
- * - Object form: filter which resources to load
- */
-export type PluginSource =
-	| string
-	| {
-			source: string;
-			extensions?: string[];
-			integrations?: string[];
-			skills?: string[];
-			prompts?: string[];
-			themes?: string[];
-	  };
-
-export interface TerminalSettings {
-	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
-}
-
-export interface CompactionSettings {
-	enabled?: boolean; // default: true
-	reserveTokens?: number; // default: 16384
-	keepRecentTokens?: number; // default: 20000
-}
-
-/**
- * The shared defaults + per-agent override surface. Pruned to the set wolli/apps
- * actually read: model/thinking, resource lists (plugin-manager), tooling/telemetry
- * headers, and launcher UI.
- */
-export interface Settings {
-	// model / thinking
-	defaultProvider?: string;
-	defaultModel?: string;
-	defaultThinkingLevel?: ThinkingLevelSetting;
-	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
-	compaction?: CompactionSettings; // auto-compaction toggle + token thresholds (global defaults)
-	// resource lists (plugin-manager)
-	plugins?: PluginSource[]; // Array of npm/git/local plugin sources (string or object with filtering)
-	extensions?: string[]; // Array of local extension file paths or directories
-	integrations?: string[]; // Array of local integration file paths or directories
-	skills?: string[]; // Array of local skill file paths or directories
-	prompts?: string[]; // Array of local prompt template paths or directories
-	themes?: string[]; // Array of local theme file paths or directories
-	// tooling / telemetry headers
-	npmCommand?: string[]; // argv-style command used for npm package lookup/install operations
-	enableInstallTelemetry?: boolean; // default: true - anonymous version/update ping
-	// launcher UI (startup-ui)
-	theme?: string;
-	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
-	terminal?: TerminalSettings;
-}
-
-/** Deep merge settings: overrides take precedence, nested objects merge recursively. */
-export function deepMergeSettings(base: Settings, overrides: Settings): Settings {
-	const result: Settings = { ...base };
-
-	for (const key of Object.keys(overrides) as (keyof Settings)[]) {
-		const overrideValue = overrides[key];
-		const baseValue = base[key];
-
-		if (overrideValue === undefined) {
-			continue;
-		}
-
-		// For nested objects, merge recursively
-		if (
-			typeof overrideValue === "object" &&
-			overrideValue !== null &&
-			!Array.isArray(overrideValue) &&
-			typeof baseValue === "object" &&
-			baseValue !== null &&
-			!Array.isArray(baseValue)
-		) {
-			(result as Record<string, unknown>)[key] = { ...baseValue, ...overrideValue };
-		} else {
-			// For primitives and arrays, override value wins
-			(result as Record<string, unknown>)[key] = overrideValue;
-		}
-	}
-
-	return result;
-}
-
-// =============================================================================
-// Shared defaults reader (~/.wolli/agent/settings.json)
-// =============================================================================
-//
-// Parsed once per process and reused so the merge is a cheap field read rather than a
-// fresh disk read each time. `reload()` clears the cache so a `/reload` picks up edits.
-
-let cachedSharedDefaults: Settings | undefined;
-
-/** The shared defaults from `~/.wolli/agent/settings.json` (process-cached). */
-export function loadSharedDefaults(): Settings {
-	if (cachedSharedDefaults) return cachedSharedDefaults;
-	const path = getSettingsPath();
-	if (!existsSync(path)) {
-		cachedSharedDefaults = {};
-		return cachedSharedDefaults;
-	}
-	try {
-		cachedSharedDefaults = JSON.parse(readFileSync(path, "utf-8")) as Settings;
-	} catch {
-		cachedSharedDefaults = {};
-	}
-	return cachedSharedDefaults;
-}
-
-/** Drop the process-cached shared defaults so the next read re-hits disk. */
-export function clearSharedDefaultsCache(): void {
-	cachedSharedDefaults = undefined;
-}
-
-/** The shared default provider, read from `~/.wolli/agent/settings.json`. */
-export function getDefaultProvider(): string | undefined {
-	return loadSharedDefaults().defaultProvider;
-}
-
-/** The shared default model id, read from `~/.wolli/agent/settings.json`. */
-export function getDefaultModel(): string | undefined {
-	return loadSharedDefaults().defaultModel;
-}
-
-/** The shared default model scope, read from `~/.wolli/agent/settings.json`. */
-export function getEnabledModels(): string[] | undefined {
-	return loadSharedDefaults().enabledModels;
-}
-
-/** The shared default thinking level, read from `~/.wolli/agent/settings.json`. */
-export function getDefaultThinkingLevel(): ThinkingLevelSetting | undefined {
-	return loadSharedDefaults().defaultThinkingLevel;
-}
-
-/**
- * Read-modify-write the shared defaults file (`~/.wolli/agent/settings.json`), then drop the cache
- * so the next read re-hits disk. These shared setters are the global counterpart to the per-agent
- * `AgentSettingsManager` instance setters, which only ever write an agent's own `agent.json`.
- */
-function updateSharedDefaults(patch: (settings: Settings) => void): void {
-	const settings = structuredClone(loadSharedDefaults());
-	patch(settings);
-	const path = getSettingsPath();
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
-	clearSharedDefaultsCache();
-}
-
-/** Persist the shared default model as separate `defaultProvider` + bare `defaultModel` (the shared-file convention). */
-export function setSharedDefaultModel(provider: string, modelId: string): void {
-	updateSharedDefaults((settings) => {
-		settings.defaultProvider = provider;
-		settings.defaultModel = modelId;
-	});
-}
-
-/** Persist the shared default thinking level. */
-export function setSharedDefaultThinkingLevel(level: ThinkingLevelSetting): void {
-	updateSharedDefaults((settings) => {
-		settings.defaultThinkingLevel = level;
-	});
-}
-
-/** The shared default model as a `provider/modelId` reference (or bare model id). */
-function sharedDefaultModelReference(): string | undefined {
-	const model = getDefaultModel();
-	if (!model) return undefined;
-	const provider = getDefaultProvider();
-	return provider ? `${provider}/${model}` : model;
-}
+import {
+	clearSharedDefaultsCache,
+	deepMergeSettings,
+	loadSharedDefaults,
+	type PluginSource,
+	type Settings,
+	sharedDefaultModelReference,
+	type ThinkingLevelSetting,
+} from "./settings-manager.ts";
 
 // =============================================================================
 // agent.json schema

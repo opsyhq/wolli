@@ -30,8 +30,9 @@ import { minimatch } from "minimatch";
 import { spawnProcess } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
-import type { AgentSettingsManager, PluginSource } from "./agent-settings-manager.ts";
+import type { AgentSettingsManager } from "./agent-settings-manager.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
+import type { PluginSource } from "./settings-manager.ts";
 // PathMetadata + SourceScope are owned by source-info.ts in wolli (single source
 // of truth, shared with skills/prompts/themes loaders). Re-exported so the
 // resource-loader can keep importing PathMetadata from the plugin manager.
