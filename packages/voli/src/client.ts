@@ -18,6 +18,7 @@ import type { AgentHarnessEvent, AgentMessage, SessionContext, SessionTreeEntry,
 import { getDaemonHost, getDaemonToken } from "./config.ts";
 import type { ContextInfo, IntegrationInfo } from "./core/agent-runtime.ts";
 import { type AgentConfig, AgentSettingsManager } from "./core/agent-settings-manager.ts";
+import { AuthStorage } from "./core/auth-storage.ts";
 import { THINKING_LEVELS } from "./core/defaults.ts";
 import type { ResourceSummary } from "./core/diagnostics.ts";
 import type {
@@ -30,6 +31,7 @@ import type {
 	UserBashEventResult,
 } from "./core/extensions/index.ts";
 import type { KeyId } from "./core/keybindings.ts";
+import { ModelRegistry } from "./core/model-registry.ts";
 import type { ScopedModel } from "./core/model-resolver.ts";
 import type { ConfiguredPlugin } from "./core/plugin-manager.ts";
 import { daemonLaunchCommand, getServiceManager } from "./core/service/service-manager.ts";
@@ -43,6 +45,7 @@ import type {
 	DaemonSessionState,
 	DaemonSessionSummary,
 	ExtensionUIRequest,
+	LoginUIRequest,
 	OnboardServiceResult,
 	ScopedModelsUpdateEvent,
 } from "./types.ts";
@@ -138,8 +141,11 @@ class SseStream {
 	}
 }
 
-/** Top level: the agent collection on disk. Holds no required state. */
+/** Top level: the agent collection on disk, plus the lazily-built global auth + model registry. */
 export class Voli {
+	private _auth?: AuthStorage;
+	private _registry?: ModelRegistry;
+
 	/** Every agent under the agents root, as handles. */
 	list(): Agent[] {
 		return AgentSettingsManager.list().map((store) => new Agent(store.config));
@@ -154,6 +160,21 @@ export class Voli {
 	/** Create the agent's home tree and return its handle. */
 	create(name: string, opts: { purpose?: string; model?: string } = {}): Agent {
 		return new Agent(AgentSettingsManager.createAgent({ name, ...opts }).config);
+	}
+
+	/**
+	 * The global credential tier (`~/.voli/agent/auth.json`), built once. The dashboard + onboarding
+	 * views read + write through it; the per-agent daemon writes its own (agent-tier) credentials.
+	 */
+	get auth(): AuthStorage {
+		this._auth ??= AuthStorage.create();
+		return this._auth;
+	}
+
+	/** A model registry over the global tier, built once — the views' source of available models. */
+	get registry(): ModelRegistry {
+		this._registry ??= ModelRegistry.create(this.auth);
+		return this._registry;
 	}
 }
 
@@ -272,6 +293,15 @@ export class Agent {
 			method: "POST",
 			headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
 			body: JSON.stringify({ type: "extension_ui_response", id, ...answer }),
+		});
+	}
+
+	/** Answer a parked daemon-side login dialog for a session (fire-and-forget). */
+	async respondLogin(sessionId: string, id: string, answer: Record<string, unknown>): Promise<void> {
+		await fetch(`${this.base}/sessions/${sessionId}/login-response`, {
+			method: "POST",
+			headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
+			body: JSON.stringify({ type: "login_ui_response", id, ...answer }),
 		});
 	}
 
@@ -414,6 +444,7 @@ export class SessionHandle {
 
 	private readonly handlers = new Set<(e: AgentHarnessEvent) => void>();
 	onUiRequest?: (req: ExtensionUIRequest) => void;
+	onLoginRequest?: (req: LoginUIRequest) => void;
 
 	private constructor(agent: Agent, sessionId: string, stream: SseStream, snap: DaemonSessionState) {
 		this.agent = agent;
@@ -438,11 +469,15 @@ export class SessionHandle {
 		return handle;
 	}
 
-	/** Route one parsed SSE frame (post-hello): extension-UI request → bridge; else session event. */
+	/** Route one parsed SSE frame (post-hello): extension-UI / login request → bridge; else session event. */
 	private handleFrame(data: string): void {
-		const evt = JSON.parse(data) as SessionEvent | ExtensionUIRequest;
+		const evt = JSON.parse(data) as SessionEvent | ExtensionUIRequest | LoginUIRequest;
 		if (evt.type === "extension_ui_request") {
 			this.onUiRequest?.(evt);
+			return;
+		}
+		if (evt.type === "login_ui_request") {
+			this.onLoginRequest?.(evt);
 			return;
 		}
 		this.routeEvent(evt);
@@ -624,9 +659,14 @@ export class SessionHandle {
 		).providers;
 	}
 
-	/** Run a provider login daemon-side (credentials never cross the wire); OAuth prompts round-trip via respondUi. */
+	/** Run a provider login daemon-side (credentials never cross the wire); prompts round-trip via respondLogin. */
 	login(provider: string, authType: "oauth" | "api_key"): Promise<void> {
 		return this.agent.send(this.sessionId, { type: "login", provider, authType });
+	}
+
+	/** Abort the in-flight `/login` flow (the client closed the login dialog). */
+	loginCancel(): Promise<void> {
+		return this.agent.send(this.sessionId, { type: "login_cancel" });
 	}
 
 	logout(provider: string): Promise<void> {
@@ -723,6 +763,10 @@ export class SessionHandle {
 
 	respondUi(id: string, answer: Record<string, unknown>): Promise<void> {
 		return this.agent.respondUi(this.sessionId, id, answer);
+	}
+
+	respondLogin(id: string, answer: Record<string, unknown>): Promise<void> {
+		return this.agent.respondLogin(this.sessionId, id, answer);
 	}
 }
 

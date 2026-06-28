@@ -12,7 +12,7 @@
  * Subscribe handlers must stay fast and non-throwing.
  */
 
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model, OAuthSelectOption } from "@earendil-works/pi-ai";
 import {
 	AgentHarnessError,
 	type AgentHarnessEvent,
@@ -38,6 +38,7 @@ import {
 	TUI,
 } from "@opsyhq/tui";
 import {
+	type AuthSelectorProvider,
 	type AutocompleteProviderFactory,
 	BUILTIN_SLASH_COMMANDS,
 	createBashExecutionMessage,
@@ -60,6 +61,8 @@ import {
 	isValidThinkingLevel,
 	keyDisplayText,
 	type KeyId,
+	LoginDialogComponent,
+	type LoginUIRequest,
 	parseSkillBlock,
 	rawKeyHint,
 	type ReadonlyFooterDataProvider,
@@ -918,9 +921,9 @@ export class ChatView extends Container implements AppView {
 	}
 
 	/**
-	 * `/login` — pick an auth method, then a provider, then run the login. OAuth providers prompt
-	 * mid-call via the existing `extension_ui_request` round-trip (rendered by `dispatchUiRequest`);
-	 * on success the new provider's models become selectable via `/model`.
+	 * `/login` — pick an auth method, then a provider, then run the login through the shared login
+	 * dialog. The daemon drives the OAuth/api-key flow over the login seam (`login_ui_request` frames
+	 * dispatched by `dispatchLoginRequest`); on success the new provider's models become selectable via `/model`.
 	 */
 	private async handleLoginCommand(): Promise<void> {
 		const subscriptionLabel = "Use a subscription";
@@ -958,12 +961,7 @@ export class ChatView extends Container implements AppView {
 					done();
 					const provider = providers.find((p) => p.name === label);
 					if (!provider) return;
-					try {
-						await this.session.login(provider.id, provider.authType);
-						this.showStatus(`Logged in to ${provider.name}.`);
-					} catch (error) {
-						this.showError(error instanceof Error ? error.message : String(error));
-					}
+					await this.runProviderLogin(provider);
 				},
 				() => {
 					done();
@@ -971,6 +969,115 @@ export class ChatView extends Container implements AppView {
 				},
 			);
 			return { component: selector, focus: selector };
+		});
+	}
+
+	/**
+	 * Run a provider login over the daemon login seam: swap a shared `LoginDialogComponent` into the
+	 * editor, bind `session.onLoginRequest` to dispatch each daemon frame into it (answering the awaited
+	 * frames via `respondLogin`), then `await session.login(...)`. The browser opens client-side (the
+	 * dialog's show* methods call it) and credentials are written daemon-side only. Esc cancels the dialog
+	 * → `loginCancel()` aborts the daemon flow; the handler is cleared and the editor restored on completion.
+	 */
+	private async runProviderLogin(provider: AuthSelectorProvider): Promise<void> {
+		const dialog = new LoginDialogComponent(
+			this.ui,
+			provider.id,
+			(success) => {
+				// onComplete only fires on cancel (Esc) — abort the in-flight daemon-side login.
+				if (!success) void this.session.loginCancel();
+			},
+			provider.name,
+		);
+		this.session.onLoginRequest = (req) => this.dispatchLoginRequest(dialog, req);
+
+		this.editorContainer.clear();
+		this.editorContainer.addChild(dialog);
+		this.ui.setFocus(dialog);
+		this.ui.requestRender();
+
+		try {
+			await this.session.login(provider.id, provider.authType);
+			this.showStatus(`Logged in to ${provider.name}.`);
+		} catch (error) {
+			// A user cancel aborts the dialog's signal; only surface real failures.
+			if (!dialog.signal.aborted) this.showError(error instanceof Error ? error.message : String(error));
+		} finally {
+			this.session.onLoginRequest = undefined;
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.editor);
+			this.ui.setFocus(this.editor);
+			this.ui.requestRender();
+		}
+	}
+
+	/**
+	 * Client half of the login round-trip: a daemon `login_ui_request` arrives over SSE (the login-seam
+	 * sibling of `dispatchUiRequest`). The fire-and-forget frames (`auth`/`deviceCode`/`progress`) update
+	 * the dialog; the awaited frames (`prompt`/`manualInput`/`select`) are shown locally and the answer is
+	 * POSTed back via `respondLogin`, resolving the parked daemon-side promise.
+	 */
+	private dispatchLoginRequest(dialog: LoginDialogComponent, req: LoginUIRequest): void {
+		switch (req.method) {
+			case "auth":
+				dialog.showAuth(req.url, req.instructions);
+				return;
+			case "deviceCode":
+				dialog.showDeviceCode({ userCode: req.userCode, verificationUri: req.verificationUri });
+				return;
+			case "progress":
+				dialog.showProgress(req.message);
+				return;
+			case "prompt":
+				// The dialog input rejects on cancel; the loginCancel path drains the daemon side, so swallow.
+				dialog
+					.showPrompt(req.message, req.placeholder)
+					.then((value) => this.session.respondLogin(req.id, { value }))
+					.catch(() => {});
+				return;
+			case "manualInput":
+				dialog
+					.showManualInput("Paste the redirect URL or code, or finish in your browser:")
+					.then((value) => this.session.respondLogin(req.id, { value }))
+					.catch(() => {});
+				return;
+			case "select":
+				void this.showLoginSelect(dialog, req.message, req.options).then((id) =>
+					this.session.respondLogin(req.id, id === undefined ? { cancelled: true } : { value: id }),
+				);
+				return;
+		}
+	}
+
+	/** Pick one option mid-login: swap an ExtensionSelector in over the dialog, restore the dialog after. */
+	private showLoginSelect(
+		dialog: LoginDialogComponent,
+		message: string,
+		options: OAuthSelectOption[],
+	): Promise<string | undefined> {
+		return new Promise((resolve) => {
+			const restoreDialog = () => {
+				this.editorContainer.clear();
+				this.editorContainer.addChild(dialog);
+				this.ui.setFocus(dialog);
+				this.ui.requestRender();
+			};
+			const selector = new ExtensionSelectorComponent(
+				message,
+				options.map((option) => option.label),
+				(label) => {
+					restoreDialog();
+					resolve(options.find((option) => option.label === label)?.id);
+				},
+				() => {
+					restoreDialog();
+					resolve(undefined);
+				},
+			);
+			this.editorContainer.clear();
+			this.editorContainer.addChild(selector);
+			this.ui.setFocus(selector);
+			this.ui.requestRender();
 		});
 	}
 

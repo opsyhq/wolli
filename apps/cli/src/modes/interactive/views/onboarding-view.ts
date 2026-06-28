@@ -4,20 +4,21 @@
  * options with live status), runs the login in a cohesive dialog, auto-picks a default model, then
  * drops into the dashboard. Esc/Ctrl+C steps back, or skips out from the welcome screen.
  *
- * The provider list and login dialog mirror the coding-agent's OAuthSelectorComponent /
- * LoginDialogComponent, reused here against voli's own AuthStorage + ModelRegistry.
+ * The provider list and login dialog are the shared OAuthSelectorComponent / LoginDialogComponent,
+ * driven here against the global credential tier + a registry over it (`voli.auth` / `voli.registry`).
  */
 
 import type { Api, Model, OAuthSelectPrompt } from "@earendil-works/pi-ai";
 import {
   APP_NAME,
-  AuthStorage,
+  type AuthSelectorProvider,
   defaultModelPerProvider,
   findExactModelReferenceMatch,
   getDefaultModel,
   getDefaultProvider,
   isApiKeyLoginProvider,
-  ModelRegistry,
+  LoginDialogComponent,
+  OAuthSelectorComponent,
   rawKeyHint,
   setSharedDefaultModel,
   theme,
@@ -26,25 +27,26 @@ import {
 import { type Component, Container, Text } from "@opsyhq/tui";
 import type { AppView, ViewContext } from "../app.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
-import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
-import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.ts";
 
 export class OnboardingView extends Container implements AppView {
   private ctx!: ViewContext;
-  // The global credential tier + a registry over it, same as the dashboard's.
-  private auth!: AuthStorage;
-  private registry!: ModelRegistry;
   private readonly headerContainer = new Container();
   private readonly hostContainer = new Container();
   private readonly statusContainer = new Container();
   private readonly footerContainer = new Container();
   private active?: Component;
 
+  /** The global credential tier + a registry over it, same ones the dashboard reads + writes through. */
+  private get auth() {
+    return this.ctx.voli.auth;
+  }
+  private get registry() {
+    return this.ctx.voli.registry;
+  }
+
   onMount(ctx: ViewContext): void {
     this.ctx = ctx;
-    this.auth = AuthStorage.create();
-    this.registry = ModelRegistry.create(this.auth);
 
     // Mounted for invalidation only; render() composes them with a bottom-pinning filler.
     this.addChild(this.headerContainer);
@@ -246,7 +248,7 @@ export class OnboardingView extends Container implements AppView {
     this.setActive(selector);
   }
 
-  /** Done or skipped — re-enter the dashboard, which re-reads auth/registry on mount. */
+  /** Done or skipped — re-enter the dashboard, which shares the same `voli.auth`/`voli.registry`. */
   private finish(): void {
     this.ctx.home();
   }

@@ -12,6 +12,9 @@ coverage/
 # Environment
 .env
 
+# Local dev launcher (machine-specific, symlinked onto PATH)
+apps/cli/bin/voli-dev
+
 # OS / editor
 .DS_Store
 .vscode/
