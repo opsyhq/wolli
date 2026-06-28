@@ -2,19 +2,14 @@
  * Provider auth selector: a single flat, searchable list where each row is a concrete
  * (provider, auth method) option with a live status indicator (configured / env / unconfigured).
  *
- * Ported from the coding-agent's OAuthSelectorComponent so onboarding mirrors that flow rather than
- * the dashboard's method-first command bar. Reuses voli's shared primitives (AuthStorage,
- * DynamicBorder, theme) — nothing is imported from the coding-agent package.
+ * Shared by the dashboard + onboarding views, driven against the global-tier `AuthStorage`.
  */
 
-import { type AuthStatus, AuthStorage, DynamicBorder, theme } from "@opsyhq/voli";
 import { Container, type Focusable, fuzzyFilter, getKeybindings, Input, Spacer, TruncatedText } from "@opsyhq/tui";
-
-export type AuthSelectorProvider = {
-	id: string;
-	name: string;
-	authType: "oauth" | "api_key";
-};
+import type { AuthStatus, AuthStorage } from "../core/auth-storage.ts";
+import { theme } from "../theme/theme.ts";
+import type { AuthSelectorProvider } from "../types.ts";
+import { DynamicBorder } from "./dynamic-border.ts";
 
 /** Renders an auth provider selector: one flat searchable list, each row a (provider, authType). */
 export class OAuthSelectorComponent extends Container implements Focusable {

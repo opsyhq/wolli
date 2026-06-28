@@ -6,12 +6,14 @@
  */
 
 export { serializeConversation } from "@opsyhq/agent";
-// The client surface: the agent collection (`Voli`), one agent (`Agent`, which owns the transport),
-// and the per-session proxy (`SessionHandle`) the interactive TUI + `--print` drive.
+// The client surface: the agent collection (`Voli`, which also exposes the global-tier `auth`/`registry`
+// the dashboard/onboarding views drive), one agent (`Agent`, which owns the transport), and the
+// per-session proxy (`SessionHandle`) the interactive TUI + `--print` drive.
 export { Agent, SessionHandle, Voli } from "./client.ts";
 // Shared UI components + keybinding-hint helpers imported by the @opsyhq/cli daemon client (the
 // interactive TUI lives in apps/cli); DynamicBorder and the keyHint/keyText helpers are also part
-// of the extension SDK surface.
+// of the extension SDK surface. The login dialog + OAuth selector are shared by the chat, dashboard,
+// and onboarding login flows.
 export { DynamicBorder } from "./components/dynamic-border.ts";
 export {
 	keyDisplayText,
@@ -19,6 +21,8 @@ export {
 	keyText,
 	rawKeyHint,
 } from "./components/keybinding-hints.ts";
+export { LoginDialogComponent } from "./components/login-dialog.ts";
+export { OAuthSelectorComponent } from "./components/oauth-selector.ts";
 export * from "./config.ts";
 // Per-agent plugin-manager factory: the daemon builds it to run installs server-side, and the
 // @opsyhq/cli client's `plugins` command uses it for its read-only `list` arm.
@@ -303,6 +307,7 @@ export {
 	theme,
 } from "./theme/theme.ts";
 export type {
+	AuthSelectorProvider,
 	DaemonAgentState,
 	DaemonCommand,
 	DaemonControlEvent,
@@ -311,6 +316,8 @@ export type {
 	DaemonSessionSummary,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
+	LoginUIRequest,
+	LoginUIResponse,
 	OnboardServiceResult,
 } from "./types.ts";
 export { stripAnsi } from "./utils/ansi.ts";

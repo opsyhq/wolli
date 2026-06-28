@@ -31,7 +31,6 @@ import {
 	type Model,
 	type OAuthLoginCallbacks,
 	type OAuthProviderId,
-	type OAuthSelectPrompt,
 	type TextContent,
 } from "@earendil-works/pi-ai";
 import {
@@ -58,7 +57,6 @@ import {
 } from "../config.ts";
 import type { AuthSelectorProvider } from "../types.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
-import { openBrowser } from "../utils/open-browser.ts";
 import { createAgentPluginManager } from "./agent-plugin-manager.ts";
 import { type AgentConfig, AgentSettingsManager, isDeployed } from "./agent-settings-manager.ts";
 import { createApprovalGate, createBypassGate } from "./approval/approval-gate.ts";
@@ -135,6 +133,19 @@ const UNKNOWN_MODEL: Model<Api> = {
 	maxTokens: 0,
 };
 
+/**
+ * Inert login callbacks used until the host binds a real factory (non-interactive hosts never drive a
+ * login, so the awaited callbacks resolve to "cancelled" defaults rather than parking forever).
+ */
+const noOpLoginCallbacks: OAuthLoginCallbacks = {
+	onAuth: () => {},
+	onDeviceCode: () => {},
+	onProgress: () => {},
+	onPrompt: async () => "",
+	onManualCodeInput: async () => "",
+	onSelect: async () => undefined,
+};
+
 export interface AgentRuntimeOptions {
 	name: string;
 	/** The agent's configured model, or undefined when none is set yet (fresh agent / logged out). */
@@ -167,6 +178,11 @@ export interface AgentRuntimeOptions {
 export interface InteractiveContextBindings {
 	/** Build the per-session UI rail bound to `sessionId` — its dialogs route to that session's clients. */
 	createSessionUI: (sessionId: string) => ExtensionUIContext;
+	/**
+	 * Build the per-session login callbacks bound to `sessionId` + a login-cancel `signal` — the
+	 * daemon→client login seam, mirroring `createSessionUI` but separate from the extension-UI rail.
+	 */
+	createLoginCallbacks: (sessionId: string, signal: AbortSignal) => OAuthLoginCallbacks;
 	mode: ExtensionMode;
 	/**
 	 * Host-provided new-session handler backing `session.newSession()` — applies the host's policy (e.g.
@@ -280,6 +296,8 @@ interface AgentSessionInit {
 	environments: AgentEnvironments;
 	/** This session's UI rail — dialogs raised in its turns route only to its subscribers. */
 	ui: ExtensionUIContext;
+	/** Build this session's login callbacks for a given cancel `signal` (the daemon→client login seam). */
+	createLoginCallbacks: (signal: AbortSignal) => OAuthLoginCallbacks;
 	mode: ExtensionMode;
 }
 
@@ -324,6 +342,9 @@ export class AgentRuntime {
 	private _integrationErrorUnsubscriber?: () => void;
 	/** Build the per-session UI rail bound to a session id; default inert until the host binds. */
 	private _createSessionUI: (sessionId: string) => ExtensionUIContext = () => noOpUIContext;
+	/** Build the per-session login callbacks bound to a session id + signal; default inert until bound. */
+	private _createLoginCallbacks: (sessionId: string, signal: AbortSignal) => OAuthLoginCallbacks = () =>
+		noOpLoginCallbacks;
 	/** The run mode applied to every session (default print; the daemon sets "rpc"). */
 	private _mode: ExtensionMode = "print";
 
@@ -450,6 +471,7 @@ export class AgentRuntime {
 	bindInteractiveContext(bindings: InteractiveContextBindings): void {
 		this._interactiveBindings = bindings;
 		this._createSessionUI = bindings.createSessionUI;
+		this._createLoginCallbacks = bindings.createLoginCallbacks;
 		this._mode = bindings.mode;
 		this._newSessionHandler = bindings.newSession ?? (async () => ({ cancelled: false }));
 		if (bindings.shutdownHandler) this.setShutdownHandler(bindings.shutdownHandler);
@@ -734,36 +756,19 @@ export class AgentRuntime {
 	}
 
 	/**
-	 * Run a provider login daemon-side, prompting the client over the initiating session's `ui`. OAuth
-	 * flows open the browser on the daemon host (where local-callback-server providers bind) and route
-	 * `onPrompt`/`onSelect` through the dialog seam; API-key flows read the key via `ui.input`.
-	 * Refreshes the registry afterward so the new credential's models become selectable.
+	 * Run a provider login daemon-side, driven by pi-ai's own login contract (`cb`) — the daemon builds it
+	 * over the login seam, so the browser opens client-side and the OAuth prompts/selects round-trip there.
+	 * OAuth flows hand `cb` straight to the provider; API-key flows read the key via `cb.onPrompt`.
+	 * Credentials are only ever written here (daemon-side). Refreshes the registry afterward so the new
+	 * credential's models become selectable.
 	 */
-	async login(provider: string, authType: "oauth" | "api_key", ui: ExtensionUIContext): Promise<void> {
+	async login(provider: string, authType: "oauth" | "api_key", cb: OAuthLoginCallbacks): Promise<void> {
 		const name = this._modelRegistry.getProviderDisplayName(provider);
 
 		if (authType === "oauth") {
-			const callbacks: OAuthLoginCallbacks = {
-				onAuth: (info) => {
-					openBrowser(info.url);
-					ui.notify(info.instructions ? `${info.url}\n${info.instructions}` : info.url);
-				},
-				onDeviceCode: (info) => {
-					ui.notify(`Enter code ${info.userCode} at ${info.verificationUri}`);
-				},
-				onPrompt: async (prompt) => (await ui.input(prompt.message, prompt.placeholder)) ?? "",
-				onProgress: (message) => {
-					ui.setStatus("login", message);
-				},
-				onSelect: async (prompt: OAuthSelectPrompt) => {
-					const labels = prompt.options.map((option) => option.label);
-					const selectedLabel = await ui.select(prompt.message, labels);
-					return prompt.options.find((option) => option.label === selectedLabel)?.id;
-				},
-			};
-			await this.options.authStorage.login(provider as OAuthProviderId, callbacks);
+			await this.options.authStorage.login(provider as OAuthProviderId, cb);
 		} else {
-			const key = (await ui.input(`Enter API key for ${name}`))?.trim();
+			const key = (await cb.onPrompt({ message: `Enter API key for ${name}` })).trim();
 			if (!key) {
 				throw new Error("API key cannot be empty.");
 			}
@@ -1075,6 +1080,8 @@ export class AgentRuntime {
 		const { name } = this.options;
 		const agentDir = getAgentDir(name);
 		const ui = this._createSessionUI(args.metadata.id);
+		// Per-session login callbacks: bound to this session id, parameterized by the login-cancel signal.
+		const createLoginCallbacks = (signal: AbortSignal) => this._createLoginCallbacks(args.metadata.id, signal);
 
 		// Per-session gated run-target map: the gate routes host-escalation dialogs to THIS session's
 		// UI. The heavy sandbox proxy is a process-global memoized singleton, so this is cheap.
@@ -1088,6 +1095,7 @@ export class AgentRuntime {
 			env: args.env,
 			environments,
 			ui,
+			createLoginCallbacks,
 			mode: this._mode,
 		});
 
@@ -1216,6 +1224,10 @@ export class AgentSession {
 	readonly environments: AgentEnvironments;
 	/** This session's UI rail — dialogs raised in its turns route only to its subscribers. */
 	readonly ui: ExtensionUIContext;
+	/** Build this session's login callbacks for a given cancel `signal` (the daemon→client login seam). */
+	readonly createLoginCallbacks: (signal: AbortSignal) => OAuthLoginCallbacks;
+	/** Aborts the in-flight `/login` flow when set (the `login_cancel` command fires it); cleared on completion. */
+	loginAbortController?: AbortController;
 	/** This session's run mode. */
 	readonly mode: ExtensionMode;
 	/** The session facade handed to extensions as `ctx.session` / returned from `voli.getSession`. */
@@ -1245,6 +1257,7 @@ export class AgentSession {
 		this.env = init.env;
 		this.environments = init.environments;
 		this.ui = init.ui;
+		this.createLoginCallbacks = init.createLoginCallbacks;
 		this.mode = init.mode;
 		this.systemPromptOptions = { cwd: runtime.getCwd() };
 		this.facade = this.buildFacade();

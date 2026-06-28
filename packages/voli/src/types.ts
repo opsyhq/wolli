@@ -9,7 +9,7 @@
  * session lifecycle (added/removed/renamed).
  */
 
-import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
+import type { Api, ImageContent, Model, OAuthSelectOption } from "@earendil-works/pi-ai";
 import type {
 	AgentEvent,
 	AgentMessage,
@@ -89,9 +89,12 @@ export type DaemonCommand =
 	| { id?: string; type: "set_scoped_models"; enabledModelIds: string[] }
 	| { id?: string; type: "set_enabled_models"; enabledModels?: string[] }
 
-	// Provider login — driven daemon-side so credentials never cross the wire; the OAuth flow
-	// prompts the client over the existing uiContext dialog seam.
+	// Provider login — driven daemon-side so credentials never cross the wire; the OAuth flow prompts
+	// the client over the dedicated login seam (the `login_ui_request`/`login_ui_response` frames below,
+	// parallel to the extension-UI seam). `login_cancel` aborts the in-flight login (the client closed
+	// the dialog).
 	| { id?: string; type: "login"; provider: string; authType: "oauth" | "api_key" }
+	| { id?: string; type: "login_cancel" }
 	| { id?: string; type: "logout"; provider: string }
 	| { id?: string; type: "get_login_providers"; authType?: "oauth" | "api_key" }
 	| { id?: string; type: "get_logout_providers" };
@@ -177,6 +180,30 @@ export type ExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
 	| { type: "extension_ui_response"; id: string; cancelled: true };
+
+// ============================================================================
+// Login UI (the daemon→client login seam — parallel to extension-UI, separate from it)
+// ============================================================================
+
+/**
+ * A login-UI request, pushed to attach clients as an SSE frame (NOT an `AgentHarnessEvent`, like
+ * `ExtensionUIRequest`). It maps 1:1 onto pi-ai's `OAuthLoginCallbacks`: `auth`/`deviceCode`/`progress`
+ * are fire-and-forget; `prompt`/`manualInput`/`select` park a promise keyed by `id` and the client
+ * answers via `POST /sessions/:id/login-response`. Login is a built-in, so this seam is deliberately
+ * separate from the extension-UI one.
+ */
+export type LoginUIRequest =
+	| { type: "login_ui_request"; id: string; method: "auth"; url: string; instructions?: string }
+	| { type: "login_ui_request"; id: string; method: "deviceCode"; userCode: string; verificationUri: string }
+	| { type: "login_ui_request"; id: string; method: "progress"; message: string }
+	| { type: "login_ui_request"; id: string; method: "prompt"; message: string; placeholder?: string }
+	| { type: "login_ui_request"; id: string; method: "manualInput" }
+	| { type: "login_ui_request"; id: string; method: "select"; message: string; options: OAuthSelectOption[] };
+
+/** A client's answer to an awaited `LoginUIRequest`, posted to `/login-response`. */
+export type LoginUIResponse =
+	| { type: "login_ui_response"; id: string; value: string }
+	| { type: "login_ui_response"; id: string; cancelled: true };
 
 // ============================================================================
 // Agent + session state (hello snapshots / get_state / list)

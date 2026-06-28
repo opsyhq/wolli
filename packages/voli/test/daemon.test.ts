@@ -5,7 +5,7 @@
  * additive `create_session` (two sessions streaming independently).
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { type Api, fauxAssistantMessage, type Model, registerFauxProvider } from "@earendil-works/pi-ai";
@@ -110,6 +110,15 @@ async function uiRespond(id: string, answer: Record<string, unknown>): Promise<v
 		method: "POST",
 		headers: { "content-type": "application/json", Authorization: `Bearer ${TOKEN}` },
 		body: JSON.stringify({ type: "extension_ui_response", id, ...answer }),
+	});
+}
+
+/** Answer an awaited daemon-side login dialog (the client half of the login round-trip). */
+async function loginRespond(id: string, answer: Record<string, unknown>): Promise<void> {
+	await fetch(`${baseUrl()}/sessions/${sessionId}/login-response`, {
+		method: "POST",
+		headers: { "content-type": "application/json", Authorization: `Bearer ${TOKEN}` },
+		body: JSON.stringify({ type: "login_ui_response", id, ...answer }),
 	});
 }
 
@@ -595,5 +604,50 @@ describe("daemon plugin/onboarding consistency", () => {
 
 		// Onboarding wrote through the runtime's LIVE account store — no cross-process refresh path.
 		expect(activeRuntime?.integrationAccounts.get("fakesvc", "default")).toEqual({ token: "secret-token" });
+	});
+
+	it("login drives the api-key prompt over the login seam and writes the credential daemon-side", async () => {
+		const reg = await startDaemon();
+		const provider = reg.getModel().provider;
+
+		const client = newSse();
+		await client.connect(sessionEventsUrl(), { token: TOKEN });
+		await client.waitFor((e) => e.event === "hello");
+
+		// The verb awaits the login round-trip, so fire it WITHOUT awaiting; answer the emitted prompt
+		// frame concurrently over /login-response, then the verb resolves.
+		const login = control({ type: "login", provider, authType: "api_key" });
+
+		const frame = await client.waitFor((e) => dataType(e) === "login_ui_request");
+		const req = JSON.parse(frame.data) as { id: string; method: string };
+		expect(req.method).toBe("prompt");
+		await loginRespond(req.id, { value: "sk-secret" });
+
+		expect(await login).toMatchObject({ command: "login", success: true });
+
+		// The credential was written daemon-side (the shared tier's auth.json), never over the wire.
+		const stored = JSON.parse(readFileSync(join(sharedDir, "auth.json"), "utf-8")) as Record<string, unknown>;
+		expect(stored[provider]).toEqual({ type: "api_key", key: "sk-secret" });
+	});
+
+	it("login_cancel aborts an in-flight login and drains the parked dialog", async () => {
+		const reg = await startDaemon();
+		const provider = reg.getModel().provider;
+
+		const client = newSse();
+		await client.connect(sessionEventsUrl(), { token: TOKEN });
+		await client.waitFor((e) => e.event === "hello");
+
+		// Fire the login (parks on the api-key prompt), then cancel it instead of answering. The api-key
+		// branch rejects on the empty (cancelled) prompt, so the login verb resolves with an error.
+		const login = control({ type: "login", provider, authType: "api_key" });
+		await client.waitFor((e) => dataType(e) === "login_ui_request");
+		expect(await control({ type: "login_cancel" })).toMatchObject({ command: "login_cancel", success: true });
+
+		const res = await login;
+		expect(res.success).toBe(false);
+		// Nothing was written — the cancel drained the prompt before any credential landed.
+		const stored = JSON.parse(readFileSync(join(sharedDir, "auth.json"), "utf-8")) as Record<string, unknown>;
+		expect(stored[provider]).toBeUndefined();
 	});
 });

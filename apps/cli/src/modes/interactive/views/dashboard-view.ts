@@ -11,7 +11,7 @@ import { type Api, getSupportedThinkingLevels, type Model, type OAuthSelectPromp
 import type { ThinkingLevel } from "@opsyhq/agent";
 import {
   type Agent,
-  AuthStorage,
+  type AuthSelectorProvider,
   DEFAULT_THINKING_LEVEL,
   findExactModelReferenceMatch,
   getDefaultModel,
@@ -22,7 +22,8 @@ import {
   HOME_SLASH_COMMANDS,
   isApiKeyLoginProvider,
   isDeployed,
-  ModelRegistry,
+  LoginDialogComponent,
+  OAuthSelectorComponent,
   rawKeyHint,
   setSharedDefaultModel,
   setSharedDefaultThinkingLevel,
@@ -50,9 +51,7 @@ import type { KeybindingsManager } from "../../../keybindings-manager.ts";
 import { type AppView, BIRTH_OPENER, type ViewContext } from "../app.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
-import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
-import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 
 export class DashboardView extends Container implements AppView {
@@ -66,19 +65,22 @@ export class DashboardView extends Container implements AppView {
   private editor!: CustomEditor;
   private list?: SelectList;
   private overlay?: OverlayHandle;
-  // The global credential tier + a registry over it; the auth/model commands read and persist here.
-  private auth!: AuthStorage;
-  private registry!: ModelRegistry;
 
   constructor(keybindings: KeybindingsManager) {
     super();
     this.keybindings = keybindings;
   }
 
+  /** The global credential tier + a registry over it; the auth/model commands read and persist here. */
+  private get auth() {
+    return this.ctx.voli.auth;
+  }
+  private get registry() {
+    return this.ctx.voli.registry;
+  }
+
   onMount(ctx: ViewContext): void {
     this.ctx = ctx;
-    this.auth = AuthStorage.create();
-    this.registry = ModelRegistry.create(this.auth);
 
     // Focus the bar by hand (the view is the focus target). Bare-command mode (prefix "") lets the
     // editor's own autocomplete drive the menu without a leading slash.

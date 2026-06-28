@@ -1,13 +1,16 @@
 /**
  * Login dialog: owns the full provider login flow — OAuth browser/device-code, manual paste,
- * API-key prompt, and progress — in one cohesive content area. Ported from the coding-agent's
- * LoginDialogComponent, adapted to import the shared primitives from @opsyhq/voli and to take the
- * provider display name directly (the caller already has it), so it needs no provider registry.
+ * API-key prompt, and progress — in one cohesive content area. Shared by the daemon-backed chat
+ * (driven over the login seam) and the in-process dashboard/onboarding views. Takes the provider
+ * display name directly (the caller already has it), so it needs no provider registry.
  */
 
 import type { OAuthDeviceCodeInfo } from "@earendil-works/pi-ai";
-import { DynamicBorder, keyHint, openBrowser, theme } from "@opsyhq/voli";
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@opsyhq/tui";
+import { theme } from "../theme/theme.ts";
+import { openBrowser } from "../utils/open-browser.ts";
+import { DynamicBorder } from "./dynamic-border.ts";
+import { keyHint } from "./keybinding-hints.ts";
 
 /** Login dialog component - replaces the host while a provider login is in progress. */
 export class LoginDialogComponent extends Container implements Focusable {
@@ -150,7 +153,11 @@ export class LoginDialogComponent extends Container implements Focusable {
 		}
 		this.contentContainer.addChild(this.input);
 		this.contentContainer.addChild(
-			new Text(`(${keyHint("tui.select.cancel", "to cancel,")} ${keyHint("tui.select.confirm", "to submit")})`, 1, 0),
+			new Text(
+				`(${keyHint("tui.select.cancel", "to cancel,")} ${keyHint("tui.select.confirm", "to submit")})`,
+				1,
+				0,
+			),
 		);
 
 		this.input.setValue("");
@@ -160,6 +167,26 @@ export class LoginDialogComponent extends Container implements Focusable {
 			this.inputResolver = resolve;
 			this.inputRejecter = reject;
 		});
+	}
+
+	/** Show informational text without prompting for input. */
+	showInfo(lines: string[]): void {
+		this.contentContainer.clear();
+		this.contentContainer.addChild(new Spacer(1));
+		for (const line of lines) {
+			this.contentContainer.addChild(new Text(line, 1, 0));
+		}
+		this.contentContainer.addChild(new Spacer(1));
+		this.contentContainer.addChild(new Text(`(${keyHint("tui.select.cancel", "to close")})`, 1, 0));
+		this.tui.requestRender();
+	}
+
+	/** Show a waiting message (for polling flows like GitHub Copilot). */
+	showWaiting(message: string): void {
+		this.contentContainer.addChild(new Spacer(1));
+		this.contentContainer.addChild(new Text(theme.fg("dim", message), 1, 0));
+		this.contentContainer.addChild(new Text(`(${keyHint("tui.select.cancel", "to cancel")})`, 1, 0));
+		this.tui.requestRender();
 	}
 
 	/** Called by the onProgress callback. */

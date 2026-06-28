@@ -9,7 +9,8 @@
  *   - `GET /sessions`                  — the session list;
  *   - `GET /sessions/:id/events` (SSE) — one session's curated event stream (subscribing makes it live);
  *   - `POST /sessions/:id/control`     — a command for that session, whose sync response is the body;
- *   - `POST /sessions/:id/ui-response` — a client's answer to that session's parked dialog;
+ *   - `POST /sessions/:id/ui-response` — a client's answer to that session's parked extension dialog;
+ *   - `POST /sessions/:id/login-response` — a client's answer to that session's parked login dialog;
  *   - `GET /health`                    — liveness, no auth.
  *
  * `AgentRuntime` owns every lifecycle concern (start/create/open/close/reload/cleanup); the server is a
@@ -19,6 +20,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import type { OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { type ServerType, serve } from "@hono/node-server";
 import type { AgentHarnessEvent } from "@opsyhq/agent";
 import { Hono } from "hono";
@@ -57,6 +59,8 @@ import {
 	type ExtensionUIRequest,
 	type ExtensionUIResponse,
 	FORWARDED_EVENT_TYPES,
+	type LoginUIRequest,
+	type LoginUIResponse,
 	type OnboardServiceResult,
 	type ScopedModelsUpdateEvent,
 } from "./types.ts";
@@ -280,9 +284,24 @@ async function handleCommand(
 			runtime.setEnabledModels(cmd.enabledModels);
 			return ok(id, "set_enabled_models");
 
-		// Provider login — runs daemon-side; OAuth prompts ride the initiating session's ui.
-		case "login":
-			return ok(id, "login", await runtime.login(cmd.provider, cmd.authType, session.ui));
+		// Provider login — runs daemon-side; the browser opens client-side and the prompts/selects ride
+		// the session's login seam. A per-session AbortController lets `login_cancel` abort a hung flow.
+		case "login": {
+			const ac = new AbortController();
+			session.loginAbortController = ac;
+			try {
+				return ok(
+					id,
+					"login",
+					await runtime.login(cmd.provider, cmd.authType, session.createLoginCallbacks(ac.signal)),
+				);
+			} finally {
+				session.loginAbortController = undefined;
+			}
+		}
+		case "login_cancel":
+			session.loginAbortController?.abort();
+			return ok(id, "login_cancel");
 		case "logout":
 			return ok(id, "logout", runtime.logout(cmd.provider));
 		case "get_login_providers":
@@ -480,6 +499,11 @@ export async function runDaemonMode(
 		string,
 		Map<string, { resolve: (r: ExtensionUIResponse) => void; reject: (e: Error) => void }>
 	>();
+	// Each session's parked login dialogs, keyed by request id (the login seam's analogue of sessionPending).
+	const loginPending = new Map<
+		string,
+		Map<string, { resolve: (r: LoginUIResponse) => void; reject: (e: Error) => void }>
+	>();
 	// The root control-stream subscribers (agent snapshot + session lifecycle).
 	const controlClients = new Set<SSEStreamingApi>();
 
@@ -533,9 +557,9 @@ export async function runDaemonMode(
 		sessionUnsub.delete(sessionId);
 	};
 
-	// The extension-UI sink for one session: fire-and-forget, no `seq`/ring/SSE `id` — so a request
-	// frame is not an AgentHarnessEvent and stays invisible to Last-Event-ID replay.
-	const output = (sessionId: string, request: ExtensionUIRequest): void => {
+	// The extension-UI / login sink for one session: fire-and-forget, no `seq`/ring/SSE `id` — so a
+	// request frame is not an AgentHarnessEvent and stays invisible to Last-Event-ID replay.
+	const output = (sessionId: string, request: ExtensionUIRequest | LoginUIRequest): void => {
 		const clients = sessionClients.get(sessionId);
 		if (!clients) return;
 		for (const client of clients) {
@@ -773,9 +797,80 @@ export async function runDaemonMode(
 		return ui;
 	};
 
+	/**
+	 * Build the per-session login callbacks bound to `sessionId`, driven by `signal` (the `login_cancel`
+	 * command aborts it). Mirrors `createSessionUI`: `auth`/`deviceCode`/`progress` are fire-and-forget
+	 * frames; `prompt`/`manualInput`/`select` park a promise in the session's `loginPending` map and emit
+	 * a request frame the client answers via `POST /sessions/:id/login-response`.
+	 */
+	const createLoginCallbacks = (sessionId: string, signal: AbortSignal): OAuthLoginCallbacks => {
+		const pending = (): Map<string, { resolve: (r: LoginUIResponse) => void; reject: (e: Error) => void }> => {
+			let map = loginPending.get(sessionId);
+			if (!map) {
+				map = new Map();
+				loginPending.set(sessionId, map);
+			}
+			return map;
+		};
+
+		// Park a promise for an awaited login dialog; resolve to `defaultValue` if the login is cancelled
+		// (the signal aborts) before the client answers, so the provider flow never hangs.
+		const park = <T>(
+			request: Record<string, unknown>,
+			defaultValue: T,
+			parseResponse: (response: LoginUIResponse) => T,
+		): Promise<T> => {
+			if (signal.aborted) return Promise.resolve(defaultValue);
+			const requestId = randomUUID();
+			return new Promise((resolve, reject) => {
+				const cleanup = () => {
+					signal.removeEventListener("abort", onAbort);
+					pending().delete(requestId);
+				};
+				const onAbort = () => {
+					cleanup();
+					resolve(defaultValue);
+				};
+				signal.addEventListener("abort", onAbort, { once: true });
+				pending().set(requestId, {
+					resolve: (response: LoginUIResponse) => {
+						cleanup();
+						resolve(parseResponse(response));
+					},
+					reject,
+				});
+				output(sessionId, { type: "login_ui_request", id: requestId, ...request } as LoginUIRequest);
+			});
+		};
+
+		const emit = (request: Record<string, unknown>): void => {
+			output(sessionId, { type: "login_ui_request", id: randomUUID(), ...request } as LoginUIRequest);
+		};
+
+		return {
+			onAuth: (info) => emit({ method: "auth", url: info.url, instructions: info.instructions }),
+			onDeviceCode: (info) =>
+				emit({ method: "deviceCode", userCode: info.userCode, verificationUri: info.verificationUri }),
+			onProgress: (message) => emit({ method: "progress", message }),
+			onPrompt: (prompt) =>
+				park({ method: "prompt", message: prompt.message, placeholder: prompt.placeholder }, "", (r) =>
+					"cancelled" in r ? "" : r.value,
+				),
+			onManualCodeInput: () => park({ method: "manualInput" }, "", (r) => ("cancelled" in r ? "" : r.value)),
+			onSelect: (prompt) =>
+				park<string | undefined>(
+					{ method: "select", message: prompt.message, options: prompt.options },
+					undefined,
+					(r) => ("cancelled" in r ? undefined : r.value),
+				),
+			signal,
+		};
+	};
+
 	// ---- Bind the runtime host surface + lifecycle bridges -----------------
 	runtime.bindInteractiveContext({
 		createSessionUI,
+		createLoginCallbacks,
 		mode: "rpc",
 		// Runner errors (extension + integration) are agent-global — no originating session — so notify
 		// every live session's clients.
@@ -871,6 +966,14 @@ export async function runDaemonMode(
 						}
 						pending.clear();
 					}
+					// Same for any parked login dialogs — drain them as cancelled so the login flow unwinds.
+					const pendingLogin = loginPending.get(id);
+					if (pendingLogin) {
+						for (const [requestId, p] of [...pendingLogin]) {
+							p.resolve({ type: "login_ui_response", id: requestId, cancelled: true });
+						}
+						pendingLogin.clear();
+					}
 					unsubscribeSession(id);
 					// Driver gone — evict the session unless a turn is still in flight (never kill a turn).
 					const live = runtime.getSession(id);
@@ -936,6 +1039,25 @@ export async function runDaemonMode(
 			return c.json({ success: false, error: "Malformed JSON body." });
 		}
 		const pending = sessionPending.get(id);
+		const parked = pending?.get(response.id);
+		if (parked) {
+			pending?.delete(response.id);
+			parked.resolve(response);
+		}
+		return c.json({ success: true });
+	});
+
+	// A client's answer to one of this session's awaited login dialogs — resolve the parked promise by
+	// request id (the login seam's analogue of /ui-response).
+	app.post("/sessions/:id/login-response", async (c) => {
+		const id = c.req.param("id");
+		let response: LoginUIResponse;
+		try {
+			response = await c.req.json<LoginUIResponse>();
+		} catch {
+			return c.json({ success: false, error: "Malformed JSON body." });
+		}
+		const pending = loginPending.get(id);
 		const parked = pending?.get(response.id);
 		if (parked) {
 			pending?.delete(response.id);
