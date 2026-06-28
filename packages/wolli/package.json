@@ -1,0 +1,78 @@
+{
+	"name": "@opsyhq/wolli",
+	"version": "0.0.1",
+	"description": "Persistent, purposeful agent CLI with memory and identity",
+	"type": "module",
+	"piConfig": {
+		"name": "wolli",
+		"configDir": ".wolli"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist",
+		"docs",
+		"plugins"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json && pnpm run copy-assets",
+		"copy-assets": "shx mkdir -p dist/theme && shx cp src/theme/*.json dist/theme/",
+		"typecheck": "tsgo -p tsconfig.build.json --noEmit",
+		"test": "vitest --run"
+	},
+	"dependencies": {
+		"@anthropic-ai/sandbox-runtime": "0.0.56",
+		"@earendil-works/pi-ai": "^0.79.3",
+		"@hono/node-server": "^2.0.5",
+		"@opsyhq/agent": "workspace:*",
+		"@opsyhq/tui": "workspace:*",
+		"@silvia-odwyer/photon-node": "0.3.4",
+		"chalk": "5.6.2",
+		"cross-spawn": "7.0.6",
+		"diff": "8.0.4",
+		"glob": "13.0.6",
+		"highlight.js": "10.7.3",
+		"hono": "^4.12.26",
+		"hosted-git-info": "9.0.3",
+		"ignore": "7.0.5",
+		"jiti": "2.7.0",
+		"minimatch": "10.2.5",
+		"proper-lockfile": "4.1.2",
+		"typebox": "1.1.38",
+		"undici": "8.3.0",
+		"yaml": "2.9.0"
+	},
+	"devDependencies": {
+		"@grammyjs/runner": "2.0.3",
+		"@types/cross-spawn": "6.0.6",
+		"@types/diff": "7.0.2",
+		"@types/hosted-git-info": "3.0.5",
+		"@types/node": "24.12.4",
+		"@types/proper-lockfile": "4.1.4",
+		"croner": "10.0.1",
+		"grammy": "1.44.0",
+		"shx": "0.4.0",
+		"typescript": "5.9.3",
+		"vitest": "3.2.4"
+	},
+	"keywords": [
+		"agent",
+		"ai",
+		"llm",
+		"cli",
+		"tui",
+		"memory"
+	],
+	"license": "Apache-2.0",
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

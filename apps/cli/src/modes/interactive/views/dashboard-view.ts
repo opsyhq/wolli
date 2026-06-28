@@ -29,7 +29,7 @@ import {
   setSharedDefaultThinkingLevel,
   theme,
   THINKING_LEVELS,
-} from "@opsyhq/voli";
+} from "@opsyhq/wolli";
 import {
   type AutocompleteItem,
   type AutocompleteProvider,
@@ -73,10 +73,10 @@ export class DashboardView extends Container implements AppView {
 
   /** The global credential tier + a registry over it; the auth/model commands read and persist here. */
   private get auth() {
-    return this.ctx.voli.auth;
+    return this.ctx.wolli.auth;
   }
   private get registry() {
-    return this.ctx.voli.registry;
+    return this.ctx.wolli.registry;
   }
 
   onMount(ctx: ViewContext): void {
@@ -122,7 +122,7 @@ export class DashboardView extends Container implements AppView {
 
   private renderBody(): void {
     this.bodyContainer.clear();
-    const agents = this.ctx.voli.list();
+    const agents = this.ctx.wolli.list();
     if (agents.length === 0) {
       this.list = undefined;
       this.bodyContainer.addChild(new Text(theme.fg("dim", "No agents yet."), 1, 0));
@@ -208,7 +208,7 @@ export class DashboardView extends Container implements AppView {
     // Drop the bar cursor while the overlay owns input, else a stray marker lands behind it.
     this.editor.focused = false;
     const create = new CreateAgent({
-      create: (name) => this.ctx.voli.create(name),
+      create: (name) => this.ctx.wolli.create(name),
       onCreated: (agent) => {
         this.overlay?.hide();
         void this.ctx.navigate({ to: "chat", name: agent.name, initialAssistantMessage: BIRTH_OPENER });

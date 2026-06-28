@@ -5,7 +5,7 @@ import {
 	type EditDiffResult,
 	type EditToolDetails,
 	type Theme,
-} from "@opsyhq/voli";
+} from "@opsyhq/wolli";
 import { Box, Container, Spacer, Text } from "@opsyhq/tui";
 import { renderDiff } from "../modes/interactive/views/components/diff.ts";
 import { renderToolPath, str } from "./render-utils.ts";

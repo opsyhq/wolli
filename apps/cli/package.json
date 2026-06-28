@@ -1,10 +1,10 @@
 {
 	"name": "@opsyhq/cli",
 	"version": "0.0.1",
-	"description": "Voli CLI — a daemon client (TUI + print) speaking HTTP/SSE to per-agent daemons",
+	"description": "Wolli CLI — a daemon client (TUI + print) speaking HTTP/SSE to per-agent daemons",
 	"type": "module",
 	"bin": {
-		"voli": "dist/cli.js"
+		"wolli": "dist/cli.js"
 	},
 	"files": [
 		"dist"
@@ -17,7 +17,7 @@
 	},
 	"dependencies": {
 		"@opsyhq/agent": "workspace:*",
-		"@opsyhq/voli": "workspace:*",
+		"@opsyhq/wolli": "workspace:*",
 		"@opsyhq/tui": "workspace:*",
 		"@earendil-works/pi-ai": "^0.79.3",
 		"chalk": "5.6.2",

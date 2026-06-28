@@ -4,11 +4,11 @@
  * dispatcher, then hand off to `main` (whose numeric return becomes `process.exitCode`).
  */
 
-import { APP_NAME, configureHttpDispatcher } from "@opsyhq/voli";
+import { APP_NAME, configureHttpDispatcher } from "@opsyhq/wolli";
 import { main } from "./main.ts";
 
 process.title = APP_NAME;
-process.env.VOLI_CODING_AGENT = "true";
+process.env.WOLLI_CODING_AGENT = "true";
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 configureHttpDispatcher();

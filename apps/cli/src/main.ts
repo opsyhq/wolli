@@ -12,7 +12,7 @@
  * is no longer deliverable (messages not starting with `plugins` are unaffected).
  */
 
-import { APP_NAME, AuthStorage, ModelRegistry, runDaemon, Voli, VERSION } from "@opsyhq/voli";
+import { APP_NAME, AuthStorage, ModelRegistry, runDaemon, Wolli, VERSION } from "@opsyhq/wolli";
 import { parseArgs, printHelp } from "./args.ts";
 import { runDelete } from "./commands/delete.ts";
 import { runList } from "./commands/list.ts";
@@ -23,7 +23,7 @@ import { App, type Route } from "./modes/interactive/app.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
 
 export async function main(argv: string[]): Promise<number> {
-	const voli = new Voli();
+	const wolli = new Wolli();
 	const args = parseArgs(argv);
 	const command = args.positionals[0];
 	const sub = args.positionals[1];
@@ -44,15 +44,15 @@ export async function main(argv: string[]): Promise<number> {
 
 	for (const diagnostic of args.diagnostics) process.stderr.write(`${diagnostic.message}\n`);
 
-	// Bare `voli`: a fresh machine with no configured provider gets the guided first-run; otherwise
+	// Bare `wolli`: a fresh machine with no configured provider gets the guided first-run; otherwise
 	// the dashboard. `ModelRegistry.create` reflects env keys immediately (env keys count via hasAuth),
 	// so a working env key still routes to the dashboard.
 	if (!command) {
-		const app = new App(voli);
+		const app = new App(wolli);
 		const auth = AuthStorage.create();
 		const registry = ModelRegistry.create(auth);
 		const hasProvider = registry.getAvailable().length > 0;
-		const route: Route = hasProvider || voli.list().length > 0 ? { to: "dashboard" } : { to: "onboarding" };
+		const route: Route = hasProvider || wolli.list().length > 0 ? { to: "dashboard" } : { to: "onboarding" };
 		await app.start(route);
 		return 0;
 	}
@@ -73,7 +73,7 @@ export async function main(argv: string[]): Promise<number> {
 		return runDaemon(name, { port: args.port });
 	}
 
-	const agent = voli.get(command);
+	const agent = wolli.get(command);
 	if (!agent) {
 		process.stderr.write(`Unknown agent "${command}". Create it with: ${APP_NAME} new ${command}\n`);
 		return 1;
@@ -95,7 +95,7 @@ export async function main(argv: string[]): Promise<number> {
 		return runPrintMode(await agent.getLatestSession(), message);
 	}
 	// Deep-link straight to the chat page.
-	const app = new App(voli);
+	const app = new App(wolli);
 	await app.start({ to: "chat", name: command });
 	return 0;
 }

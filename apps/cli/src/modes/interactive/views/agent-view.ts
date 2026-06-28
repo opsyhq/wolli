@@ -1,6 +1,6 @@
 /** Agent detail page: config header plus live capability sections read from the daemon. */
 
-import { type Agent, type SessionHandle, isDeployed, theme } from "@opsyhq/voli";
+import { type Agent, type SessionHandle, isDeployed, theme } from "@opsyhq/wolli";
 import { type Component, Container, matchesKey, type OverlayHandle, Spacer, Text } from "@opsyhq/tui";
 import type { AppView, ViewContext } from "../app.ts";
 import { DeleteConfirm } from "./components/delete-confirm.ts";

@@ -1,5 +1,5 @@
 /**
- * `voli <agent> plugins <install|remove|list|update|configure> [source]`.
+ * `wolli <agent> plugins <install|remove|list|update|configure> [source]`.
  *
  * install/remove/update route to the agent's daemon (the single writer, which reloads itself);
  * list reads disk locally. If a plugin's integration declares `onboard`, install/configure run
@@ -13,8 +13,8 @@ import {
 	type ExtensionUIRequest,
 	type OnboardServiceResult,
 	type SessionHandle,
-	Voli,
-} from "@opsyhq/voli";
+	Wolli,
+} from "@opsyhq/wolli";
 import chalk from "chalk";
 import { showStartupInput, showStartupSelector } from "../startup-ui.ts";
 
@@ -57,7 +57,7 @@ function printPluginsCommandHelp(command: PluginsCommand): void {
 		case "install":
 			console.log(`Install a plugin into an agent and add it to the agent's settings. A plugin can
 contribute extensions, integrations, skills, prompts, and/or themes (declared in its
-package.json "voli" field), all resolved in place from the one install. When the plugin
+package.json "wolli" field), all resolved in place from the one install. When the plugin
 contains an integration with guided setup, onboarding runs automatically.
 
 Sources:
@@ -230,7 +230,7 @@ export async function runPlugins(agent: string, rest: string[], help = false): P
 		return 1;
 	}
 
-	const handle = new Voli().get(agent);
+	const handle = new Wolli().get(agent);
 	if (!handle) {
 		console.error(chalk.red(`Unknown agent "${agent}". Create it with: ${APP_NAME} new ${agent}`));
 		return 1;

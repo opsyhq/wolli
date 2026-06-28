@@ -1,5 +1,5 @@
 import type { Component } from "@opsyhq/tui";
-import type { Theme, ToolName, ToolRenderContext, ToolRenderResultOptions } from "@opsyhq/voli";
+import type { Theme, ToolName, ToolRenderContext, ToolRenderResultOptions } from "@opsyhq/wolli";
 import { bashRenderer } from "./bash.ts";
 import { editRenderer } from "./edit.ts";
 import { findRenderer } from "./find.ts";

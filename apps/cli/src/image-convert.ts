@@ -1,4 +1,4 @@
-import { applyExifOrientation, loadPhoton } from "@opsyhq/voli";
+import { applyExifOrientation, loadPhoton } from "@opsyhq/wolli";
 
 /**
  * Convert image to PNG format for terminal display.

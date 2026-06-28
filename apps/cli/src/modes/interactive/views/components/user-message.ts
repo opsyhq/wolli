@@ -1,5 +1,5 @@
 import { Box, Container, Markdown, type MarkdownTheme } from "@opsyhq/tui";
-import { getMarkdownTheme, theme } from "@opsyhq/voli";
+import { getMarkdownTheme, theme } from "@opsyhq/wolli";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";

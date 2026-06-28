@@ -1,6 +1,6 @@
 /** Type-the-name delete confirm modal, shared by the dashboard and the agent detail view. */
 
-import { type Agent, theme } from "@opsyhq/voli";
+import { type Agent, theme } from "@opsyhq/wolli";
 import { Box, type Component, type Focusable, Input, matchesKey, Spacer, Text } from "@opsyhq/tui";
 
 export interface DeleteConfirmCallbacks {

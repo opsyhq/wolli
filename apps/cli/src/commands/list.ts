@@ -2,10 +2,10 @@
  * `list` — list agents with a one-line purpose summary. A pure read of the agents root; no daemon.
  */
 
-import { APP_NAME, Voli } from "@opsyhq/voli";
+import { APP_NAME, Wolli } from "@opsyhq/wolli";
 
 export function runList(): number {
-	const agents = new Voli().list();
+	const agents = new Wolli().list();
 	if (agents.length === 0) {
 		console.log(`No agents yet. Create one with: ${APP_NAME} new <name>`);
 		return 0;

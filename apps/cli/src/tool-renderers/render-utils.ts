@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { sanitizeBinaryOutput } from "@opsyhq/agent";
 import { getCapabilities, getImageDimensions, hyperlink, imageFallback } from "@opsyhq/tui";
-import { resolvePath, stripAnsi, type Theme } from "@opsyhq/voli";
+import { resolvePath, stripAnsi, type Theme } from "@opsyhq/wolli";
 
 export function shortenPath(path: unknown): string {
 	if (typeof path !== "string") return "";

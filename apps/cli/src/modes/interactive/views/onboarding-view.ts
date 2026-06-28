@@ -5,7 +5,7 @@
  * drops into the dashboard. Esc/Ctrl+C steps back, or skips out from the welcome screen.
  *
  * The provider list and login dialog are the shared OAuthSelectorComponent / LoginDialogComponent,
- * driven here against the global credential tier + a registry over it (`voli.auth` / `voli.registry`).
+ * driven here against the global credential tier + a registry over it (`wolli.auth` / `wolli.registry`).
  */
 
 import type { Api, Model, OAuthSelectPrompt } from "@earendil-works/pi-ai";
@@ -23,7 +23,7 @@ import {
   setSharedDefaultModel,
   theme,
   VERSION,
-} from "@opsyhq/voli";
+} from "@opsyhq/wolli";
 import { type Component, Container, Text } from "@opsyhq/tui";
 import type { AppView, ViewContext } from "../app.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
@@ -39,10 +39,10 @@ export class OnboardingView extends Container implements AppView {
 
   /** The global credential tier + a registry over it, same ones the dashboard reads + writes through. */
   private get auth() {
-    return this.ctx.voli.auth;
+    return this.ctx.wolli.auth;
   }
   private get registry() {
-    return this.ctx.voli.registry;
+    return this.ctx.wolli.registry;
   }
 
   onMount(ctx: ViewContext): void {
@@ -248,7 +248,7 @@ export class OnboardingView extends Container implements AppView {
     this.setActive(selector);
   }
 
-  /** Done or skipped — re-enter the dashboard, which shares the same `voli.auth`/`voli.registry`. */
+  /** Done or skipped — re-enter the dashboard, which shares the same `wolli.auth`/`wolli.registry`. */
   private finish(): void {
     this.ctx.home();
   }

@@ -5,7 +5,7 @@
  * Positionals carry the subcommand / agent name and any inline message.
  */
 
-import { APP_NAME, CONFIG_DIR_NAME, ENV_HOME } from "@opsyhq/voli";
+import { APP_NAME, CONFIG_DIR_NAME, ENV_HOME } from "@opsyhq/wolli";
 
 export interface Args {
 	/** Force single-shot print mode (default once interactive mode lands). */

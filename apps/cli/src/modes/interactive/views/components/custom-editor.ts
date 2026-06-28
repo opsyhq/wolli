@@ -1,5 +1,5 @@
 import { Editor, type EditorOptions, type EditorTheme, matchesKey, type TUI } from "@opsyhq/tui";
-import type { AppKeybinding, KeybindingsManager } from "@opsyhq/voli";
+import type { AppKeybinding, KeybindingsManager } from "@opsyhq/wolli";
 
 /**
  * Editor that dispatches app keybindings from its own `handleInput`, i.e. on the focused-component

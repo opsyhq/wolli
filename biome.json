@@ -27,7 +27,7 @@
 		"includes": [
 			"packages/*/src/**/*.ts",
 			"packages/*/test/**/*.ts",
-			"packages/voli/examples/**/*.ts",
+			"packages/wolli/examples/**/*.ts",
 			"!packages/coding-agent",
 			"!**/node_modules/**/*",
 			"!**/dist/**/*",

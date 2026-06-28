@@ -1,6 +1,6 @@
 # Integration
 
-An Voli agent is not a chat session. It is a durable worker that can be reached
+An Wolli agent is not a chat session. It is a durable worker that can be reached
 from many places, run in the background, and speak to a human when needed.
 
 This doc is about the boundary between **integrations** and **extensions**.
@@ -35,7 +35,7 @@ Examples:
 - listen to GitHub comments in this repo
 - ignore GitHub comments unless they mention the agent
 - listen to this Telegram chat
-- pipe Telegram messages into a Voli chat session
+- pipe Telegram messages into a Wolli chat session
 - turn a production alert webhook into a headless agent run
 - send the agent's reply back through Telegram or GitHub
 
@@ -83,18 +83,18 @@ session asking for approval.
 
 The Telegram integration receives messages and emits sounds.
 
-A Telegram extension can map a Telegram chat to a Voli user session:
+A Telegram extension can map a Telegram chat to a Wolli user session:
 
 ```
 Telegram message
   -> Telegram sound
-  -> extension maps it into Voli chat
-  -> agent replies in Voli chat
+  -> extension maps it into Wolli chat
+  -> agent replies in Wolli chat
   -> extension sends reply back to Telegram
 ```
 
 That is bidirectional chat: the integration carries messages both ways, but the
-extension owns the mapping between the external thread and the Voli session.
+extension owns the mapping between the external thread and the Wolli session.
 
 ## Headless vs User Sessions
 
@@ -118,6 +118,6 @@ We should keep these distinct.
 
 - What is the smallest durable listener declaration an extension can register?
 - Are unmatched sounds stored, dropped, or only logged operationally?
-- Is one external chat thread always one Voli user session?
+- Is one external chat thread always one Wolli user session?
 - Which outbound replies require approval?
 - Can an agent author new integrations, or only extensions over shipped ones?

@@ -6,7 +6,7 @@
  * sole `tui.start()`/`stop()` live here.
  */
 
-import { type Agent, initTheme, type SessionHandle, type Voli } from "@opsyhq/voli";
+import { type Agent, initTheme, type SessionHandle, type Wolli } from "@opsyhq/wolli";
 import { type Component, Container, ProcessTerminal, setKeybindings, TUI } from "@opsyhq/tui";
 import { KeybindingsManager } from "../../keybindings-manager.ts";
 import { AgentView } from "./views/agent-view.ts";
@@ -29,7 +29,7 @@ export type Navigate = (route: Route) => Promise<void>;
 /** Wiring handed to each view on mount: the shared TUI, the agent collection, and navigation. */
 export interface ViewContext {
 	tui: TUI;
-	voli: Voli;
+	wolli: Wolli;
 	/** Open a page (dashboard → details, dashboard → chat, details → chat). */
 	navigate: Navigate;
 	/** Return to the global dashboard from anywhere — what ←/Esc map to. */
@@ -53,7 +53,7 @@ export interface AppView extends Component {
 
 export class App {
 	private readonly tui: TUI;
-	private readonly voli: Voli;
+	private readonly wolli: Wolli;
 	private readonly keybindings: KeybindingsManager;
 	private readonly root: Container;
 	private readonly ctx: ViewContext;
@@ -63,18 +63,18 @@ export class App {
 	private resolveExit?: () => void;
 	private stopped = false;
 
-	constructor(voli: Voli) {
+	constructor(wolli: Wolli) {
 		// Theme + keybindings must be initialized before any styling runs.
 		initTheme();
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		this.tui = new TUI(new ProcessTerminal());
-		this.voli = voli;
+		this.wolli = wolli;
 		this.root = new Container();
 		this.tui.addChild(this.root);
 		this.ctx = {
 			tui: this.tui,
-			voli,
+			wolli,
 			navigate: (route) => this.openView(route),
 			home: () => void this.openView({ to: "dashboard" }),
 			quit: () => this.stop(),
@@ -107,7 +107,7 @@ export class App {
 			case "agent": {
 				this.closeChat();
 				// Crash on the impossible "agent dir vanished" case rather than silently redirecting.
-				const agent = this.voli.get(route.name)!;
+				const agent = this.wolli.get(route.name)!;
 				let session: SessionHandle | undefined;
 				try {
 					await agent.connect();
@@ -120,7 +120,7 @@ export class App {
 				return;
 			}
 			case "chat": {
-				const agent = this.voli.get(route.name);
+				const agent = this.wolli.get(route.name);
 				if (!agent) {
 					await this.show(new DashboardView(this.keybindings));
 					return;

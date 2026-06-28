@@ -1,0 +1,17 @@
+{
+	"name": "wolli-integration-telegram",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"wolli": {
+		"integrations": ["./index.ts"],
+		"extensions": ["./telegram-chat.ts"]
+	},
+	"dependencies": {
+		"grammy": "1.44.0",
+		"@grammyjs/runner": "2.0.3"
+	},
+	"peerDependencies": {
+		"@opsyhq/wolli": "*"
+	}
+}

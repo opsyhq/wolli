@@ -1,0 +1,16 @@
+{
+	"name": "wolli-integration-scheduler",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"wolli": {
+		"integrations": ["./index.ts"],
+		"extensions": ["./scheduler-chat.ts"]
+	},
+	"dependencies": {
+		"croner": "10.0.1"
+	},
+	"peerDependencies": {
+		"@opsyhq/wolli": "*"
+	}
+}

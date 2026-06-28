@@ -5,7 +5,7 @@ import {
 	type LsToolDetails,
 	type Theme,
 	type ToolRenderResultOptions,
-} from "@opsyhq/voli";
+} from "@opsyhq/wolli";
 import { Text } from "@opsyhq/tui";
 import { getTextOutput, renderToolPath, str } from "./render-utils.ts";
 import type { ToolRenderer } from "./index.ts";

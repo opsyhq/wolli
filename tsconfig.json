@@ -9,8 +9,8 @@
 			"@opsyhq/tui/*": ["./packages/tui/src/*"],
 			"@opsyhq/coding-agent": ["./packages/coding-agent/src/index.ts"],
 			"@opsyhq/coding-agent/*": ["./packages/coding-agent/src/*"],
-			"@opsyhq/voli": ["./packages/voli/src/index.ts"],
-			"@opsyhq/voli/*": ["./packages/voli/src/*"],
+			"@opsyhq/wolli": ["./packages/wolli/src/index.ts"],
+			"@opsyhq/wolli/*": ["./packages/wolli/src/*"],
 			"@opsyhq/cli": ["./apps/cli/src/main.ts"],
 			"@opsyhq/cli/*": ["./apps/cli/src/*"]
 		}

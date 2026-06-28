@@ -13,7 +13,7 @@ coverage/
 .env
 
 # Local dev launcher (machine-specific, symlinked onto PATH)
-apps/cli/bin/voli-dev
+apps/cli/bin/wolli-dev
 
 # OS / editor
 .DS_Store

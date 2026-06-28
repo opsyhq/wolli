@@ -31,7 +31,7 @@ index 101153587266e9ef2e7864f8aab9b5fd485a6aa1..532b5677398cf4df16ee767ccb6fbdba
  <body>
    <main>
 -    <div class="logo">${LOGO_SVG}</div>
-+    <div class="wordmark">voli</div>
++    <div class="wordmark">wolli</div>
      <h1>${heading}</h1>
      <p>${message}</p>
      ${details ? `<div class="details">${details}</div>` : ""}

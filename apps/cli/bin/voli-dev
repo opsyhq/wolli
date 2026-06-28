@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#
+# voli-dev — run the locally built Voli CLI from this repo.
+#
+# Kept distinct from the published `voli` binary so the two coexist: `voli` is
+# whatever you install globally, `voli-dev` is always this working copy's build.
+# Defaults VOLI_HOME to an isolated data home so testing a broken build can't
+# touch your real agents. Override per run: `VOLI_HOME=~/.voli voli-dev ...`.
+#
+# Runs the built output (apps/cli/dist/cli.js), so rebuild after changes:
+# `pnpm --filter @opsyhq/voli --filter @opsyhq/cli build`.
+set -euo pipefail
+
+# Resolve this script through any symlinks (it's symlinked onto PATH) so paths
+# are relative to the real file in the repo, not the symlink's location.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+	dir="$(cd -P "$(dirname "$src")" && pwd)"
+	src="$(readlink "$src")"
+	[[ "$src" != /* ]] && src="$dir/$src"
+done
+here="$(cd -P "$(dirname "$src")" && pwd)"
+
+: "${VOLI_HOME:=$HOME/.voli-dev}"
+export VOLI_HOME
+
+exec node "$here/../dist/cli.js" "$@"

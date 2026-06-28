@@ -1,11 +1,11 @@
 /**
  * Generic selector component: displays a list of string options with keyboard
- * navigation. voli uses it as the Yes/No dialog the deploy flow drives directly
+ * navigation. wolli uses it as the Yes/No dialog the deploy flow drives directly
  * (see ChatView.showExtensionConfirm).
  */
 
 import { Container, getKeybindings, Spacer, Text, type TUI } from "@opsyhq/tui";
-import { DynamicBorder, keyHint, rawKeyHint, theme } from "@opsyhq/voli";
+import { DynamicBorder, keyHint, rawKeyHint, theme } from "@opsyhq/wolli";
 import { CountdownTimer } from "./countdown-timer.ts";
 
 export interface ExtensionSelectorOptions {

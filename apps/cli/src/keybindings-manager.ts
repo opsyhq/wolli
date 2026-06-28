@@ -3,7 +3,7 @@
  * resolves the effective bindings on top of the canonical KEYBINDINGS contract.
  *
  * The keymap contract (KEYBINDINGS, name migrations, the @opsyhq/tui augmentation) lives in
- * @opsyhq/voli; this runtime class is client-only and lives with the interactive CLI.
+ * @opsyhq/wolli; this runtime class is client-only and lives with the interactive CLI.
  */
 
 import { existsSync, readFileSync } from "fs";
@@ -14,7 +14,7 @@ import {
 	type KeybindingsConfig,
 	type KeyId,
 	migrateKeybindingsConfig,
-} from "@opsyhq/voli";
+} from "@opsyhq/wolli";
 import { KeybindingsManager as TuiKeybindingsManager } from "@opsyhq/tui";
 
 function isRecord(value: unknown): value is Record<string, unknown> {

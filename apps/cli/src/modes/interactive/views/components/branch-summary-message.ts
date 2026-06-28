@@ -1,7 +1,7 @@
 import type { BranchSummaryMessage } from "@opsyhq/agent";
 import { Box, Markdown, type MarkdownTheme, Spacer, Text } from "@opsyhq/tui";
-import { getMarkdownTheme, theme } from "@opsyhq/voli";
-import { keyText } from "@opsyhq/voli";
+import { getMarkdownTheme, theme } from "@opsyhq/wolli";
+import { keyText } from "@opsyhq/wolli";
 
 /**
  * Component that renders a branch summary message with collapsed/expanded state.

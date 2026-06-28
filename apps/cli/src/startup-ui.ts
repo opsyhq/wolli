@@ -5,7 +5,7 @@
  */
 
 import { ProcessTerminal, setKeybindings, TUI } from "@opsyhq/tui";
-import { type AgentSettingsManager, initTheme } from "@opsyhq/voli";
+import { type AgentSettingsManager, initTheme } from "@opsyhq/wolli";
 import { KeybindingsManager } from "./keybindings-manager.ts";
 import { ExtensionInputComponent } from "./modes/interactive/views/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./modes/interactive/views/components/extension-selector.ts";
