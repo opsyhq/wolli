@@ -7,7 +7,7 @@
  * global tier in-process, so each change persists the shared default that agents inherit.
  */
 
-import { type Api, getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
+import { type Api, getSupportedThinkingLevels, type Model, type OAuthSelectPrompt } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@opsyhq/agent";
 import {
   type Agent,
@@ -23,7 +23,6 @@ import {
   isApiKeyLoginProvider,
   isDeployed,
   ModelRegistry,
-  openBrowser,
   rawKeyHint,
   setSharedDefaultModel,
   setSharedDefaultThinkingLevel,
@@ -50,9 +49,10 @@ import {
 import type { KeybindingsManager } from "../../../keybindings-manager.ts";
 import { type AppView, BIRTH_OPENER, type ViewContext } from "../app.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
-import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
+import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
+import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 
 export class DashboardView extends Container implements AppView {
@@ -228,40 +228,20 @@ export class DashboardView extends Container implements AppView {
     this.ctx.tui.requestRender();
   }
 
-  /** Text dialog (API key + OAuth prompts), resolving on submit or cancel. */
-  private showExtensionInput(title: string, placeholder?: string): Promise<string | undefined> {
-    return new Promise((resolve) => {
-      const done = (value?: string) => {
-        this.editorContainer.clear();
-        this.editorContainer.addChild(this.editor);
-        this.ctx.tui.setFocus(this);
-        this.ctx.tui.requestRender();
-        resolve(value);
-      };
-      const input = new ExtensionInputComponent(title, placeholder, done, () => done(), { tui: this.ctx.tui });
-      this.editorContainer.clear();
-      this.editorContainer.addChild(input);
-      this.ctx.tui.setFocus(input);
-      this.ctx.tui.requestRender();
-    });
+  /** Host a login dialog/selector in the bar, focusing it; mirrors `showSelector`'s host half. */
+  private hostInBar(component: Component): void {
+    this.editorContainer.clear();
+    this.editorContainer.addChild(component);
+    this.ctx.tui.setFocus(component);
+    this.ctx.tui.requestRender();
   }
 
-  /** Pick-one dialog used by OAuth `onSelect`. */
-  private showExtensionSelector(title: string, options: string[]): Promise<string | undefined> {
-    return new Promise((resolve) => {
-      const done = (value?: string) => {
-        this.editorContainer.clear();
-        this.editorContainer.addChild(this.editor);
-        this.ctx.tui.setFocus(this);
-        this.ctx.tui.requestRender();
-        resolve(value);
-      };
-      const selector = new ExtensionSelectorComponent(title, options, done, () => done(), { tui: this.ctx.tui });
-      this.editorContainer.clear();
-      this.editorContainer.addChild(selector);
-      this.ctx.tui.setFocus(selector);
-      this.ctx.tui.requestRender();
-    });
+  /** Restore the command bar after a hosted login dialog/selector finishes; mirrors `showSelector`'s done. */
+  private restoreBar(): void {
+    this.editorContainer.clear();
+    this.editorContainer.addChild(this.editor);
+    this.ctx.tui.setFocus(this);
+    this.ctx.tui.requestRender();
   }
 
   /** The saved default model resolved against `available` (preselection + thinking levels). */
@@ -317,49 +297,35 @@ export class DashboardView extends Container implements AppView {
     });
   }
 
-  /** `/login` — pick an auth method, then a provider. */
-  private handleLoginCommand(): void {
-    this.showSelector((done) => {
-      const selector = new ExtensionSelectorComponent(
-        "Select authentication method:",
-        ["Use a subscription", "Use an API key"],
-        (option) => {
-          done();
-          this.showLoginProviderSelector(option === "Use a subscription" ? "oauth" : "api_key");
-        },
-        done,
-      );
-      return { component: selector, focus: selector };
-    });
+  /** The flat (provider, auth method) list — oauth subscriptions plus api-key providers. */
+  private getProviderOptions(): AuthSelectorProvider[] {
+    const oauthProviders = this.auth.getOAuthProviders();
+    const oauthIds = new Set(oauthProviders.map((p) => p.id));
+    const options: AuthSelectorProvider[] = oauthProviders.map((p) => ({ id: p.id, name: p.name, authType: "oauth" }));
+    for (const providerId of new Set(this.registry.getAll().map((m) => m.provider))) {
+      if (!isApiKeyLoginProvider(providerId, oauthIds)) continue;
+      options.push({ id: providerId, name: this.registry.getProviderDisplayName(providerId), authType: "api_key" });
+    }
+    return options.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  private showLoginProviderSelector(authType: "oauth" | "api_key"): void {
-    const oauthIds = new Set(this.auth.getOAuthProviders().map((p) => p.id));
-    const providers = (
-      authType === "oauth"
-        ? this.auth.getOAuthProviders().map((p) => ({ id: p.id, name: p.name }))
-        : [...new Set(this.registry.getAll().map((m) => m.provider))]
-            .filter((id) => isApiKeyLoginProvider(id, oauthIds))
-            .map((id) => ({ id, name: this.registry.getProviderDisplayName(id) }))
-    ).sort((a, b) => a.name.localeCompare(b.name));
-    if (providers.length === 0) {
-      this.showStatus(authType === "oauth" ? "No subscription providers available." : "No API key providers available.");
+  /** `/login` — pick a provider + auth method from one searchable list, then run the login. */
+  private handleLoginCommand(): void {
+    const options = this.getProviderOptions();
+    if (options.length === 0) {
+      this.showStatus("No providers available.");
       return;
     }
     this.showSelector((done) => {
-      const selector = new ExtensionSelectorComponent(
-        "Select a provider:",
-        providers.map((p) => p.name),
-        async (label) => {
-          done();
-          const provider = providers.find((p) => p.name === label);
-          if (!provider) return;
-          try {
-            await this.login(provider.id, authType, provider.name);
-            this.showStatus(`Logged in to ${provider.name}.`);
-          } catch (error) {
-            this.showStatus(theme.fg("warning", error instanceof Error ? error.message : String(error)));
-          }
+      const selector = new OAuthSelectorComponent(
+        "login",
+        this.auth,
+        options,
+        (providerId) => {
+          const option = options.find((o) => o.id === providerId);
+          if (!option) return;
+          if (option.authType === "oauth") void this.runOAuthLogin(option);
+          else void this.runApiKeyLogin(option);
         },
         done,
       );
@@ -367,55 +333,95 @@ export class DashboardView extends Container implements AppView {
     });
   }
 
-  /** Run the login in-process against the global tier — the dashboard's `session.login`. */
-  private async login(provider: string, authType: "oauth" | "api_key", name: string): Promise<void> {
-    if (authType === "oauth") {
-      await this.auth.login(provider, {
-        onAuth: (info) => {
-          openBrowser(info.url);
-          this.showStatus(info.instructions ? `${info.url}\n${info.instructions}` : info.url);
-        },
-        onDeviceCode: (info) => this.showStatus(`Enter code ${info.userCode} at ${info.verificationUri}`),
-        onPrompt: async (prompt) => (await this.showExtensionInput(prompt.message, prompt.placeholder)) ?? "",
-        onProgress: (message) => this.showStatus(message),
-        onSelect: async (prompt) => {
-          const label = await this.showExtensionSelector(
-            prompt.message,
-            prompt.options.map((o) => o.label),
-          );
-          return prompt.options.find((o) => o.label === label)?.id;
-        },
+  /** Subscription/OAuth login, in-process against the global tier, driven through the login dialog. */
+  private async runOAuthLogin(option: AuthSelectorProvider): Promise<void> {
+    const dialog = new LoginDialogComponent(this.ctx.tui, option.id, () => {}, option.name);
+    this.hostInBar(dialog);
+    try {
+      await this.auth.login(option.id, {
+        onAuth: (info) => dialog.showAuth(info.url, info.instructions),
+        onDeviceCode: (info) => dialog.showDeviceCode(info),
+        onPrompt: (prompt) => dialog.showPrompt(prompt.message, prompt.placeholder),
+        onProgress: (message) => dialog.showProgress(message),
+        onManualCodeInput: () => dialog.showManualInput("Paste the redirect URL or code, or finish in your browser:"),
+        onSelect: (prompt) => this.showLoginSelect(dialog, prompt),
+        signal: dialog.signal,
       });
-    } else {
-      const key = (await this.showExtensionInput(`Enter API key for ${name}`))?.trim();
-      if (!key) throw new Error("API key cannot be empty.");
-      this.auth.set(provider, { type: "api_key", key });
+      this.registry.refresh();
+      this.restoreBar();
+      this.showStatus(`Logged in to ${option.name}.`);
+    } catch (error) {
+      this.restoreBar();
+      // A user cancel aborts the dialog's signal; only surface real failures.
+      if (!dialog.signal.aborted) {
+        this.showStatus(theme.fg("warning", error instanceof Error ? error.message : String(error)));
+      }
     }
-    this.registry.refresh();
   }
 
-  /** `/logout` — remove a stored provider credential. */
+  /** API-key login, in-process against the global tier, prompting inside the login dialog. */
+  private async runApiKeyLogin(option: AuthSelectorProvider): Promise<void> {
+    const dialog = new LoginDialogComponent(this.ctx.tui, option.id, () => {}, option.name);
+    this.hostInBar(dialog);
+    try {
+      const key = (await dialog.showPrompt(`Enter API key for ${option.name}:`)).trim();
+      if (!key) throw new Error("API key cannot be empty.");
+      this.auth.set(option.id, { type: "api_key", key });
+      this.registry.refresh();
+      this.restoreBar();
+      this.showStatus(`Logged in to ${option.name}.`);
+    } catch (error) {
+      this.restoreBar();
+      if (!dialog.signal.aborted) {
+        this.showStatus(theme.fg("warning", error instanceof Error ? error.message : String(error)));
+      }
+    }
+  }
+
+  /** An OAuth provider asked us to pick one of several options mid-login; swap to a selector and back. */
+  private showLoginSelect(dialog: LoginDialogComponent, prompt: OAuthSelectPrompt): Promise<string | undefined> {
+    return new Promise((resolve) => {
+      const selector = new ExtensionSelectorComponent(
+        prompt.message,
+        prompt.options.map((o) => o.label),
+        (label) => {
+          this.hostInBar(dialog);
+          resolve(prompt.options.find((o) => o.label === label)?.id);
+        },
+        () => {
+          this.hostInBar(dialog);
+          resolve(undefined);
+        },
+      );
+      this.hostInBar(selector);
+    });
+  }
+
+  /** `/logout` — pick a provider with stored credentials from one list and remove it. */
   private handleLogoutCommand(): void {
-    const providers = this.auth
-      .list()
-      .filter((id) => this.auth.get(id))
-      .map((id) => ({ id, name: this.registry.getProviderDisplayName(id) }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    if (providers.length === 0) {
+    const options: AuthSelectorProvider[] = [];
+    for (const id of this.auth.list()) {
+      const credential = this.auth.get(id);
+      if (!credential) continue;
+      options.push({ id, name: this.registry.getProviderDisplayName(id), authType: credential.type });
+    }
+    options.sort((a, b) => a.name.localeCompare(b.name));
+    if (options.length === 0) {
       this.showStatus("No stored credentials to remove.");
       return;
     }
     this.showSelector((done) => {
-      const selector = new ExtensionSelectorComponent(
-        "Log out of which provider?",
-        providers.map((p) => p.name),
-        (label) => {
+      const selector = new OAuthSelectorComponent(
+        "logout",
+        this.auth,
+        options,
+        (providerId) => {
           done();
-          const provider = providers.find((p) => p.name === label);
-          if (!provider) return;
-          this.auth.logout(provider.id);
+          const option = options.find((o) => o.id === providerId);
+          if (!option) return;
+          this.auth.logout(option.id);
           this.registry.refresh();
-          this.showStatus(`Logged out of ${provider.name}.`);
+          this.showStatus(`Logged out of ${option.name}.`);
         },
         done,
       );
