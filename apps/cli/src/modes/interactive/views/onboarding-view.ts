@@ -62,9 +62,6 @@ export class OnboardingView extends Container implements AppView {
     this.headerContainer.addChild(
       new Text(theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${VERSION}`), 1, 0),
     );
-    this.headerContainer.addChild(
-      new Text(theme.fg("dim", "Create persistent, purposeful AI agents that live on your machine."), 1, 0),
-    );
   }
 
   private renderFooter(): void {
@@ -96,10 +93,10 @@ export class OnboardingView extends Container implements AppView {
     return findExactModelReferenceMatch(provider ? `${provider}/${id}` : id, available);
   }
 
-  /** Step 1: the pitch. */
+  /** Step 1: welcome. */
   private showWelcome(): void {
     const selector = new ExtensionSelectorComponent(
-      "Connect a model provider so your agents can think. (~1 minute)",
+      `Welcome to ${APP_NAME}`,
       ["Get started", "Skip setup"],
       (option) => {
         if (option === "Get started") this.showLoginProviderSelector();

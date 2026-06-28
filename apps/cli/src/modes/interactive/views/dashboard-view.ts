@@ -123,8 +123,15 @@ export class DashboardView extends Container implements AppView {
     const agents = this.ctx.steward.list();
     if (agents.length === 0) {
       this.list = undefined;
+      this.bodyContainer.addChild(new Text(theme.fg("dim", "No agents yet."), 1, 0));
       this.bodyContainer.addChild(
-        new Text(theme.fg("dim", "No agents yet — type new to create your first one."), 1, 0),
+        new Text(
+          theme.fg("dim", "Type ") +
+            theme.bold(theme.fg("accent", "new")) +
+            theme.fg("dim", " to bring your first one to life."),
+          1,
+          0,
+        ),
       );
       return;
     }
@@ -517,8 +524,8 @@ class CreateAgent implements Component, Focusable {
 
   constructor(callbacks: CreateAgentCallbacks) {
     this.callbacks = callbacks;
-    this.box.addChild(new Text(theme.fg("accent", "New agent"), 1, 0));
-    this.box.addChild(new Text(theme.fg("dim", "What would you like to name the agent?"), 1, 0));
+    this.box.addChild(new Text(theme.fg("accent", "You're bringing a new agent to life."), 1, 0));
+    this.box.addChild(new Text(theme.fg("dim", "What should we call it?"), 1, 0));
     this.box.addChild(this.input);
     this.box.addChild(this.status);
     this.box.addChild(new Spacer(1));
