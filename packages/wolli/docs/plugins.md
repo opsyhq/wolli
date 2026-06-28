@@ -29,7 +29,7 @@ A plugin is a directory (or published package) with a `package.json` whose `"wol
 - **prompts** — `.md` prompt templates (see [prompt-templates.md](./prompt-templates.md)).
 - **themes** — `.json` theme files (see [themes.md](./themes.md)).
 
-A plugin may declare any subset. The canonical case is a single plugin that ships both halves of an integration: a transport under `"integrations"` and its mapping extension under `"extensions"`. Both resolve from the one install — the extension is **not** copied anywhere; it is loaded in place from the package (see [How Resolution Works](#how-resolution-works)).
+A plugin may declare any subset. The common case is a single plugin that bundles both halves of an integration — a transport under `"integrations"` and its mapping extension under `"extensions"` — so they install and version as one unit; for a single agent you can instead place the two files directly in its `integrations/`/`extensions/` folders without a plugin (see [integrations.md](./integrations.md#integration-locations)). In a plugin, both resolve from the one install — the extension is **not** copied anywhere; it is loaded in place from the package (see [How Resolution Works](#how-resolution-works)).
 
 ## Where Plugins Install
 

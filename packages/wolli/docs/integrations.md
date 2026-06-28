@@ -87,7 +87,7 @@ export default function (wolli: ExtensionAPI) {
 }
 ```
 
-Both files ship in one package (see [The dual-half package](#the-dual-half-package)), installed with:
+For a single agent, the two files can live directly in its folders — the transport in `integrations/`, the mapping in `extensions/` — where both are auto-discovered; no package needed. Package them as a [plugin](./plugins.md) (see [The dual-half package](#the-dual-half-package)) only to share, version, or reinstall them across agents:
 
 ```bash
 wolli <agent> plugins install ./path/to/ticker
