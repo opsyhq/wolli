@@ -26,6 +26,9 @@
 		"overrides": {
 			"rimraf": "6.1.2",
 			"gaxios>rimraf": "6.1.2"
+		},
+		"patchedDependencies": {
+			"@earendil-works/pi-ai@0.79.3": "patches/@earendil-works__pi-ai@0.79.3.patch"
 		}
 	}
 }

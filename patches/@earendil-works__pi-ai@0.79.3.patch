@@ -1,0 +1,37 @@
+diff --git a/dist/utils/oauth/oauth-page.js b/dist/utils/oauth/oauth-page.js
+index 101153587266e9ef2e7864f8aab9b5fd485a6aa1..532b5677398cf4df16ee767ccb6fbdba32c40356 100644
+--- a/dist/utils/oauth/oauth-page.js
++++ b/dist/utils/oauth/oauth-page.js
+@@ -1,4 +1,3 @@
+-const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" aria-hidden="true"><path fill="#fff" fill-rule="evenodd" d="M165.29 165.29 H517.36 V400 H400 V517.36 H282.65 V634.72 H165.29 Z M282.65 282.65 V400 H400 V282.65 Z"/><path fill="#fff" d="M517.36 400 H634.72 V634.72 H517.36 Z"/></svg>`;
+ function escapeHtml(value) {
+     return value
+         .replaceAll("&", "&amp;")
+@@ -48,11 +47,14 @@ function renderPage(options) {
+       align-items: center;
+       justify-content: center;
+     }
+-    .logo {
+-      width: 72px;
+-      height: 72px;
+-      display: block;
++    .wordmark {
+       margin-bottom: 24px;
++      font-family: var(--font-sans);
++      font-size: 44px;
++      font-weight: 700;
++      letter-spacing: -0.02em;
++      line-height: 1;
++      color: var(--text);
+     }
+     h1 {
+       margin: 0 0 10px;
+@@ -79,7 +81,7 @@ function renderPage(options) {
+ </head>
+ <body>
+   <main>
+-    <div class="logo">${LOGO_SVG}</div>
++    <div class="wordmark">voli</div>
+     <h1>${heading}</h1>
+     <p>${message}</p>
+     ${details ? `<div class="details">${details}</div>` : ""}
