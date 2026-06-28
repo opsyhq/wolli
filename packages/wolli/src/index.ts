@@ -10,7 +10,7 @@ export { serializeConversation } from "@opsyhq/agent";
 // the dashboard/onboarding views drive), one agent (`Agent`, which owns the transport), and the
 // per-session proxy (`SessionHandle`) the interactive TUI + `--print` drive.
 export { Agent, SessionHandle, Wolli } from "./client.ts";
-// Shared UI components + keybinding-hint helpers imported by the @opsyhq/cli daemon client (the
+// Shared UI components + keybinding-hint helpers imported by the wolli daemon client (the
 // interactive TUI lives in apps/cli); DynamicBorder and the keyHint/keyText helpers are also part
 // of the extension SDK surface. The login dialog + OAuth selector are shared by the chat, dashboard,
 // and onboarding login flows.
@@ -25,7 +25,7 @@ export { LoginDialogComponent } from "./components/login-dialog.ts";
 export { OAuthSelectorComponent } from "./components/oauth-selector.ts";
 export * from "./config.ts";
 // Per-agent plugin-manager factory: the daemon builds it to run installs server-side, and the
-// @opsyhq/cli client's `plugins` command uses it for its read-only `list` arm.
+// wolli client's `plugins` command uses it for its read-only `list` arm.
 export { type AgentPluginManager, createAgentPluginManager } from "./core/agent-plugin-manager.ts";
 export {
 	AgentRuntime,
@@ -50,7 +50,7 @@ export {
 	type AuthStorageData,
 	type OAuthCredential,
 } from "./core/auth-storage.ts";
-// Engine surface consumed by the @opsyhq/cli daemon client (Phase 2, Slice 1): the interactive
+// Engine surface consumed by the wolli daemon client (Phase 2, Slice 1): the interactive
 // TUI + the built-in tool renderers were lifted into apps/cli and reach back for these helpers.
 export { executeBash } from "./core/bash-executor.ts";
 export { DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, isValidThinkingLevel, THINKING_LEVELS } from "./core/defaults.ts";
@@ -206,7 +206,7 @@ export {
 	resolveModelScope,
 	type ScopedModel,
 } from "./core/model-resolver.ts";
-// Read types the @opsyhq/cli client's local `list` arm consumes against `dist`.
+// Read types the wolli client's local `list` arm consumes against `dist`.
 export type {
 	ConfiguredPlugin,
 	PluginManager,

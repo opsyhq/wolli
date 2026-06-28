@@ -14,7 +14,7 @@
  *   - `GET /health`                    — liveness, no auth.
  *
  * `AgentRuntime` owns every lifecycle concern (start/create/open/close/reload/cleanup); the server is a
- * thin wrapper that calls into it. The `@opsyhq/cli` client's hidden `daemon` subcommand and every OS
+ * thin wrapper that calls into it. The `wolli` client's hidden `daemon` subcommand and every OS
  * service unit invoke `runDaemon`.
  */
 
@@ -437,7 +437,7 @@ export interface RunDaemonOptions {
  * The `daemon <name>` runner: start the agent's `AgentRuntime`, then wrap it in a long-running HTTP/SSE
  * server clients attach to. Binds the agent's fixed host/port (from agent.json, allocated at creation;
  * `WOLLI_DAEMON_HOST` and `--port` override) and blocks on the listening server until a signal — or a
- * `shutdown` command — tears it down. The `@opsyhq/cli` client's hidden `daemon` subcommand and every OS
+ * `shutdown` command — tears it down. The `wolli` client's hidden `daemon` subcommand and every OS
  * service unit invoke this.
  */
 export async function runDaemon(name: string, opts: RunDaemonOptions = {}): Promise<number> {
