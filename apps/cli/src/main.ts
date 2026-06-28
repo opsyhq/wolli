@@ -12,7 +12,7 @@
  * is no longer deliverable (messages not starting with `plugins` are unaffected).
  */
 
-import { APP_NAME, AuthStorage, ModelRegistry, runDaemon, Wolli, VERSION } from "@opsyhq/wolli";
+import { APP_NAME, runDaemon, Wolli, VERSION } from "@opsyhq/wolli";
 import { parseArgs, printHelp } from "./args.ts";
 import { runDelete } from "./commands/delete.ts";
 import { runList } from "./commands/list.ts";
@@ -44,15 +44,11 @@ export async function main(argv: string[]): Promise<number> {
 
 	for (const diagnostic of args.diagnostics) process.stderr.write(`${diagnostic.message}\n`);
 
-	// Bare `wolli`: a fresh machine with no configured provider gets the guided first-run; otherwise
-	// the dashboard. `ModelRegistry.create` reflects env keys immediately (env keys count via hasAuth),
-	// so a working env key still routes to the dashboard.
+	// Bare `wolli`: a pristine machine (no wolli home yet) gets the guided first-run; once the user has
+	// set anything up, the dashboard. The check samples `~/.wolli` before anything constructs auth.
 	if (!command) {
 		const app = new App(wolli);
-		const auth = AuthStorage.create();
-		const registry = ModelRegistry.create(auth);
-		const hasProvider = registry.getAvailable().length > 0;
-		const route: Route = hasProvider || wolli.list().length > 0 ? { to: "dashboard" } : { to: "onboarding" };
+		const route: Route = wolli.isOnboarded() ? { to: "dashboard" } : { to: "onboarding" };
 		await app.start(route);
 		return 0;
 	}

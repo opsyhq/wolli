@@ -6,15 +6,10 @@ import { getAgentConfigPath, getAgentDir, getSoulPath } from "../src/config.ts";
 import {
 	AGENT_SCHEMA_VERSION,
 	AgentSettingsManager,
-	clearSharedDefaultsCache,
-	getDefaultModel,
-	getDefaultProvider,
-	getDefaultThinkingLevel,
 	isDeployed,
 	isValidAgentName,
-	setSharedDefaultModel,
-	setSharedDefaultThinkingLevel,
 } from "../src/core/agent-settings-manager.ts";
+import { clearSharedDefaultsCache, SettingsManager } from "../src/core/settings-manager.ts";
 
 let home: string;
 
@@ -162,26 +157,28 @@ describe("shared defaults writers", () => {
 	beforeEach(() => clearSharedDefaultsCache());
 
 	it("persists the default model as a separate provider + bare id", () => {
-		setSharedDefaultModel("anthropic", "claude-opus-4-8");
-		expect(getDefaultProvider()).toBe("anthropic");
-		expect(getDefaultModel()).toBe("claude-opus-4-8");
+		const settings = SettingsManager.create();
+		settings.setDefaultModelAndProvider("anthropic", "claude-opus-4-8");
+		expect(settings.getDefaultProvider()).toBe("anthropic");
+		expect(settings.getDefaultModel()).toBe("claude-opus-4-8");
 	});
 
 	it("an agent without an override inherits the shared default as a combined reference", () => {
-		setSharedDefaultModel("anthropic", "claude-opus-4-8");
+		SettingsManager.create().setDefaultModelAndProvider("anthropic", "claude-opus-4-8");
 		AgentSettingsManager.createAgent({ name: "scribe" });
 		expect(AgentSettingsManager.create("scribe").getDefaultModel()).toBe("anthropic/claude-opus-4-8");
 	});
 
 	it("an agent's own override beats the shared default", () => {
-		setSharedDefaultModel("anthropic", "claude-opus-4-8");
+		SettingsManager.create().setDefaultModelAndProvider("anthropic", "claude-opus-4-8");
 		AgentSettingsManager.createAgent({ name: "scribe", model: "openai/gpt-5.4" });
 		expect(AgentSettingsManager.create("scribe").getDefaultModel()).toBe("openai/gpt-5.4");
 	});
 
 	it("round-trips the default thinking level", () => {
-		setSharedDefaultThinkingLevel("high");
-		expect(getDefaultThinkingLevel()).toBe("high");
+		const settings = SettingsManager.create();
+		settings.setDefaultThinkingLevel("high");
+		expect(settings.getDefaultThinkingLevel()).toBe("high");
 	});
 });
 

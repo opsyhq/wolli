@@ -7,6 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
 	type Api,
 	type AssistantMessage,
@@ -15,7 +16,7 @@ import {
 	type Model,
 } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, AgentMessage, SessionContext, SessionTreeEntry, ThinkingLevel } from "@opsyhq/agent";
-import { getDaemonHost, getDaemonToken } from "./config.ts";
+import { getDaemonHost, getDaemonToken, getHomeDir } from "./config.ts";
 import type { ContextInfo, IntegrationInfo } from "./core/agent-runtime.ts";
 import { type AgentConfig, AgentSettingsManager } from "./core/agent-settings-manager.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
@@ -35,6 +36,7 @@ import { ModelRegistry } from "./core/model-registry.ts";
 import type { ScopedModel } from "./core/model-resolver.ts";
 import type { ConfiguredPlugin } from "./core/plugin-manager.ts";
 import { daemonLaunchCommand, getServiceManager } from "./core/service/service-manager.ts";
+import { SettingsManager } from "./core/settings-manager.ts";
 import type { Skill } from "./core/skills.ts";
 import type {
 	AuthSelectorProvider,
@@ -141,14 +143,20 @@ class SseStream {
 	}
 }
 
-/** Top level: the agent collection on disk, plus the lazily-built global auth + model registry. */
+/** Top level: the agent collection on disk, plus the lazily-built global auth + settings + model registry. */
 export class Wolli {
 	private _auth?: AuthStorage;
+	private _settings?: SettingsManager;
 	private _registry?: ModelRegistry;
 
 	/** Every agent under the agents root, as handles. */
 	list(): Agent[] {
 		return AgentSettingsManager.list().map((store) => new Agent(store.config));
+	}
+
+	/** True once the user has set anything up (the wolli home exists); else a pristine machine → onboarding. */
+	isOnboarded(): boolean {
+		return existsSync(getHomeDir());
 	}
 
 	/** A handle for `name` if it exists on disk, else `undefined`. */
@@ -169,6 +177,12 @@ export class Wolli {
 	get auth(): AuthStorage {
 		this._auth ??= AuthStorage.create();
 		return this._auth;
+	}
+
+	/** The global settings tier (`~/.wolli/agent/settings.json`), built once — parallels `get auth()`. */
+	get settings(): SettingsManager {
+		this._settings ??= SettingsManager.create();
+		return this._settings;
 	}
 
 	/** A model registry over the global tier, built once — the views' source of available models. */
