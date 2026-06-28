@@ -1,5 +1,5 @@
 /**
- * `@opsyhq/cli` dispatch.
+ * `wolli` dispatch.
  *
  * Agent surfaces are daemon clients: interactive `<name>`, the one-shot `--print` path (single-shot,
  * requires an inline message), and `new` (birth chat) connect to the agent's daemon (spawning one if needed) and drive a

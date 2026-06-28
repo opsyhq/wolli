@@ -11,8 +11,8 @@
 			"@opsyhq/coding-agent/*": ["./packages/coding-agent/src/*"],
 			"@opsyhq/wolli": ["./packages/wolli/src/index.ts"],
 			"@opsyhq/wolli/*": ["./packages/wolli/src/*"],
-			"@opsyhq/cli": ["./apps/cli/src/main.ts"],
-			"@opsyhq/cli/*": ["./apps/cli/src/*"]
+			"wolli": ["./apps/cli/src/main.ts"],
+			"wolli/*": ["./apps/cli/src/*"]
 		}
 	},
 	"include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "apps/*/src/**/*.ts", "apps/*/test/**/*.ts"],

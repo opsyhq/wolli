@@ -3,7 +3,7 @@
 The SDK provides programmatic access to a wolli agent. It has two faces, and which one you reach for depends on where your code runs relative to the agent's daemon:
 
 - **In-process embedding** — `createAgentSession()` plus the `@opsyhq/wolli` barrel. You build the system prompt, model, tools, and session yourself, then drive the returned `AgentHarness` directly in your own Node process. No daemon, no HTTP. Use this when you are constructing an agent runtime from scratch (this is the layer the daemon itself is built on).
-- **The daemon control protocol** — a long-running, per-agent loopback **HTTP/SSE** server (`runDaemon`) and a typed client (`Wolli` / `Agent` / `SessionHandle`). Commands are JSON over `POST`, events stream as SSE, and every session is addressed by a URL path. This is wolli's equivalent of an RPC transport, and it is what the `@opsyhq/cli` TUI and every OS service unit talk to. See [RPC Mode](#rpc-mode).
+- **The daemon control protocol** — a long-running, per-agent loopback **HTTP/SSE** server (`runDaemon`) and a typed client (`Wolli` / `Agent` / `SessionHandle`). Commands are JSON over `POST`, events stream as SSE, and every session is addressed by a URL path. This is wolli's equivalent of an RPC transport, and it is what the `wolli` TUI and every OS service unit talk to. See [RPC Mode](#rpc-mode).
 
 > Wolli's RPC transport is **HTTP/SSE over a loopback socket**, not stdin/stdout JSONL. There is no `--mode rpc` subprocess. A client attaches to a running daemon over `http://127.0.0.1:<port>`; the daemon owns the agent's lifecycle and outlives any one client.
 
@@ -380,7 +380,7 @@ await harness.waitForIdle();
 
 ## Run Modes
 
-Wolli has one run mode that the SDK exposes: the **daemon**. There is no in-process interactive or print mode in this package (the interactive TUI lives in `@opsyhq/cli` and drives the agent over the daemon client).
+Wolli has one run mode that the SDK exposes: the **daemon**. There is no in-process interactive or print mode in this package (the interactive TUI lives in `wolli` and drives the agent over the daemon client).
 
 ### runDaemon
 
@@ -394,7 +394,7 @@ const exitCode = await runDaemon("my-agent", {
 });
 ```
 
-It binds the agent's fixed host/port from `agent.json` (override host with `WOLLI_DAEMON_HOST`, port with `--port`). The `@opsyhq/cli` `daemon` subcommand and every OS service unit invoke this. See [RPC Mode](#rpc-mode) for the protocol it serves.
+It binds the agent's fixed host/port from `agent.json` (override host with `WOLLI_DAEMON_HOST`, port with `--port`). The `wolli` `daemon` subcommand and every OS service unit invoke this. See [RPC Mode](#rpc-mode) for the protocol it serves.
 
 ## Exports
 
