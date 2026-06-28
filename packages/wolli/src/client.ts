@@ -344,16 +344,20 @@ export class Agent {
 		// Routed like create_session (agent-global, but posted to a session's /control): use the latest.
 		const [latest] = this.getAgentState().sessions;
 		if (!latest) throw new Error(`No session for agent "${this.name}".`);
+		// Note when the birth daemon booted, so the handoff below waits for its replacement rather than
+		// the birth daemon still answering probes over a lingering keep-alive socket.
+		const birthStartedAt = (await getDaemonInfo(base))?.startedAt ?? null;
 		const snap = await this.send<DaemonSessionState>(latest.sessionId, { type: "deploy" });
 
 		if (getServiceManager().kind === "none") return snap;
 
 		// Stop the birth daemon and wait for the fixed port to free, then start the supervised unit's
-		// daemon on that same port.
+		// daemon on that same port and wait until the replacement is serving — otherwise the reconnect
+		// below races the port handoff and fails with "fetch failed".
 		await requestDaemonShutdown(base, token);
 		await waitForShutdown(base);
 		getServiceManager().start(this.name);
-		await waitForHealth(base);
+		await waitForRestart(base, birthStartedAt);
 
 		// Reconnect onto the (same-address) supervised daemon: close the old control + session streams
 		// (sessions reopen on the new daemon) and reconnect.
@@ -420,6 +424,9 @@ export class Agent {
 		const base = `http://${getDaemonHost()}:${port}`;
 		const token = getDaemonToken() || persisted;
 		const service = getServiceManager();
+		// Note when the current daemon booted, so we wait for its replacement (not this one answering a
+		// probe over a lingering keep-alive socket) once the bounce/respawn lands.
+		const previousStartedAt = (await getDaemonInfo(base))?.startedAt ?? null;
 
 		if (service.kind !== "none" && (await service.isRunning(this.name))) {
 			// Bounce the supervised unit: stop, wait for the fixed port to free, then start its replacement.
@@ -434,7 +441,7 @@ export class Agent {
 			spawn(command, commandArgs, { detached: true, stdio: "ignore" }).unref();
 		}
 
-		await waitForHealth(base);
+		await waitForRestart(base, previousStartedAt);
 	}
 }
 
@@ -788,6 +795,22 @@ const HEALTH_TIMEOUT_MS = 15_000;
 const HEALTH_POLL_MS = 150;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** A healthy daemon's `/health` info at `base` (`pid` + boot `startedAt`), or null if none answers. */
+async function getDaemonInfo(base: string): Promise<{ pid: number; startedAt: string } | null> {
+	try {
+		const response = await fetch(`${base}/health`, { signal: AbortSignal.timeout(1000) });
+		if (!response.ok) return null;
+		const { status, pid, startedAt } = (await response.json()) as {
+			status?: string;
+			pid?: number;
+			startedAt?: string;
+		};
+		return status === "ok" && pid !== undefined && startedAt !== undefined ? { pid, startedAt } : null;
+	} catch {
+		return null;
+	}
+}
+
 /** `GET /health` (no auth) answers `{status:"ok"}` while the daemon at `base` is listening. */
 export async function isHealthy(base: string): Promise<boolean> {
 	try {
@@ -817,6 +840,22 @@ export async function waitForShutdown(base: string): Promise<void> {
 		await sleep(HEALTH_POLL_MS);
 	}
 	throw new Error(`Daemon at ${base} did not shut down within ${HEALTH_TIMEOUT_MS / 1000}s.`);
+}
+
+/**
+ * Poll `/health` until the daemon at `base` reports a `startedAt` other than `since` — i.e. it has
+ * actually been replaced, not the old one still answering. Plain `waitForHealth` is fooled here: undici
+ * keep-alive can answer a probe from the old, still-exiting daemon over a pooled socket before the
+ * replacement has bound the reused port, so the reconnect then races into the gap and "fetch failed"s.
+ */
+export async function waitForRestart(base: string, since: string | null): Promise<void> {
+	const deadline = Date.now() + HEALTH_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		const info = await getDaemonInfo(base);
+		if (info && info.startedAt !== since) return;
+		await sleep(HEALTH_POLL_MS);
+	}
+	throw new Error(`Daemon at ${base} did not restart within ${HEALTH_TIMEOUT_MS / 1000}s.`);
 }
 
 /** Best-effort: ask a running daemon to self-exit. Session-scoped on the wire, so post it to any session. */
