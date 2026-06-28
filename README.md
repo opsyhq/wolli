@@ -5,7 +5,7 @@
 **Build persistent, purposeful AI agents.**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![npm](https://img.shields.io/npm/v/@opsyhq/wolli.svg)](https://www.npmjs.com/package/@opsyhq/wolli)
+[![npm](https://img.shields.io/npm/v/wolli.svg)](https://www.npmjs.com/package/wolli)
 [![CI](https://github.com/opsyhq/wolli/actions/workflows/ci.yml/badge.svg)](https://github.com/opsyhq/wolli/actions/workflows/ci.yml)
 
 [Install](#install) · [How it works](#how-it-works) · [Roadmap](ROADMAP.md)
@@ -24,7 +24,7 @@ own skills, integrations, and extensions as the work demands.
 ## Install
 
 ```sh
-npm install -g @opsyhq/wolli
+npm install -g wolli
 wolli
 ```
 
