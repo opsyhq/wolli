@@ -12,14 +12,14 @@
  * is no longer deliverable (messages not starting with `plugins` are unaffected).
  */
 
-import { APP_NAME, runDaemon, Steward, VERSION } from "@opsyhq/steward";
+import { APP_NAME, AuthStorage, ModelRegistry, runDaemon, Steward, VERSION } from "@opsyhq/steward";
 import { parseArgs, printHelp } from "./args.ts";
 import { runDelete } from "./commands/delete.ts";
 import { runList } from "./commands/list.ts";
 import { runNew } from "./commands/new.ts";
 import { runPlugins } from "./commands/plugins.ts";
 import { runRestart } from "./commands/restart.ts";
-import { App } from "./modes/interactive/app.ts";
+import { App, type Route } from "./modes/interactive/app.ts";
 import { runPrintMode } from "./modes/print-mode.ts";
 
 export async function main(argv: string[]): Promise<number> {
@@ -44,10 +44,16 @@ export async function main(argv: string[]): Promise<number> {
 
 	for (const diagnostic of args.diagnostics) process.stderr.write(`${diagnostic.message}\n`);
 
-	// Bare `steward` opens the dashboard.
+	// Bare `steward`: a fresh machine with no configured provider gets the guided first-run; otherwise
+	// the dashboard. `ModelRegistry.create` reflects env keys immediately (env keys count via hasAuth),
+	// so a working env key still routes to the dashboard.
 	if (!command) {
 		const app = new App(steward);
-		await app.start({ to: "dashboard" });
+		const auth = AuthStorage.create();
+		const registry = ModelRegistry.create(auth);
+		const hasProvider = registry.getAvailable().length > 0;
+		const route: Route = hasProvider || steward.list().length > 0 ? { to: "dashboard" } : { to: "onboarding" };
+		await app.start(route);
 		return 0;
 	}
 

@@ -12,6 +12,7 @@ import { KeybindingsManager } from "../../keybindings-manager.ts";
 import { AgentView } from "./views/agent-view.ts";
 import { ChatView } from "./views/chat-view.ts";
 import { DashboardView } from "./views/dashboard-view.ts";
+import { OnboardingView } from "./views/onboarding-view.ts";
 
 /** A newly born agent opens the chat itself, asking its human what it is for. Seeded as the chat opener. */
 export const BIRTH_OPENER = "What is my purpose?";
@@ -19,6 +20,7 @@ export const BIRTH_OPENER = "What is my purpose?";
 /** A navigation target. The chat route carries the optional birth opener from `new` and a session to open. */
 export type Route =
 	| { to: "dashboard" }
+	| { to: "onboarding" }
 	| { to: "agent"; name: string }
 	| { to: "chat"; name: string; sessionId?: string; initialAssistantMessage?: string };
 
@@ -97,6 +99,10 @@ export class App {
 			case "dashboard":
 				this.closeChat();
 				await this.show(new DashboardView(this.keybindings));
+				return;
+			case "onboarding":
+				this.closeChat();
+				await this.show(new OnboardingView());
 				return;
 			case "agent": {
 				this.closeChat();
