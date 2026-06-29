@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getPluginsDir } from "../src/config.ts";
+import { getBuiltInSkillsDir, getPluginsDir } from "../src/config.ts";
 import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { loadMemory } from "../src/core/memory.ts";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
@@ -117,6 +117,13 @@ describe("always-on guidance", () => {
 		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
 		expect(prompt).toContain("Bundled plugins ready to install");
 		expect(prompt).toContain(getPluginsDir());
+	});
+
+	it("points at the built-in skills folder and how to install one", () => {
+		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
+		expect(prompt).toContain("Built-in skills ready to install");
+		expect(prompt).toContain(getBuiltInSkillsDir());
+		expect(prompt).toContain("cp -r");
 	});
 });
 

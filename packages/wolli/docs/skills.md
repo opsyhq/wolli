@@ -7,6 +7,7 @@ Wolli implements the [Agent Skills standard](https://agentskills.io/specificatio
 ## Table of Contents
 
 - [Locations](#locations)
+- [Built-in Skills](#built-in-skills)
 - [How Skills Work](#how-skills-work)
 - [Skill Commands](#skill-commands)
 - [Skill Structure](#skill-structure)
@@ -44,6 +45,19 @@ To use skills from Claude Code or OpenAI Codex, add their directories to setting
   ]
 }
 ```
+
+## Built-in Skills
+
+Wolli ships a catalog of ready-made skills in the package's `built-in/skills/` directory. These are **not loaded automatically** — they are a library to install from, the same way bundled plugins are. The agent browses them and installs the ones it wants.
+
+Installing a built-in skill is just a copy into the agent's own `skills/` folder (the agent's working directory is its home, so `skills/` is relative):
+
+```bash
+mkdir -p skills
+cp -r <built-in-skills-dir>/<name> skills/
+```
+
+The agent is told the absolute `<built-in-skills-dir>` path in its system prompt. After the copy the skill loads on the next session (or after `/reload`), at which point it appears in the available-skills list and as `/skill:<name>`. The copy lives in the agent's home, so the agent owns it and can edit it freely without affecting the built-in original.
 
 ## How Skills Work
 

@@ -1,7 +1,7 @@
 /**
  * Offline wiring/validation check for the Telegram integration example.
  *
- * Loads the real `plugins/telegram/index.ts` factory, builds an
+ * Loads the real `built-in/plugins/telegram/index.ts` factory, builds an
  * IntegrationRunner over an in-memory account store, and asserts the parts that
  * don't require the network:
  *
@@ -17,7 +17,7 @@
 
 import { Compile } from "typebox/compile";
 import { describe, expect, it } from "vitest";
-import telegram from "../plugins/telegram/index.ts";
+import telegram from "../built-in/plugins/telegram/index.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { IntegrationStore } from "../src/core/integration-store.ts";
 import {

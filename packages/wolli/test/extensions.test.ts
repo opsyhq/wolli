@@ -492,10 +492,10 @@ describe("extension subsystem wiring", () => {
 		await runtime.cleanup();
 	});
 
-	it("ships docs and plugins in the published package", () => {
+	it("ships docs and the built-in catalog in the published package", () => {
 		const pkg = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf-8"));
 		expect(pkg.files).toContain("docs");
-		expect(pkg.files).toContain("plugins");
+		expect(pkg.files).toContain("built-in");
 	});
 
 	it("queues a mid-stream sendUserMessage as a follow-up and answers in order", async () => {

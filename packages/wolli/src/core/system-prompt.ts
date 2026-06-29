@@ -5,7 +5,7 @@
  * snapshot of curated memory (read once at session start — see core/memory.ts).
  */
 
-import { APP_NAME, getDocsPath, getPluginsDir, getReadmePath } from "../config.ts";
+import { APP_NAME, getBuiltInSkillsDir, getDocsPath, getPluginsDir, getReadmePath } from "../config.ts";
 import type { AgentConfig } from "./agent-settings-manager.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
@@ -60,7 +60,9 @@ const EXTENDING_YOURSELF = [
 	"commands, events, UI), connect external services and message channels via integrations, and add",
 	"skills, prompt templates, and themes — bundle and install them as plugins. Before building from",
 	"scratch, check the bundled plugins folder (path below) for a ready-made plugin: if one fits the need",
-	"(e.g. Telegram for chat), have your human install and onboard it instead of writing your own. Read",
+	"(e.g. Telegram for chat), have your human install and onboard it instead of writing your own. Skills",
+	"are lighter — the built-in skills folder (path below) holds ready-made ones you can install yourself by",
+	"copying into your own skills/ folder; prefer a fitting built-in skill over authoring a new one. Read",
 	"the relevant docs below and follow their cross-references before building anything.",
 ].join("\n");
 
@@ -107,6 +109,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const readmePath = getReadmePath();
 	const docsPath = getDocsPath();
 	const pluginsDir = getPluginsDir();
+	const builtInSkillsDir = getBuiltInSkillsDir();
 	parts.push(
 		"",
 		`## ${APP_NAME} documentation (read when the user asks about ${APP_NAME} itself — its extensions, integrations, skills, prompt templates, themes, plugins, or SDK — or when you extend or modify yourself)`,
@@ -114,6 +117,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		`- Additional docs: ${docsPath} (resolve docs/... under here, not the current working directory)`,
 		`- Topics: extensions (docs/extensions.md), integrations (docs/integrations.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), themes (docs/themes.md), plugins (docs/plugins.md), sdk (docs/sdk.md)`,
 		`- Bundled plugins ready to install: ${pluginsDir} (e.g. telegram, scheduler) — prefer installing a fitting one over building from scratch; have your human run \`${APP_NAME} <name> plugins install <path>\` then onboard it`,
+		`- Built-in skills ready to install: ${builtInSkillsDir} — browse them, then install one yourself by copying its folder into your own skills/ dir (\`mkdir -p skills && cp -r ${builtInSkillsDir}/<name> skills/\`); it loads next session`,
 		`- When working on ${APP_NAME} topics, read the docs and follow .md cross-references before implementing`,
 		`- Always read ${APP_NAME} .md files completely and follow links to related docs`,
 	);

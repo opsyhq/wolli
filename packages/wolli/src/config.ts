@@ -156,9 +156,19 @@ export function getDocsPath(): string {
 	return resolve(join(getPackageDir(), "docs"));
 }
 
+/** Root of the built-in catalog shipped with the package (`built-in/plugins`, `built-in/skills`). */
+export function getBuiltInDir(): string {
+	return resolve(join(getPackageDir(), "built-in"));
+}
+
 /** Dir of bundled plugins shipped with the package (raw .ts, loaded via jiti once installed). */
 export function getPluginsDir(): string {
-	return resolve(join(getPackageDir(), "plugins"));
+	return join(getBuiltInDir(), "plugins");
+}
+
+/** Dir of bundled skills shipped with the package — the agent copies ones it wants into its own skills/. */
+export function getBuiltInSkillsDir(): string {
+	return join(getBuiltInDir(), "skills");
 }
 
 // =============================================================================

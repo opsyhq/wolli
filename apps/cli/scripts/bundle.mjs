@@ -46,7 +46,7 @@ chmodSync(join(out, "dist/cli.js"), 0o755);
 // 2. Sidecars that cannot live inside a JS bundle. Paths mirror what
 //    packages/wolli/src/config.ts resolves relative to the package root.
 cpSync(join(wolliDir, "src/theme"), join(out, "dist/theme"), { recursive: true }); // getThemesDir -> <pkg>/dist/theme
-cpSync(join(wolliDir, "plugins"), join(out, "plugins"), { recursive: true }); // getPluginsDir -> <pkg>/plugins
+cpSync(join(wolliDir, "built-in"), join(out, "built-in"), { recursive: true }); // getBuiltInDir -> <pkg>/built-in (plugins + skills)
 cpSync(join(wolliDir, "docs"), join(out, "docs"), { recursive: true }); // getDocsPath -> <pkg>/docs
 cpSync(join(repoRoot, "README.md"), join(out, "README.md")); // npm page + getReadmePath -> <pkg>/README.md
 cpSync(join(repoRoot, "LICENSE"), join(out, "LICENSE"));
@@ -69,7 +69,7 @@ const pkg = {
 	type: "module",
 	piConfig: { name: "wolli", configDir: ".wolli" },
 	bin: { wolli: "dist/cli.js" },
-	files: ["dist", "plugins", "docs", "native"],
+	files: ["dist", "built-in", "docs", "native"],
 	keywords: ["agent", "agents", "ai", "llm", "cli", "tui", "memory", "autonomous", "assistant"],
 	license: "Apache-2.0",
 	homepage: "https://github.com/opsyhq/wolli#readme",
