@@ -31,7 +31,18 @@ wolli
 The first run sets up your provider and creates your first agent. A new agent
 starts in a **forming** state: it interviews you to work out its purpose and
 records what it learns, and does not act unattended until you deploy it. Agents and
-state live under `~/.wolli`.
+state live under `~/.wolli`. `●` deployed and `○` forming.
+
+```
+ Agents
+
+ → ● inbox    Triage my email each morning, draft replies to the routine ones, flag what needs me.
+   ● scout    Watch the repos and deps we ship; when a release or CVE needs action, open an issue and ping me.
+   ● ledger   Track project spend across providers, reconcile invoices weekly, warn me before a budget tips over.
+   ○ sprout   Still working out my purpose.
+
+ ↑/↓ browse · enter chat · tab details · type to search commands · ctrl+c quit
+```
 
 ## How it works
 
