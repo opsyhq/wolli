@@ -1,6 +1,6 @@
 /**
  * Scheduler integration — the wake loop the producer exists to deliver, exercised
- * against the real `plugins/scheduler/index.ts` factory with an in-memory account +
+ * against the real `built-in/plugins/scheduler/index.ts` factory with an in-memory account +
  * state store (no agent home, no chat turn).
  *
  *  1. a due one-shot `at` job fires once and flips to `enabled:false`;
@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import scheduler from "../plugins/scheduler/index.ts";
+import scheduler from "../built-in/plugins/scheduler/index.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { IntegrationStore } from "../src/core/integration-store.ts";
 import {

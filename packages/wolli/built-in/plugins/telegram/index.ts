@@ -12,7 +12,7 @@
  *
  * ## Install + configure
  *
- *   wolli <agent> plugins install ./plugins/telegram
+ *   wolli <agent> plugins install ./built-in/plugins/telegram
  *   # then paste the BotFather token into the guided prompt — that's it.
  *
  * Onboarding asks for the BotFather token directly, verifies it with a live `getMe()`,
