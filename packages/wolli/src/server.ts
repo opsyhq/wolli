@@ -361,8 +361,9 @@ async function handleCommand(
 			await runtime.reload();
 			return ok(id, "update_plugins");
 		}
-		// Onboarding writes through the runtime's live account store, so no second reload is needed; the
-		// source scopes onboarding to the just-installed plugin's integrations that declare `onboard`.
+		// Onboarding writes the account to the live store, but its producer (e.g. a Discord/Telegram
+		// gateway) starts only on the next daemon start, so the CLI tells the user to restart the agent.
+		// The `source` scopes onboarding to the just-installed plugin's integrations that declare `onboard`.
 		case "onboard_plugin":
 			return ok(id, "onboard_plugin", {
 				results: await runDaemonOnboarding(runtime, session.ui, ({ integrations, pluginManager }) => {

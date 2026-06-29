@@ -51,14 +51,11 @@
 		"yaml": "2.9.0"
 	},
 	"devDependencies": {
-		"@grammyjs/runner": "2.0.3",
 		"@types/cross-spawn": "6.0.6",
 		"@types/diff": "7.0.2",
 		"@types/hosted-git-info": "3.0.5",
 		"@types/node": "24.12.4",
 		"@types/proper-lockfile": "4.1.4",
-		"croner": "10.0.1",
-		"grammy": "1.44.0",
 		"shx": "0.4.0",
 		"typescript": "5.9.3",
 		"vitest": "3.2.4"

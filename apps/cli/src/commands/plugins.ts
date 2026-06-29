@@ -178,7 +178,7 @@ function printOnboardResults(agent: string, results: OnboardServiceResult[], emp
 		switch (status) {
 			case "connected":
 				console.log(chalk.green(`${service} connected.`));
-				console.log(chalk.dim(`Run "${APP_NAME} ${agent}" to use it.`));
+				console.log(chalk.dim(`Restart the agent for it to take effect: ${APP_NAME} restart ${agent}`));
 				break;
 			case "cancelled":
 				console.log(chalk.dim(`${service}: onboarding cancelled.`));

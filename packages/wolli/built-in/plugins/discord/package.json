@@ -1,0 +1,16 @@
+{
+	"name": "wolli-integration-discord",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"wolli": {
+		"integrations": ["./index.ts"],
+		"extensions": ["./discord-chat.ts"]
+	},
+	"dependencies": {
+		"discord.js": "14.26.4"
+	},
+	"peerDependencies": {
+		"@opsyhq/wolli": "*"
+	}
+}
