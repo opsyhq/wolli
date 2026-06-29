@@ -95,6 +95,16 @@ Notes:
 
 - Generic inbound HTTP, GitHub, and WhatsApp integrations depend on this surface.
 
+### 7. Integration Hardening
+
+Status: Proposed
+
+Remaining:
+
+- Constrain each integration to a declared set of capabilities and transports. Integrations keep events, store, and actions, but only the subset they declare, enforced rather than ambient.
+- Run integrations as short-lived, sandboxed invocations instead of long-running processes: each handler executes as a workflow step with limited access, closer to a serverless function than a daemon.
+- Remodel the scheduler integration to be event-triggered rather than a long-running listener.
+
 ### 7. Durable agents
 
 Status: Proposed
