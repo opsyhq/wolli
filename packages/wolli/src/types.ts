@@ -225,12 +225,9 @@ export interface DaemonSessionSummary {
 }
 
 /**
- * One stored session with the rich fields the resume selector renders — carried by `GET /sessions/detail`
- * only (NOT the hot `hello`/`GET /sessions` snapshot, which stays header-cheap). Building these opens every
- * session to read its transcript, so it is fetched once, when the selector opens.
- *
- * The shape mirrors the coding-agent selector's `SessionInfo` field-for-field; the only wire-forced change
- * is `created`/`modified` as ISO strings (JSON has no `Date`), revived to `Date` on the client.
+ * Rich session record for the resume selector (carried by `GET /sessions/detail`, not the hot snapshot).
+ * Mirrors coding-agent's `SessionInfo` field-for-field; `created`/`modified` are ISO strings (JSON has no
+ * `Date`), revived on the client.
  */
 export interface DaemonSessionInfo {
 	path: string;

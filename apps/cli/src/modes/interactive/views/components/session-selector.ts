@@ -1,13 +1,7 @@
 /**
- * Resume-session selector — ported from the coding-agent package's session selector so the wolli CLI
- * switches sessions mid-run with the same UI (search with re:/phrase/fuzzy, sort modes, named filter,
- * path toggle, threaded tree, rename, delete-with-confirm).
- *
- * Two deliberate deviations from the source, both grounded in wolli's daemon-client architecture:
- *   - No scope toggle: wolli sessions are keyed per-agent (there is no current-folder-vs-all notion), so
- *     the selector lists exactly one agent's sessions.
- *   - Rename/delete route through injected host callbacks (`renameSession`/`deleteSession`) that drive the
- *     daemon, instead of touching session files directly — the CLI has no local file access to them.
+ * Resume-session selector, ported from coding-agent. Two deviations for wolli's daemon-client model: no
+ * scope toggle (sessions are per-agent), and rename/delete route through injected `renameSession`/
+ * `deleteSession` callbacks since the CLI has no local file access.
  */
 
 import * as os from "node:os";

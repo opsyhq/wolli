@@ -929,10 +929,7 @@ export class AgentRuntime {
 		return listAgentSessionsDetail(this.options.name);
 	}
 
-	/**
-	 * Rename a stored session by id (resume selector). A resident session renames through its own writer
-	 * (shared storage — no tree fork); an idle one is renamed by reopening its file. Broadcasts the frame.
-	 */
+	/** Rename a stored session by id: resident → its own writer (no fork), idle → reopen the file. Broadcasts the frame. */
 	async renameSession(id: string, sessionName: string): Promise<void> {
 		const live = this._sessions.get(id);
 		if (live) {
@@ -943,11 +940,7 @@ export class AgentRuntime {
 		this.notifySessionRenamed(id, sessionName);
 	}
 
-	/**
-	 * Delete a stored session by id (resume selector). Evicts the resident copy first (which broadcasts the
-	 * removal), else broadcasts it directly, then unlinks the JSONL. The selector guards against the active
-	 * session; the daemon also refuses while a turn is streaming.
-	 */
+	/** Delete a stored session by id: evict the resident copy (or broadcast removal), then unlink the JSONL. */
 	async deleteSession(id: string): Promise<void> {
 		if (this._sessions.has(id)) {
 			await this.closeSession(id);
@@ -1534,10 +1527,7 @@ export class AgentSession {
 		return this.sessionManager.getSessionName();
 	}
 
-	/**
-	 * Rename this resident session by appending a `session_info` entry through its OWN writer, so the
-	 * rename rides the same storage/leaf the harness is using (no second file handle, no tree fork).
-	 */
+	/** Rename this resident session through its own writer, so it shares the harness's storage/leaf (no tree fork). */
 	async setSessionName(sessionName: string): Promise<void> {
 		await this.sessionManager.appendSessionInfo(sessionName);
 	}

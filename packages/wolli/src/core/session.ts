@@ -161,11 +161,7 @@ async function buildSessionInfo(
 	};
 }
 
-/**
- * Stored sessions for an agent with the rich fields the resume selector renders. Opens every session to
- * read its transcript (fine for the handful per agent, same cost pattern as `findSessions`), so this is
- * NOT on the hot snapshot path — it backs `GET /sessions/detail`, fetched once when the selector opens.
- */
+/** Rich session list for the resume selector — opens every session, so it backs `/sessions/detail`, not the hot snapshot. */
 export async function listAgentSessionsDetail(name: string): Promise<DaemonSessionInfo[]> {
 	const cwd = getWorkspaceDir(name);
 	const env = new NodeExecutionEnv({ cwd });
@@ -176,8 +172,7 @@ export async function listAgentSessionsDetail(name: string): Promise<DaemonSessi
 		try {
 			infos.push(await buildSessionInfo(await repo.open(metadata), metadata));
 		} catch {
-			// Skip an unreadable/corrupt session rather than failing the whole list — coding-agent's
-			// buildSessionInfo does this by returning null from its own try/catch and filtering the nulls out.
+			// Skip an unreadable session rather than fail the whole list (coding-agent filters such nulls out).
 		}
 	}
 	return infos;

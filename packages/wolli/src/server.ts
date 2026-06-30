@@ -383,8 +383,7 @@ async function handleCommand(
 			await runtime.renameSession(cmd.targetSessionId, cmd.sessionName);
 			return ok(id, "rename_session");
 		case "delete_session": {
-			// Never delete the session backing this request (the URL rail) — it would evict the session and
-			// unlink the file out from under the in-flight command and its live stream.
+			// Never delete the session backing this request (the URL rail) — it's mid-command with a live stream.
 			if (cmd.targetSessionId === session.getSessionId()) {
 				return err(id, "delete_session", "Cannot delete the active session.");
 			}

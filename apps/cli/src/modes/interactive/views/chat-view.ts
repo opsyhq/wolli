@@ -756,11 +756,7 @@ export class ChatView extends Container implements AppView {
 		}
 	}
 
-	/**
-	 * `/sessions` — open the resume selector over this agent's stored sessions. Selecting one switches the
-	 * visible chat to it; rename/delete route through the daemon. The list is fetched when the selector
-	 * opens and re-fetched after a rename/delete (the loader rebuilds the path→id map each call).
-	 */
+	/** `/sessions` — open the resume selector; selecting switches the chat, rename/delete route through the daemon. */
 	private async showSessionSelector(): Promise<void> {
 		const currentSessionFilePath = this.session.getSessionFile();
 		const byPath = new Map<string, string>();
@@ -777,8 +773,7 @@ export class ChatView extends Container implements AppView {
 				(sessionPath) => {
 					done();
 					const id = byPath.get(sessionPath);
-					// Selecting the session we're already in is a no-op: re-opening its cached SessionHandle
-					// would unmount this view and close that same handle's live stream, freezing the chat.
+					// Selecting the current session is a no-op — re-opening its cached handle would close its live stream.
 					if (id && id !== this.session.sessionId) {
 						void this.handleResumeSession(id);
 					} else {
