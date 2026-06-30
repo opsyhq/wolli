@@ -1,9 +1,21 @@
 # Roadmap
 
-Ordered roughly easiest to hardest. Only the last item, build-time compilation
-and testing of extensions and integrations, is Planned right now; everything
-above it is Proposed. This is direction, not a dated commitment. What ships lives
-in the [README](README.md) and is described there in present tense.
+Ordered roughly easiest to hardest. Items marked Planned are committed
+direction; everything else is Proposed. This is direction, not a dated
+commitment. What ships lives in the [README](README.md) and is described there
+in present tense.
+
+### Agents deployed by default
+
+Status: Planned
+
+Done:
+
+- The forming/deployed lifecycle exists today: a new agent starts forming, interviews its human, and only acts unattended after `/deploy`, the single human-held latch. The `deploy` tool writes the agent's purpose and SOUL.md; the UI flips `deployedAt` after a y/n confirmation.
+
+Remaining:
+
+- Remove the forming/deployed distinction. Agents are no longer flagged deployed or non-deployed; the forming experience and the `/deploy` latch go away, and every agent runs on schedules and events from creation.
 
 ### Logging and log retrieval (Logger)
 
@@ -48,6 +60,8 @@ Done:
 Remaining:
 
 - Make extensions static-registration only; move everything dynamic into workflows whose steps run in sandboxes.
+- Disassemble what an extension statically owns into per-type folders in the agent home, e.g. tools into `tools/` alongside the existing `skills/`, so each capability is an addressable file the agent and human edit directly instead of one bundled extension module.
+- Treat every agent action as a workflow step — a tool call becomes a workflow with steps underneath — so the unit of execution is a step the runtime runs inline locally or as a separate sandboxed/cloud job.
 - Lift the channel-aware routing logic currently embedded in extensions into a default routing workflow that is itself first-class.
 - Support agent-authored workflows.
 
@@ -142,6 +156,22 @@ Done:
 Remaining:
 
 - Integration listeners and their state survive restarts and resume deterministically.
+
+### Split `@opsyhq/wolli` into packages
+
+Status: Planned
+
+Done:
+
+- The monorepo already splits out `@opsyhq/agent` (engine) and `@opsyhq/tui`. But `@opsyhq/wolli` is still one tangled package holding the agent client (`client.ts`), the agent server (`server.ts` + `AgentRuntime` + `AgentSession`), the environments (`host`/srt/docker), and the management/spawner (`AgentSettingsManager` + `ServiceManager`).
+
+Remaining:
+
+- Split `@opsyhq/wolli` into separate packages along those boundaries — agent client, agent server, environment, management/spawner — moving each piece to where it belongs.
+
+Notes:
+
+- This is the groundwork for later remote/cloud hosting (a remote agent server, a configurable transport). Those abstractions come after the split, not as part of it.
 
 ### Build-time compilation and testing of extensions and integrations
 
