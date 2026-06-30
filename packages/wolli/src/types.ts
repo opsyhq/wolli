@@ -72,6 +72,11 @@ export type DaemonCommand =
 	// Session-mutation helpers the TUI client drives (birth opener seed; resumed-message append).
 	| { id?: string; type: "seed_assistant_message"; text: string }
 	| { id?: string; type: "append_message"; message: AgentMessage }
+	// Session management the resume selector drives — rename/delete any stored session of the agent.
+	// Agent-global (the target is `targetSessionId`, not the URL session); routed through any session's
+	// `/control` rail like create_session/deploy. The daemon broadcasts the matching lifecycle frame.
+	| { id?: string; type: "rename_session"; targetSessionId: string; sessionName: string }
+	| { id?: string; type: "delete_session"; targetSessionId: string }
 
 	// Plugins — the daemon is the single writer: the CLI's mutating arms route here so the
 	// install/onboard primitive runs in-process, then the daemon reloads itself (never stale).
@@ -217,6 +222,24 @@ export interface DaemonSessionSummary {
 	isStreaming: boolean;
 	/** Whether the session is currently resident (in-memory) on the daemon. */
 	live: boolean;
+}
+
+/**
+ * Rich session record for the resume selector (carried by `GET /sessions/detail`, not the hot snapshot).
+ * Mirrors coding-agent's `SessionInfo` field-for-field; `created`/`modified` are ISO strings (JSON has no
+ * `Date`), revived on the client.
+ */
+export interface DaemonSessionInfo {
+	path: string;
+	id: string;
+	cwd: string;
+	name?: string;
+	parentSessionPath?: string;
+	created: string;
+	modified: string;
+	messageCount: number;
+	firstMessage: string;
+	allMessagesText: string;
 }
 
 /**

@@ -55,7 +55,7 @@ import {
 	getAgentIntegrationsPath,
 	getSessionsDir,
 } from "../config.ts";
-import type { AuthSelectorProvider } from "../types.ts";
+import type { AuthSelectorProvider, DaemonSessionInfo } from "../types.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { createAgentPluginManager } from "./agent-plugin-manager.ts";
 import { type AgentConfig, AgentSettingsManager, isDeployed } from "./agent-settings-manager.ts";
@@ -94,7 +94,14 @@ import type { ConfiguredPlugin } from "./plugin-manager.ts";
 import { type PromptTemplate, parseCommandArgs } from "./prompt-templates.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, loadProjectContextFiles } from "./resource-loader.ts";
-import { listAgentSessions, openAgentSession, type SessionInfo } from "./session.ts";
+import {
+	deleteAgentSession,
+	listAgentSessions,
+	listAgentSessionsDetail,
+	openAgentSession,
+	renameAgentSession,
+	type SessionInfo,
+} from "./session.ts";
 import { SessionManager } from "./session-manager.ts";
 import type { Skill } from "./skills.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
@@ -461,6 +468,11 @@ export class AgentRuntime {
 	/** Notify the daemon a session was renamed — called by the session's `setSessionName`. */
 	notifySessionRenamed(sessionId: string, sessionName: string): void {
 		this._sessionLifecycleHandler?.({ type: "renamed", sessionId, sessionName });
+	}
+
+	/** Notify the daemon a session was removed — used when deleting an idle (non-resident) session. */
+	notifySessionRemoved(sessionId: string): void {
+		this._sessionLifecycleHandler?.({ type: "removed", sessionId });
 	}
 
 	/**
@@ -910,6 +922,32 @@ export class AgentRuntime {
 	/** Stored sessions for this agent (newest first) — the ids `openSession(id)` accepts. */
 	listSessions(): Promise<SessionInfo[]> {
 		return listAgentSessions(this.options.name);
+	}
+
+	/** Stored sessions with the rich fields the resume selector renders — backs `GET /sessions/detail`. */
+	listSessionsDetail(): Promise<DaemonSessionInfo[]> {
+		return listAgentSessionsDetail(this.options.name);
+	}
+
+	/** Rename a stored session by id: resident → its own writer (no fork), idle → reopen the file. Broadcasts the frame. */
+	async renameSession(id: string, sessionName: string): Promise<void> {
+		const live = this._sessions.get(id);
+		if (live) {
+			await live.setSessionName(sessionName);
+		} else {
+			await renameAgentSession(this.options.name, id, sessionName);
+		}
+		this.notifySessionRenamed(id, sessionName);
+	}
+
+	/** Delete a stored session by id: evict the resident copy (or broadcast removal), then unlink the JSONL. */
+	async deleteSession(id: string): Promise<void> {
+		if (this._sessions.has(id)) {
+			await this.closeSession(id);
+		} else {
+			this.notifySessionRemoved(id);
+		}
+		await deleteAgentSession(this.options.name, id);
 	}
 
 	/**
@@ -1487,6 +1525,11 @@ export class AgentSession {
 	/** The live session's display name, or undefined when unnamed. */
 	getSessionName(): string | undefined {
 		return this.sessionManager.getSessionName();
+	}
+
+	/** Rename this resident session through its own writer, so it shares the harness's storage/leaf (no tree fork). */
+	async setSessionName(sessionName: string): Promise<void> {
+		await this.sessionManager.appendSessionInfo(sessionName);
 	}
 
 	/** Path to the live session's JSONL file, or undefined when not yet persisted. */

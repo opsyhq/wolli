@@ -308,6 +308,7 @@ export type {
 	DaemonCommand,
 	DaemonControlEvent,
 	DaemonResponse,
+	DaemonSessionInfo,
 	DaemonSessionState,
 	DaemonSessionSummary,
 	ExtensionUIRequest,
@@ -321,6 +322,6 @@ export { applyExifOrientation } from "./utils/exif-orientation.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "./utils/fs-watch.ts";
 export { openBrowser } from "./utils/open-browser.ts";
-export { formatPathRelativeToCwdOrAbsolute, resolvePath } from "./utils/paths.ts";
+export { canonicalizePath, formatPathRelativeToCwdOrAbsolute, resolvePath } from "./utils/paths.ts";
 export { loadPhoton, type PhotonImageType } from "./utils/photon.ts";
 export { ensureTool } from "./utils/tools-manager.ts";

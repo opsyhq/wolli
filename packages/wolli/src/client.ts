@@ -44,6 +44,7 @@ import type {
 	DaemonCommand,
 	DaemonControlEvent,
 	DaemonResponse,
+	DaemonSessionInfo,
 	DaemonSessionState,
 	DaemonSessionSummary,
 	ExtensionUIRequest,
@@ -269,6 +270,14 @@ export class Agent {
 		const body = (await response.json()) as DaemonAgentState;
 		this.agentState = body;
 		return body.sessions;
+	}
+
+	/** The stored sessions with the rich fields the resume selector renders — round-trips `GET /sessions/detail`. */
+	async listSessionsDetail(): Promise<DaemonSessionInfo[]> {
+		const response = await fetch(`${this.base}/sessions/detail`, {
+			headers: { authorization: `Bearer ${this.token}` },
+		});
+		return (await response.json()) as DaemonSessionInfo[];
 	}
 
 	/** Open (or return the cached) `SessionHandle` for a session id, opening its event stream. */
@@ -599,6 +608,17 @@ export class SessionHandle {
 		return this.agent.send(this.sessionId, { type: "append_message", message });
 	}
 
+	// ---- Session management the resume selector drives (agent-global; routed through this session's rail) ----
+	/** Rename any stored session of the agent by id. */
+	renameSession(targetSessionId: string, sessionName: string): Promise<void> {
+		return this.agent.send(this.sessionId, { type: "rename_session", targetSessionId, sessionName });
+	}
+
+	/** Delete any stored session of the agent by id. */
+	deleteSession(targetSessionId: string): Promise<void> {
+		return this.agent.send(this.sessionId, { type: "delete_session", targetSessionId });
+	}
+
 	// ---- Plugin verbs: single-writer mutations the daemon applies, then self-reloads ----
 	installPlugin(source: string): Promise<void> {
 		return this.agent.send(this.sessionId, { type: "install_plugin", source });
@@ -743,6 +763,11 @@ export class SessionHandle {
 
 	getSessionName(): string | undefined {
 		return this.snap.sessionName;
+	}
+
+	/** The session's JSONL file path (the resume selector keys current-session protection on it). */
+	getSessionFile(): string | undefined {
+		return this.snap.sessionFile;
 	}
 
 	getResourceSummary(): ResourceSummary {

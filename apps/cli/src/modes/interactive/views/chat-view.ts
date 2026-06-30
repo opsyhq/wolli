@@ -91,6 +91,7 @@ import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
+import { type SessionInfo, SessionSelectorComponent } from "./components/session-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
@@ -552,6 +553,12 @@ export class ChatView extends Container implements AppView {
 			await this.handleNewCommand();
 			return;
 		}
+		// `/sessions` — open the resume selector and switch to another session of this agent.
+		if (trimmed === "/sessions") {
+			this.editor.setText("");
+			await this.showSessionSelector();
+			return;
+		}
 		// `/compact [instructions]` — compact the session history.
 		if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
 			const customInstructions = trimmed.startsWith("/compact ") ? trimmed.slice(9).trim() || undefined : undefined;
@@ -742,6 +749,64 @@ export class ChatView extends Container implements AppView {
 		}
 		try {
 			const sessionId = await this.ctx.createSession();
+			await this.ctx.switchSession(sessionId);
+		} catch (error) {
+			this.appendErrorLine(error instanceof Error ? error.message : String(error));
+			this.ui.requestRender();
+		}
+	}
+
+	/** `/sessions` — open the resume selector; selecting switches the chat, rename/delete route through the daemon. */
+	private async showSessionSelector(): Promise<void> {
+		const currentSessionFilePath = this.session.getSessionFile();
+		const byPath = new Map<string, string>();
+		const loadSessions = async (): Promise<SessionInfo[]> => {
+			const infos = await this.ctx.listSessions();
+			byPath.clear();
+			for (const info of infos) byPath.set(info.path, info.id);
+			// The wire `DaemonSessionInfo` mirrors `SessionInfo` field-for-field; revive the two date strings.
+			return infos.map((info) => ({ ...info, created: new Date(info.created), modified: new Date(info.modified) }));
+		};
+		this.showSelector((done) => {
+			const selector = new SessionSelectorComponent(
+				loadSessions,
+				(sessionPath) => {
+					done();
+					const id = byPath.get(sessionPath);
+					// Selecting the current session is a no-op — re-opening its cached handle would close its live stream.
+					if (id && id !== this.session.sessionId) {
+						void this.handleResumeSession(id);
+					} else {
+						this.ui.requestRender();
+					}
+				},
+				() => {
+					done();
+					this.ui.requestRender();
+				},
+				() => {},
+				() => this.ui.requestRender(),
+				{
+					keybindings: this.keybindings,
+					showRenameHint: true,
+					renameSession: async (sessionPath, name) => {
+						const id = byPath.get(sessionPath);
+						if (id && name) await this.session.renameSession(id, name);
+					},
+					deleteSession: async (sessionPath) => {
+						const id = byPath.get(sessionPath);
+						if (id) await this.session.deleteSession(id);
+					},
+				},
+				currentSessionFilePath,
+			);
+			return { component: selector, focus: selector };
+		});
+	}
+
+	/** Switch the visible chat to the chosen session (the App swaps the ChatView). */
+	private async handleResumeSession(sessionId: string): Promise<void> {
+		try {
 			await this.ctx.switchSession(sessionId);
 		} catch (error) {
 			this.appendErrorLine(error instanceof Error ? error.message : String(error));

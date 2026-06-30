@@ -379,6 +379,20 @@ async function handleCommand(
 				}),
 			});
 
+		case "rename_session":
+			await runtime.renameSession(cmd.targetSessionId, cmd.sessionName);
+			return ok(id, "rename_session");
+		case "delete_session": {
+			// Never delete the session backing this request (the URL rail) — it's mid-command with a live stream.
+			if (cmd.targetSessionId === session.getSessionId()) {
+				return err(id, "delete_session", "Cannot delete the active session.");
+			}
+			const live = runtime.getSession(cmd.targetSessionId);
+			if (live?.isStreaming()) return err(id, "delete_session", "Cannot delete a streaming session.");
+			await runtime.deleteSession(cmd.targetSessionId);
+			return ok(id, "delete_session");
+		}
+
 		default: {
 			const unknown = cmd as { type: string };
 			return err(undefined, unknown.type, `Unknown command: ${unknown.type}`);
@@ -929,6 +943,9 @@ export async function runDaemonMode(
 
 	// The session list.
 	app.get("/sessions", async (c) => c.json(await agentSnapshot(runtime)));
+
+	// The rich session list the resume selector renders (opens every session — fetched once on open).
+	app.get("/sessions/detail", async (c) => c.json(await runtime.listSessionsDetail()));
 
 	// Per-session event stream. Subscribing makes the session live (rehydrating it if idle); the last
 	// client detaching evicts it (when idle).
