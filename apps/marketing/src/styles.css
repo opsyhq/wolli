@@ -3,6 +3,11 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "streamdown/styles.css";
+
+/* Let Tailwind generate the utility classes Streamdown emits (hoisted to repo root). */
+@source "../../../node_modules/streamdown/dist";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -23,6 +28,7 @@ body {
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: 'Geist Variable', sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -64,7 +70,7 @@ body {
 }
 
 :root {
-  --background: oklch(1 0 0);
+  --background: oklch(0.98 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
@@ -141,5 +147,29 @@ body {
   }
   html {
     @apply font-sans;
+  }
+}
+
+/* Chat palette (eve.dev / Vercel Geist, light) exposed as Tailwind color tokens, so the
+   chat is styled with utilities in chat.tsx. The block-cursor blink is a named animation. */
+@theme {
+  --color-chat-bg: #ffffff;            /* ds-background-100 */
+  --color-chat-surface: #fafafa;       /* ds-background-200 */
+  --color-chat-subtle: #f2f2f2;        /* ds-gray-100 */
+  --color-chat-text: #171717;          /* ds-gray-1000 */
+  --color-chat-muted: #7d7d7d;         /* ds-gray-800 */
+  --color-chat-border: rgba(0, 0, 0, 0.08); /* ds-gray-alpha-400 */
+  --color-chat-accent: #0070f7;        /* ds-blue-700 */
+  --color-chat-error: #e5484d;
+  --color-chat-warning: #f99c00;       /* fd-warning */
+  --color-chat-tool-success: #f2fbf5;
+  --color-chat-tool-error: #fef1f1;
+
+  --animate-blink: blink 1.05s step-end infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
   }
 }
