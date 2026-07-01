@@ -5,10 +5,12 @@
 //     assistant text by yielding message_update with a growing cumulative AssistantMessage
 //     (as the agent loop does). Before each user message it also emits two small UI frames
 //     — `input` (the composer text growing) then `submit` — so the demo types the user's
-//     message into the input box and "sends" it.
-//   - `applyEvent` mirrors ChatView.handleEvent + begin/update/finalizeAssistantMessage
-//     (chat-view.ts): a streaming assistant block, a pendingTools map keyed by tool-call
-//     id, a busy flag, and the composer `input` text.
+//     message into the input box and "sends" it. Like the real loop, each submitted prompt
+//     opens a run (agent_start) that ends (agent_end) when the assistant's final message
+//     completes — so `busy` is false while the user types.
+//   - `applyEvent` mirrors InteractiveMode.handleEvent (interactive-mode.ts): a streaming
+//     assistant block, a pendingTools map keyed by tool-call id, a busy flag, and the
+//     composer `input` text.
 //
 // Playback is self-timed: each frame is applied, then the driver waits that frame's own
 // delay before the next, so a user's typing or an assistant's stream runs to its end before
@@ -79,14 +81,14 @@ function getUserMessageText(content: string | Array<{ type: string; text?: strin
 	return content
 		.filter((c) => c.type === "text")
 		.map((c) => c.text ?? "")
-		.join("\n");
+		.join("");
 }
 
 function isAssistantMessage(message: AgentMessage): message is AssistantMessage {
 	return message.role === "assistant";
 }
 
-// Replace the block with `key`, returning a new blocks array. Mirrors the way ChatView
+// Replace the block with `key`, returning a new blocks array. Mirrors the way the TUI
 // mutates a live component in place, but immutably so React re-renders.
 function replaceBlock(
 	blocks: TranscriptBlock[],
@@ -97,7 +99,7 @@ function replaceBlock(
 }
 
 // ---------------------------------------------------------------------------
-// Reducer: mirrors ChatView.handleEvent + begin/update/finalizeAssistantMessage
+// Reducer: mirrors InteractiveMode.handleEvent (interactive-mode.ts)
 // ---------------------------------------------------------------------------
 
 function applyEvent(state: TranscriptState, event: Frame): TranscriptState {
@@ -109,7 +111,7 @@ function applyEvent(state: TranscriptState, event: Frame): TranscriptState {
 			return { ...state, input: "" };
 
 		case "agent_start":
-			return { ...state, busy: true };
+			return { ...state, busy: true, pendingTools: new Map() };
 
 		case "message_start": {
 			if (event.message.role === "user") {
@@ -117,34 +119,25 @@ function applyEvent(state: TranscriptState, event: Frame): TranscriptState {
 				const block: UserBlock = { kind: "user", key, text: getUserMessageText(event.message.content) };
 				return { ...state, blocks: [...state.blocks, block], seq: state.seq + 1 };
 			}
-			if (
-				isAssistantMessage(event.message) &&
-				event.message.stopReason !== "error" &&
-				event.message.stopReason !== "aborted"
-			) {
-				// beginAssistantMessage: open an empty streaming bubble.
+			if (isAssistantMessage(event.message)) {
+				// Open the streaming bubble (content is empty at message_start).
 				const key = `b${state.seq}`;
-				const empty: AssistantMessage = { ...event.message, content: [] };
-				const block: AssistantBlock = { kind: "assistant", key, message: empty };
+				const block: AssistantBlock = { kind: "assistant", key, message: event.message };
 				return { ...state, blocks: [...state.blocks, block], streamingKey: key, seq: state.seq + 1 };
 			}
 			return state;
 		}
 
 		case "message_update": {
-			if (
-				!isAssistantMessage(event.message) ||
-				event.message.stopReason === "error" ||
-				event.message.stopReason === "aborted"
-			) {
-				return state;
-			}
-			return updateAssistantMessage(state, event.message);
+			if (!state.streamingKey || !isAssistantMessage(event.message)) return state;
+			return updateAssistantMessage(state, state.streamingKey, event.message);
 		}
 
 		case "message_end": {
 			if (event.message.role === "user") return state;
-			if (isAssistantMessage(event.message)) return finalizeAssistantMessage(state, event.message);
+			if (state.streamingKey && isAssistantMessage(event.message)) {
+				return finalizeAssistantMessage(state, state.streamingKey, event.message);
+			}
 			return state;
 		}
 
@@ -154,7 +147,7 @@ function applyEvent(state: TranscriptState, event: Frame): TranscriptState {
 				return {
 					...state,
 					blocks: replaceBlock(state.blocks, existingKey, (block) =>
-						block.kind === "tool" ? { ...block, executionStarted: true, name: event.toolName } : block,
+						block.kind === "tool" ? { ...block, executionStarted: true } : block,
 					),
 				};
 			}
@@ -203,29 +196,28 @@ function applyEvent(state: TranscriptState, event: Frame): TranscriptState {
 			};
 		}
 
-		case "agent_end":
-			return { ...state, busy: false, pendingTools: new Map() };
+		case "agent_end": {
+			// A bubble still streaming here never got its message_end; handleEvent removes it.
+			const blocks = state.streamingKey ? state.blocks.filter((b) => b.key !== state.streamingKey) : state.blocks;
+			return { ...state, blocks, busy: false, streamingKey: null, pendingTools: new Map() };
+		}
 
 		default:
 			return state;
 	}
 }
 
-// updateAssistantMessage (chat-view.ts:2492): re-render the streaming bubble from the
-// cumulative message and open a tool block per toolCall content block, keyed by its id.
-function updateAssistantMessage(state: TranscriptState, message: AssistantMessage): TranscriptState {
-	let blocks = state.blocks;
-	let streamingKey = state.streamingKey;
+// message_update in handleEvent: re-render the streaming bubble from the cumulative
+// message and open a tool block per toolCall content block, keyed by its id.
+function updateAssistantMessage(
+	state: TranscriptState,
+	streamingKey: string,
+	message: AssistantMessage,
+): TranscriptState {
 	let seq = state.seq;
-
-	if (!streamingKey) {
-		streamingKey = `b${seq}`;
-		blocks = [...blocks, { kind: "assistant", key: streamingKey, message: { ...message, content: [] } }];
-		seq += 1;
-	}
-
-	const key = streamingKey;
-	blocks = replaceBlock(blocks, key, (block) => (block.kind === "assistant" ? { ...block, message } : block));
+	let blocks = replaceBlock(state.blocks, streamingKey, (block) =>
+		block.kind === "assistant" ? { ...block, message } : block,
+	);
 
 	const pendingTools = new Map(state.pendingTools);
 	for (const content of message.content) {
@@ -255,16 +247,26 @@ function updateAssistantMessage(state: TranscriptState, message: AssistantMessag
 		}
 	}
 
-	return { ...state, blocks, streamingKey, pendingTools, seq };
+	return { ...state, blocks, pendingTools, seq };
 }
 
-// finalizeAssistantMessage (chat-view.ts:2523): commit the final content, mark pending
-// tool args complete, and close the streaming bubble.
-function finalizeAssistantMessage(state: TranscriptState, message: AssistantMessage): TranscriptState {
-	if (message.stopReason === "error" || message.stopReason === "aborted") {
-		// Drop the partial bubble and settle any pending tools as errored.
-		const errorText = message.errorMessage || (message.stopReason === "aborted" ? "Operation aborted" : "Error");
-		let blocks = state.streamingKey ? state.blocks.filter((b) => b.key !== state.streamingKey) : state.blocks;
+// message_end in handleEvent: commit the final content (the bubble stays and renders the
+// error/abort notice itself), settle pending tools, and close the streaming bubble.
+function finalizeAssistantMessage(
+	state: TranscriptState,
+	streamingKey: string,
+	message: AssistantMessage,
+): TranscriptState {
+	if (message.stopReason === "aborted") {
+		message = { ...message, errorMessage: "Operation aborted" };
+	}
+	let blocks = replaceBlock(state.blocks, streamingKey, (block) =>
+		block.kind === "assistant" ? { ...block, message } : block,
+	);
+
+	if (message.stopReason === "aborted" || message.stopReason === "error") {
+		// Settle any pending tools as errored.
+		const errorText = message.errorMessage || "Error";
 		for (const key of state.pendingTools.values()) {
 			blocks = replaceBlock(blocks, key, (block) =>
 				block.kind === "tool"
@@ -275,11 +277,7 @@ function finalizeAssistantMessage(state: TranscriptState, message: AssistantMess
 		return { ...state, blocks, streamingKey: null, pendingTools: new Map() };
 	}
 
-	let blocks = state.streamingKey
-		? replaceBlock(state.blocks, state.streamingKey, (block) =>
-				block.kind === "assistant" ? { ...block, message } : block,
-			)
-		: state.blocks;
+	// Args are now complete for tools opened during streaming.
 	for (const key of state.pendingTools.values()) {
 		blocks = replaceBlock(blocks, key, (block) => (block.kind === "tool" ? { ...block, argsComplete: true } : block));
 	}
@@ -325,21 +323,23 @@ function* streamAssistant(message: AssistantMessage): Generator<AssistantMessage
 }
 
 function* replay(messages: AgentMessage[]): Generator<Frame> {
-	yield { type: "agent_start" };
-
 	// Tool-call args live on the assistant message; look them up when the matching
 	// toolResult message is replayed.
 	const toolCallsById = new Map<string, ToolCall>();
+	let running = false;
 
-	for (const message of messages) {
+	for (let i = 0; i < messages.length; i++) {
+		const message = messages[i]!;
 		if (message.role === "user") {
-			// Type the message into the composer, send it, then add the bubble.
+			// Type the message into the composer (idle), send it, then the run starts.
 			let acc = "";
 			for (const token of streamTokens(getUserMessageText(message.content))) {
 				acc += token;
 				yield { type: "input", text: acc };
 			}
 			yield { type: "submit" };
+			yield { type: "agent_start" };
+			running = true;
 			yield { type: "message_start", message };
 			yield { type: "message_end", message };
 		} else if (message.role === "assistant") {
@@ -371,9 +371,18 @@ function* replay(messages: AgentMessage[]): Generator<Frame> {
 				isError: message.isError,
 			};
 		}
+
+		// The turn ends when the assistant's message is the run's last work — nothing
+		// follows but the next user prompt (or the end of the session).
+		const next = messages[i + 1];
+		if (running && message.role === "assistant" && (!next || next.role === "user")) {
+			yield { type: "agent_end", messages };
+			running = false;
+		}
 	}
 
-	yield { type: "agent_end", messages };
+	// A session cut off mid-run (e.g. ending on a tool result) still closes its run.
+	if (running) yield { type: "agent_end", messages };
 }
 
 // Fully-fold the replay: the completely revealed transcript (used for the initial/SSR
