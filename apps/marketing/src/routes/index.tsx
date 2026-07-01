@@ -3,12 +3,21 @@ import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 
 import { Chat } from "@/components/chat";
+import { type FileNode, FileTree } from "@/components/file-tree";
 import { Button } from "@/components/ui/button";
 import { useSession } from "@/hooks/use-session";
 
 export const Route = createFileRoute("/")({ component: Home });
 
 const INSTALL_COMMAND = "npm i -g wolli";
+const agentName = "scout";
+const AGENT_FILES: FileNode[] = [
+	{ path: "USER.md" },
+	{ path: "MEMORY.md" },
+	{ path: "SOUL.md" },
+	{ path: "integrations/telegram.ts" },
+	{ path: "skills/summarize.md" },
+];
 
 function Home() {
 	const [copied, setCopied] = useState(false);
@@ -51,8 +60,21 @@ function Home() {
 				</div>
 			</main>
 			<section ref={session.ref} className="flex justify-center px-6 pb-32">
-				<div className="w-full max-w-3xl">
-					<Chat blocks={session.blocks} busy={session.busy} input={session.input} />
+				<div className="w-full max-w-5xl overflow-hidden rounded-[12px] border border-chat-border bg-chat-bg shadow-[0_8px_24px_-16px_rgba(0,0,0,0.12)]">
+					{/* Split header: name over the chat, path over the tree; divider carried through to align the body. */}
+					<div className="grid grid-cols-[1fr_auto] border-b border-chat-border md:grid-cols-[1fr_260px]">
+						<div className="min-w-0 px-4 py-3 font-mono text-[13px] font-medium text-chat-text">{agentName}</div>
+						<div className="truncate px-4 py-3 font-mono text-[13px] text-chat-muted md:border-l md:border-chat-border">
+							~/.wolli/agents/{agentName}
+						</div>
+					</div>
+					<div className="flex flex-col md:grid md:h-[520px] md:grid-cols-[1fr_260px]">
+						{/* min-w-0 lets the chat shrink so wide code scrolls inside instead of shoving the tree off-screen. */}
+						<div className="h-[440px] min-h-0 min-w-0 overflow-hidden md:h-full">
+							<Chat blocks={session.blocks} busy={session.busy} input={session.input} />
+						</div>
+						<FileTree files={AGENT_FILES} className="border-t border-chat-border md:border-t-0 md:border-l" />
+					</div>
 				</div>
 			</section>
 		</>

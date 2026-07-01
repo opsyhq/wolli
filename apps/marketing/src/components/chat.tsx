@@ -9,7 +9,7 @@
 // The composer at the bottom copies wolli's Editor look (Editor.render draws a horizontal
 // rule above and below the text, with left padding and a reverse-video block cursor) and
 // shows the message being "typed" before it is sent. Styling is entirely Tailwind utilities
-// on the eve.dev (Vercel Geist) light palette (color tokens live in styles.css @theme);
+// on the Vercel Geist light palette (color tokens live in styles.css @theme);
 // Streamdown styles its own markdown and we don't override it.
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
@@ -374,7 +374,7 @@ export function Chat({ blocks, busy = false, input, className }: ChatProps) {
 
 	return (
 		<div
-			className={`flex h-[560px] flex-col overflow-hidden rounded-[14px] border border-chat-border bg-chat-bg text-left font-mono text-[13px] leading-[1.6] text-chat-text shadow-[0_16px_40px_-24px_rgba(0,0,0,0.25)]${
+			className={`flex h-full flex-col overflow-hidden text-left font-mono text-[13px] leading-[1.6] text-chat-text${
 				className ? ` ${className}` : ""
 			}`}
 		>
