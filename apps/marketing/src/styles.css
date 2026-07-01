@@ -150,7 +150,7 @@ body {
   }
 }
 
-/* Chat palette (eve.dev / Vercel Geist, light) exposed as Tailwind color tokens, so the
+/* Chat palette (Vercel Geist, light) exposed as Tailwind color tokens, so the
    chat is styled with utilities in chat.tsx. The block-cursor blink is a named animation. */
 @theme {
   --color-chat-bg: #ffffff;            /* ds-background-100 */
