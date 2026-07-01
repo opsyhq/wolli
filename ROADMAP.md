@@ -120,16 +120,6 @@ Remaining:
 
 - Workflow runs survive restarts and resume deterministically from where they stopped.
 
-### Durable integrations
-
-Status: Proposed
-
-Today: integration config and account state persist and producers restart from them; the scheduler already resumes deterministically (jobs persist before their event fires, a catch-up tick runs each overdue job exactly once), but channel listeners keep no cursor — Telegram drops updates sent while offline.
-
-Remaining:
-
-- Channel listener state survives restarts and resumes deterministically, the way scheduler jobs already do.
-
 ### Split `@opsyhq/wolli` into packages
 
 Status: Planned
