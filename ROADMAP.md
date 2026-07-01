@@ -2,33 +2,29 @@
 
 Ordered roughly easiest to hardest. Items marked Planned are committed
 direction; everything else is Proposed. This is direction, not a dated
-commitment. What ships lives in the [README](README.md) and is described there
-in present tense.
+commitment. Each item gives one line of where things stand today; the bullets
+are the work. What ships lives in the [README](README.md) and is described
+there in present tense.
 
 ### Agents deployed by default
 
 Status: Planned
 
-Done:
-
-- The forming/deployed lifecycle exists today: a new agent starts forming, interviews its human, and only acts unattended after `/deploy`, the single human-held latch. The `deploy` tool writes the agent's purpose and SOUL.md; the UI flips `deployedAt` after a y/n confirmation.
+Today: a new agent forms — it interviews its human, pinned to its single birth session — until the human confirms deploy; the daemon then flips `deployedAt` and installs the OS service unit. Events and schedules are not actually gated on deployment.
 
 Remaining:
 
-- Remove the forming/deployed distinction. Agents are no longer flagged deployed or non-deployed; the forming experience and the `/deploy` latch go away, and every agent runs on schedules and events from creation.
+- Remove the forming/deployed distinction: drop the `deployedAt` latch, the birth-session pin, and the forming-only deploy tool, and install the service unit at creation so every agent runs on schedules and events from birth. Rehome purpose and SOUL.md authoring, which the deploy tool owns today.
 
 ### Logging and log retrieval (Logger)
 
 Status: Proposed
 
-Done:
-
-- Each agent runs under a local daemon supervised by launchd (macOS) or systemd (linux); the daemon already writes process stdout/stderr to disk.
-- The append-only JSONL session tree captures the agent's reasoning and tool calls deterministically, so a per-conversation record already exists.
+Today: only launchd redirects daemon stdout/stderr to files (in the OS temp dir); systemd output goes to journald, and unsupervised daemons (forming agents, the `none` backend) discard output entirely. The JSONL session tree already records reasoning and tool calls per conversation.
 
 Remaining:
 
-- A first-class log primitive the agent and human can query, not just raw daemon output scattered across files.
+- A first-class log primitive the agent and human can query — durable, not launchd temp files or journald.
 - Structured capture from extensions and integrations, keyed so a single run can be reconstructed.
 - A query surface (tool + CLI) to fetch and filter logs while debugging an extension or integration.
 
@@ -36,43 +32,32 @@ Remaining:
 
 Status: Proposed
 
-Done:
-
-- Conversation-driven self-edit already works: the agent edits SOUL.md, MEMORY.md, and USER.md through a memory tool, and reload picks up the new state.
-- The agent home (`~/.wolli/<agent>`) already holds `agent.json`, the memory files, and `skills/`, `extensions/`, `integrations/` as plain on-disk files the user owns.
-- The plugin system loads extensions, skills, prompt templates, and themes from these folders today.
+Today: the agent home (`~/.wolli/agents/<name>`) is plain on-disk files the user owns — `agent.json`, the memory files, and `extensions/`, `integrations/`, `skills/`, `prompts/`, `themes/` — and the agent already self-edits it (memory tool for MEMORY.md/USER.md, file tools for SOUL.md; edits apply next session). Plugins install from `npm:`, `git:`, and local sources into a managed per-agent store.
 
 Remaining:
 
-- Git versioning and transport over the agent home so human and agent co-edits land as reviewable commits with history.
-- npm-style distribution of plugins from a registry, replacing manual folder copy.
+- Git versioning and transport over the agent home so human and agent co-edits land as reviewable commits with history. Nothing in the home is a git repository today (plugin stores are `.gitignore`d).
+- Finish plugin distribution. Installs work mechanically, but there is no discovery surface (no registry index, search, or browse — you must already know the source), no publish flow (wolli only consumes packages; the agent cannot package and publish a plugin it authored), and no agent-facing install (the agent must ask its human to run the CLI).
 
 ### Workflows as first-class routing
 
 Status: Proposed
 
-Done:
-
-- The integration event framework (event bus + integrations loader/runner) already routes channel events, e.g. an inbound Telegram message, into the agent.
-- Extensions already support static registration of tools, commands, events, and UI.
-- Local sandboxing (`srt` via Apple Seatbelt or bubblewrap, optional Docker) already runs untrusted code in isolation, which is what workflow steps need.
+Today: the integration runner routes channel events into the agent through each integration's paired chat extension; extensions register tools, commands, events, and UI — including dynamically mid-session; srt sandboxing confines writes only (reads and network are unrestricted), with full isolation Docker-only.
 
 Remaining:
 
-- Make extensions static-registration only; move everything dynamic into workflows whose steps run in sandboxes.
+- Make extensions static-registration only; move everything dynamic (including today's mid-session tool and provider registration) into workflows whose steps run in sandboxes.
 - Disassemble what an extension statically owns into per-type folders in the agent home, e.g. tools into `tools/` alongside the existing `skills/`, so each capability is an addressable file the agent and human edit directly instead of one bundled extension module.
 - Treat every agent action as a workflow step — a tool call becomes a workflow with steps underneath — so the unit of execution is a step the runtime runs inline locally or as a separate sandboxed/cloud job.
-- Lift the channel-aware routing logic currently embedded in extensions into a default routing workflow that is itself first-class.
+- Lift the channel-aware routing logic currently embedded in the paired chat extensions into a default routing workflow that is itself first-class.
 - Support agent-authored workflows.
 
 ### Database primitive for agents
 
 Status: Proposed
 
-Done:
-
-- Narrower durable stores already exist: `integration-store`, `integration-account-storage`, and the settings managers persist structured state to disk.
-- The append-only JSONL session tree is a working precedent for durable, deterministically-read data.
+Today: several narrow durable stores exist (integration store and account storage, settings, auth, approvals), and each integration gets a scoped key-value store the agent drives only indirectly through integration actions.
 
 Remaining:
 
@@ -82,28 +67,22 @@ Remaining:
 
 Status: Proposed
 
-Done:
-
-- Extensions can already emit UI, and the TUI renders agent activity.
-- The event bus already carries agent events to the client.
+Today: extensions emit UI over a small serialized daemon protocol (awaited dialogs plus notify, status, widgets), clients reconstruct live activity independently from per-session SSE with snapshot and replay, and persisted custom messages exist — but their renderers are not wired over the daemon and they are fed back into agent context.
 
 Remaining:
 
-- "Working UI": a view of what the agent is doing, driven purely by agent events and reconstructed independently by each client.
-- Declarative, persistable components the agent can emit (e.g. "2000 kcal today") that a client either supports and renders or ignores; ignored components are not fed back into agent context.
+- "Working UI": extend the per-client, event-driven reconstruction into a full view of what the agent is doing.
+- Declarative, persistable components the agent can emit (e.g. "2000 kcal today") that a client either supports and renders or ignores; ignored components are not fed back into agent context — today custom messages always are.
 
 ### First-class webhook / proxy for integrations
 
 Status: Proposed
 
-Done:
-
-- The integration event framework exists (loader, runner, types, onboarding) and drives the bundled Telegram integration bidirectionally.
-- None for the inbound surface itself; only the outbound integration event framework above exists today.
+Today: the three bundled integrations all pull or hold connections (Telegram long-polls, Discord holds a gateway WebSocket, the scheduler ticks); the daemon's HTTP/SSE server has bearer auth and can bind beyond loopback, but serves only attached clients.
 
 Remaining:
 
-- A real inbound webhook/proxy surface so integrations can receive outside events directly, beyond the two bundled integrations that exist today.
+- A real inbound webhook/proxy surface so integrations can receive outside events directly instead of long-polling or holding gateway connections open.
 
 Notes:
 
@@ -113,20 +92,19 @@ Notes:
 
 Status: Proposed
 
+Today: integrations declare account, event, and action schemas that are enforced at the ctx boundary (undeclared events rejected, params and accounts validated, store scoped per service), but the module itself runs in-process with full Node authority.
+
 Remaining:
 
-- Constrain each integration to a declared set of capabilities and transports. Integrations keep events, store, and actions, but only the subset they declare, enforced rather than ambient.
-- Run integrations as short-lived, sandboxed invocations instead of long-running processes: each handler executes as a workflow step with limited access, closer to a serverless function than a daemon.
-- Remodel the scheduler integration to be event-triggered rather than a long-running listener.
+- Constrain each integration to its declared capabilities and transports at the process boundary, enforced rather than ambient.
+- Run integrations as short-lived, sandboxed invocations instead of long-lived in-process producers: each handler executes as a workflow step with limited access, closer to a serverless function than a daemon.
+- Remodel the scheduler integration (today a 60-second tick loop) to be event-triggered rather than a long-running listener.
 
 ### Durable agents
 
 Status: Proposed
 
-Done:
-
-- The per-agent local daemon supervised by launchd/systemd restarts the process when it dies.
-- The append-only JSONL session tree reconstructs context deterministically and resumes the latest leaf by default, so conversational state already survives a restart.
+Today: a deployed agent's daemon restarts on death and at boot via launchd/systemd, and sessions rebuild deterministically from the JSONL tree — a crash loses only the currently streaming message and in-memory queues.
 
 Remaining:
 
@@ -136,9 +114,7 @@ Remaining:
 
 Status: Proposed
 
-Done:
-
-- No direct scaffolding yet; depends on workflows as first-class routing. The session tree's deterministic replay is the model to follow.
+Today: nothing exists; depends on workflows as first-class routing. The session tree's deterministic replay is the model to follow.
 
 Remaining:
 
@@ -148,39 +124,31 @@ Remaining:
 
 Status: Proposed
 
-Done:
-
-- `integration-store` and `integration-account-storage` already persist integration config and account state.
-- The bundled Telegram and cron scheduler integrations run as long-lived listeners today.
+Today: integration config and account state persist and producers restart from them; the scheduler already resumes deterministically (jobs persist before their event fires, a catch-up tick runs each overdue job exactly once), but channel listeners keep no cursor — Telegram drops updates sent while offline.
 
 Remaining:
 
-- Integration listeners and their state survive restarts and resume deterministically.
+- Channel listener state survives restarts and resumes deterministically, the way scheduler jobs already do.
 
 ### Split `@opsyhq/wolli` into packages
 
 Status: Planned
 
-Done:
-
-- The monorepo already splits out `@opsyhq/agent` (engine) and `@opsyhq/tui`. But `@opsyhq/wolli` is still one tangled package holding the agent client (`client.ts`), the agent server (`server.ts` + `AgentRuntime` + `AgentSession`), the environments (`host`/srt/docker), and the management/spawner (`AgentSettingsManager` + `ServiceManager`).
+Today: `@opsyhq/agent` (engine) and `@opsyhq/tui` are split out, but `@opsyhq/wolli` still bundles the agent client (`client.ts`), the agent server (`server.ts` + `AgentRuntime` + `AgentSession`), the environments (`host`, the srt-confined `local-os`, `docker`), the management/spawner (`AgentSettingsManager` + `ServiceManager`), and beyond those the extension, integration, and plugin systems, the built-in tool suite, themes, the model registry, auth, and approvals.
 
 Remaining:
 
-- Split `@opsyhq/wolli` into separate packages along those boundaries — agent client, agent server, environment, management/spawner — moving each piece to where it belongs.
+- Split `@opsyhq/wolli` into separate packages along those boundaries, placing the unassigned systems as well. The client/spawner boundary currently cuts through `client.ts`: it spawns daemons and drives the `ServiceManager` during deploy, restart, and delete.
 
 Notes:
 
-- This is the groundwork for later remote/cloud hosting (a remote agent server, a configurable transport). Those abstractions come after the split, not as part of it.
+- This is the groundwork for later remote/cloud hosting (a remote agent server, a configurable transport). Those abstractions come after the split, not as part of it — though seams exist already: the in-process SDK facade and the session-namespaced HTTP/SSE wire protocol.
 
 ### Build-time compilation and testing of extensions and integrations
 
 Status: Planned
 
-Done:
-
-- Local sandboxing (`srt`, optional Docker) already exists to run untrusted code in isolation.
-- The pnpm + TypeScript monorepo build toolchain, the extension/integration loaders that compile and load TS modules, and the vitest harness are all in place.
+Today: the loaders compile TS on import via jiti and report load errors and cross-extension conflicts as structured diagnostics; sandboxing and the vitest harness exist. Nothing validates at build time.
 
 Remaining:
 
