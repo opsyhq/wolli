@@ -1,0 +1,48 @@
+name: Deploy marketing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/marketing/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/deploy-marketing.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-marketing
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # vite build emits dist/ and .wrangler/deploy/config.json, which redirects
+      # `wrangler deploy` to the generated dist/server/wrangler.json (assets + worker).
+      - name: Build marketing
+        run: pnpm --filter marketing build
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/marketing
+          # Pin to the wrangler that generated the build config to avoid drift.
+          wranglerVersion: "4.106.0"
+          command: deploy
