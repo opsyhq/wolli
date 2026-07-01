@@ -32,7 +32,8 @@ function Home() {
 
 	return (
 		<>
-			<main className="flex min-h-screen flex-col items-center justify-center px-6">
+			{/* Short hero (88svh) so the card below peeks under the fold, hinting there's more. */}
+			<main className="flex min-h-[88svh] flex-col items-center justify-center px-6">
 				<div className="mx-auto flex max-w-3xl flex-col items-center text-center">
 					<h1 className="text-5xl font-semibold tracking-tight text-balance sm:text-6xl md:text-7xl">
 						Create agents that grow around a purpose
@@ -60,20 +61,25 @@ function Home() {
 				</div>
 			</main>
 			<section ref={session.ref} className="flex justify-center px-6 pb-32">
-				<div className="w-full max-w-5xl overflow-hidden rounded-[12px] border border-chat-border bg-chat-bg shadow-[0_8px_24px_-16px_rgba(0,0,0,0.12)]">
-					{/* Split header: name over the chat, path over the tree; divider carried through to align the body. */}
-					<div className="grid grid-cols-[1fr_auto] border-b border-chat-border md:grid-cols-[1fr_260px]">
-						<div className="min-w-0 px-4 py-3 font-mono text-[13px] font-medium text-chat-text">{agentName}</div>
-						<div className="truncate px-4 py-3 font-mono text-[13px] text-chat-muted md:border-l md:border-chat-border">
-							~/.wolli/agents/{agentName}
+				{/* Phase 2 stage: wrapper becomes `sticky top-0`; card slides left, text fades in on the right. */}
+				<div className="w-full max-w-5xl">
+					<div className="w-full overflow-hidden rounded-[12px] border border-chat-border bg-chat-bg shadow-[0_8px_24px_-16px_rgba(0,0,0,0.12)]">
+						{/* Split header: name over the chat, path over the tree; divider carried through to align the body. */}
+						<div className="grid grid-cols-[1fr_auto] border-b border-chat-border md:grid-cols-[1fr_260px]">
+							<div className="min-w-0 px-4 py-3 font-mono text-[13px] font-medium text-chat-text">
+								{agentName}
+							</div>
+							<div className="truncate px-4 py-3 font-mono text-[13px] text-chat-muted md:border-l md:border-chat-border">
+								~/.wolli/agents/{agentName}
+							</div>
 						</div>
-					</div>
-					<div className="flex flex-col md:grid md:h-[520px] md:grid-cols-[1fr_260px]">
-						{/* min-w-0 lets the chat shrink so wide code scrolls inside instead of shoving the tree off-screen. */}
-						<div className="h-[440px] min-h-0 min-w-0 overflow-hidden md:h-full">
-							<Chat blocks={session.blocks} busy={session.busy} input={session.input} />
+						<div className="flex flex-col md:grid md:h-[520px] md:grid-cols-[1fr_260px]">
+							{/* min-w-0 lets the chat shrink so wide code scrolls inside instead of shoving the tree off-screen. */}
+							<div className="h-[440px] min-h-0 min-w-0 overflow-hidden md:h-full">
+								<Chat blocks={session.blocks} busy={session.busy} input={session.input} />
+							</div>
+							<FileTree files={AGENT_FILES} className="border-t border-chat-border md:border-t-0 md:border-l" />
 						</div>
-						<FileTree files={AGENT_FILES} className="border-t border-chat-border md:border-t-0 md:border-l" />
 					</div>
 				</div>
 			</section>
