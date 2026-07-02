@@ -16,7 +16,7 @@ import {
 	type Model,
 } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, AgentMessage, SessionContext, SessionTreeEntry, ThinkingLevel } from "@opsyhq/agent";
-import { getDaemonHost, getDaemonToken, getHomeDir } from "./config.ts";
+import { getDaemonHost, getDaemonToken, getHomeDir, getSoulPath } from "./config.ts";
 import type { ContextInfo, IntegrationInfo } from "./core/agent-runtime.ts";
 import { type AgentConfig, AgentSettingsManager } from "./core/agent-settings-manager.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
@@ -32,6 +32,7 @@ import type {
 	UserBashEventResult,
 } from "./core/extensions/index.ts";
 import type { KeyId } from "./core/keybindings.ts";
+import { readMemoryFile } from "./core/memory.ts";
 import { ModelRegistry } from "./core/model-registry.ts";
 import type { ScopedModel } from "./core/model-resolver.ts";
 import type { ConfiguredPlugin } from "./core/plugin-manager.ts";
@@ -251,6 +252,21 @@ export class Agent {
 
 	get name(): string {
 		return this.config.name;
+	}
+
+	/**
+	 * The agent's one-line purpose: the first non-empty line of its SOUL.md, leading heading
+	 * marks stripped and whitespace collapsed. "" while SOUL.md is still empty (onboarding).
+	 */
+	getPurpose(): string {
+		for (const line of readMemoryFile(getSoulPath(this.name)).split("\n")) {
+			const cleaned = line
+				.replace(/^\s*#+\s*/, "")
+				.replace(/\s+/g, " ")
+				.trim();
+			if (cleaned) return cleaned;
+		}
+		return "";
 	}
 
 	/**
@@ -740,6 +756,11 @@ export class SessionHandle {
 	// ---- Snapshot reads — no round-trip ----
 	get config(): AgentConfig {
 		return this.agent.getAgentState().config;
+	}
+
+	/** The agent's one-line purpose (SOUL.md's first line) — read off the owning agent. */
+	getPurpose(): string {
+		return this.agent.getPurpose();
 	}
 
 	getCwd(): string {

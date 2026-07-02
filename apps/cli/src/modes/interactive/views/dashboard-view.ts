@@ -14,7 +14,6 @@ import {
   type AuthSelectorProvider,
   DEFAULT_THINKING_LEVEL,
   findExactModelReferenceMatch,
-  getAgentPurpose,
   getEditorTheme,
   getSelectListTheme,
   HOME_SLASH_COMMANDS,
@@ -139,7 +138,7 @@ export class DashboardView extends Container implements AppView {
     const items: SelectItem[] = agents.map((agent) => ({
       value: agent.name,
       label: agent.name,
-      description: getAgentPurpose(agent.name),
+      description: agent.getPurpose(),
     }));
     this.list = new SelectList(items, 12, getSelectListTheme());
     this.list.onSelect = (item) => void this.ctx.navigate({ to: "chat", name: item.value });

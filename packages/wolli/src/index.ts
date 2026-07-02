@@ -186,7 +186,6 @@ export {
 	migrateKeybindingsConfig,
 } from "./core/keybindings.ts";
 export {
-	getAgentPurpose,
 	loadMemory,
 	MEMORY_BUDGET,
 	type Memory,

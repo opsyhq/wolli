@@ -53,7 +53,6 @@ import {
 	type ExtensionUIRequest,
 	type ExtensionWidgetOptions,
 	findExactModelReferenceMatch,
-	getAgentPurpose,
 	getAvailableThemesWithPaths,
 	getEditorTheme,
 	getMarkdownTheme,
@@ -476,7 +475,7 @@ export class ChatView extends Container implements AppView {
 	private appendHeader(): void {
 		const config = this.session.config;
 		const lines = [theme.bold(config.name)];
-		const purpose = getAgentPurpose(config.name);
+		const purpose = this.session.getPurpose();
 		if (purpose) {
 			lines.push(theme.fg("dim", purpose));
 		}

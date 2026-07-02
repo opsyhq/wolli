@@ -36,21 +36,6 @@ export function writeMemoryFile(path: string, content: string): void {
 	writeFileSync(path, content, "utf-8");
 }
 
-/**
- * The agent's one-line purpose: the first non-empty line of SOUL.md, leading heading
- * marks stripped and whitespace collapsed. "" when SOUL.md is empty or absent.
- */
-export function getAgentPurpose(name: string): string {
-	for (const line of readMemoryFile(getSoulPath(name)).split("\n")) {
-		const cleaned = line
-			.replace(/^\s*#+\s*/, "")
-			.replace(/\s+/g, " ")
-			.trim();
-		if (cleaned) return cleaned;
-	}
-	return "";
-}
-
 /** Defensive guard for hand-edited files that exceed the budget. */
 function clampToBudget(content: string, budget: number): string {
 	if (content.length <= budget) return content;
