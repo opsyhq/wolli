@@ -261,8 +261,10 @@ function Home() {
 			>
 				<div>
 					{/* Section 0: forming. Future sections are their own hand-written blocks (each with
-					    data-rail-section + a SESSION_URLS entry), free to diverge in styling and movement. */}
-					<div data-rail-section className="py-16 md:min-h-svh md:py-0 md:pt-36">
+					    data-rail-section + a SESSION_URLS entry), free to diverge in styling and movement.
+					    The copy starts ~50svh down the section so it enters the viewport well after the
+					    card, instead of crowding in right behind the hero. */}
+					<div data-rail-section className="py-16 md:min-h-svh md:py-0 md:pt-[50svh]">
 						<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
 							Give each agent a purpose
 						</h2>
