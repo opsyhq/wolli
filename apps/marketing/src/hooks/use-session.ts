@@ -387,8 +387,8 @@ function* replay(messages: AgentMessage[]): Generator<Frame> {
 	if (running) yield { type: "agent_end", messages };
 }
 
-// Fully-fold the replay: the completely revealed transcript (used for the initial/SSR
-// state and available for a static, non-animated render).
+// Fully-fold the replay: the completely revealed transcript (used to fold skipped/done
+// sections to their complete transcript without playing them).
 export function sessionToBlocks(messages: AgentMessage[]): TranscriptBlock[] {
 	let state = initialState();
 	for (const event of replay(messages)) state = applyEvent(state, event);
@@ -489,15 +489,19 @@ export type SectionStatus = "idle" | "playing" | "done";
 
 export interface PlaylistSection {
 	status: SectionStatus;
-	blocks: TranscriptBlock[]; // [] idle; live while playing; folded when done
+	/** Empty while idle; live while playing; the folded full transcript when done. */
+	blocks: TranscriptBlock[];
 	busy: boolean;
 	input: string;
 }
 
 export interface UseSessionPlaylistResult {
-	sections: PlaylistSection[]; // parallel to urls
-	activeIndex: number; // -1 before first activation
-	activate: (index: number) => void; // idempotent; safe to call from a scroll handler
+	/** One slot per url, in playlist order. */
+	sections: PlaylistSection[];
+	/** The section the viewer sees; -1 before the first activation. */
+	activeIndex: number;
+	/** Idempotent; safe to call straight from a scroll handler. */
+	activate: (index: number) => void;
 }
 
 const IDLE_SECTION: PlaylistSection = { status: "idle", blocks: [], busy: false, input: "" };
@@ -531,6 +535,9 @@ export function useSessionPlaylist(urls: string[]): UseSessionPlaylistResult {
 				})
 				.then((text) => loadSession(text, url).messages);
 			fetchesRef.current.set(url, promise);
+			// Evict on rejection so a transient failure (e.g. flaky network during the mount
+			// prefetch) is retried by the next caller instead of bricking the section forever.
+			promise.catch(() => fetchesRef.current.delete(url));
 		}
 		return promise;
 	}, []);

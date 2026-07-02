@@ -1,5 +1,5 @@
 // Chat: the web copy of the wolli chat. It renders the replayed transcript blocks from
-// useSession, mirroring wolli's component + tool-renderer structure (coding-agent's
+// useSessionPlaylist, mirroring wolli's component + tool-renderer structure (coding-agent's
 // modes/interactive/interactive-mode.ts, modes/interactive/components/*, core/tools/*):
 //   - user messages render in a subtle bubble,
 //   - assistant bubbles render TEXT/THINKING only (toolCall blocks are skipped, exactly
