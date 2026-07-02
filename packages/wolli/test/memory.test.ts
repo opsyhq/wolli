@@ -13,7 +13,7 @@ let home: string;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "wolli-test-"));
 	process.env.WOLLI_HOME = home;
-	AgentSettingsManager.createAgent({ name: "scribe", purpose: "notes" });
+	AgentSettingsManager.createAgent({ name: "scribe" });
 });
 
 afterEach(() => {

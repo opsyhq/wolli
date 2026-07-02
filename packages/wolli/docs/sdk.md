@@ -7,7 +7,7 @@ The SDK provides programmatic access to a wolli agent. It has two faces, and whi
 
 > Wolli's RPC transport is **HTTP/SSE over a loopback socket**, not stdin/stdout JSONL. There is no `--mode rpc` subprocess. A client attaches to a running daemon over `http://127.0.0.1:<port>`; the daemon owns the agent's lifecycle and outlives any one client.
 
-If you are building a client against an already-deployed agent, you almost always want the daemon face — start at [Quick Start](#quick-start). If you are embedding the engine itself, read [Core Concepts](#core-concepts).
+If you are building a client against an existing agent, you almost always want the daemon face — start at [Quick Start](#quick-start). If you are embedding the engine itself, read [Core Concepts](#core-concepts).
 
 ## Table of Contents
 
@@ -249,7 +249,7 @@ Build the frozen prompt with `buildSystemPrompt()`, then pass the resulting stri
 import { buildSystemPrompt } from "@opsyhq/wolli";
 
 const systemPrompt = buildSystemPrompt({
-  config,            // AgentConfig (name, purpose, deployedAt)
+  config,            // AgentConfig (name)
   soul,              // frozen SOUL.md snapshot ("" when absent)
   memory,            // frozen MEMORY.md snapshot
   user,              // frozen USER.md snapshot
@@ -259,7 +259,7 @@ const systemPrompt = buildSystemPrompt({
 });
 ```
 
-The prompt is composed from the agent's identity (name + purpose), a frozen snapshot of curated memory (SOUL / MEMORY / USER), a deployed-vs-forming instruction block, and a docs-guidance block. It is **frozen for the session's lifetime** — edits to memory take effect next session.
+The prompt is composed from the agent's identity (its name), a frozen snapshot of curated memory (SOUL / MEMORY / USER), an onboarding block while the SOUL.md snapshot is empty, and a docs-guidance block. It is **frozen for the session's lifetime** — edits to memory take effect next session.
 
 ### Tools
 
@@ -269,7 +269,7 @@ Pass an `AgentTool[]` to `createAgentSession({ tools })`. Wolli ships built-in t
 import {
   createReadTool, createWriteTool, createEditTool,
   createBashTool, createGrepTool, createFindTool, createLsTool,
-  createMemoryTool, createDeployTool,
+  createMemoryTool,
 } from "@opsyhq/wolli";
 ```
 
@@ -289,18 +289,17 @@ Over the daemon client, inspect the resolved set with [`listSkills()` / `listCon
 
 ### Session Management
 
-In-process, sessions come from [`openAgentSession()`](#openagentsession-and-agentruntime-internal-engine) (resume latest / by id / fresh) backed by a `JsonlSessionRepo` tree. Read a stored session tree with `SessionManager`. Over the daemon, the runtime owns session replacement — see [`Agent.createSession()`](#agent) and the `create_session` command. A **forming** (not-yet-deployed) agent refuses new sessions: it stays in its birth session until `deploy`.
+In-process, sessions come from [`openAgentSession()`](#openagentsession-and-agentruntime-internal-engine) (resume latest / by id / fresh) backed by a `JsonlSessionRepo` tree. Read a stored session tree with `SessionManager`. Over the daemon, the runtime owns session replacement — see [`Agent.createSession()`](#agent) and the `create_session` command.
 
 ### Settings Management
 
-`AgentSettingsManager` reads and writes the agent's `agent.json` (`AgentConfig`: name, purpose, createdAt, port, token, the `deployedAt` deploy latch, and a `settings` override block — the default model lives in `settings.defaultModel`, read via `getDefaultModel()`) and the shared settings.
+`AgentSettingsManager` reads and writes the agent's `agent.json` (`AgentConfig`: name, createdAt, port, token, and a `settings` override block — the default model lives in `settings.defaultModel`, read via `getDefaultModel()`) and the shared settings.
 
 ```typescript
 import { AgentSettingsManager } from "@opsyhq/wolli";
 
 const store = AgentSettingsManager.create("my-agent");
 store.getDefaultModel();
-store.getAgentDeployed();
 ```
 
 ## Return Value
@@ -410,7 +409,7 @@ AuthStorage, ModelRegistry    // credentials + model resolution
 AgentSettingsManager          // agent.json (AgentConfig)
 SessionManager                // session tree
 createReadTool, createWriteTool, createEditTool, createBashTool,
-createGrepTool, createFindTool, createLsTool, createMemoryTool, createDeployTool
+createGrepTool, createFindTool, createLsTool, createMemoryTool
 
 // ── Daemon engine (internal, but exported) ──
 AgentRuntime, type AgentRuntimeOptions
@@ -483,16 +482,15 @@ Authorization: Bearer <token>
 | | `compact` | `{ customInstructions? }` |
 | | `wait_for_idle` | resolves when the turn loop is idle |
 | | `clear_queue` | returns the cleared `{ steering, followUp }` |
-| Session | `create_session` | additive; returns the new session snapshot; a forming agent refuses |
+| Session | `create_session` | additive; returns the new session snapshot |
 | | `reload` | re-discover extensions/skills/prompts and rebuild the runner |
-| | `deploy` | flip the deploy latch, install the OS unit, swap to a fresh deployed session |
 | | `shutdown` | ack, then self-exit (frees the fixed port) |
 | State | `get_state` | the session snapshot |
 | | `get_messages` / `get_entries` | conversation messages / tree entries |
 | | `get_commands` | slash commands (extension + prompt + skill) |
 | | `get_resource_summary` | counts + diagnostics |
 | | `get_tool_info` / `get_integration_info` / `get_skills` / `get_plugins` / `get_context_info` | capability reads |
-| Mutation | `seed_assistant_message` / `append_message` | birth opener seed / resumed-message append |
+| Mutation | `seed_assistant_message` / `append_message` | opener seed / resumed-message append |
 | Plugins | `install_plugin` / `remove_plugin` / `update_plugins` | single-writer; the daemon reloads itself after |
 | | `onboard_plugin` | runs the just-installed plugin's integration onboarding |
 | Model | `set_thinking_level` | `{ level }` |
@@ -502,7 +500,7 @@ Authorization: Bearer <token>
 | Auth | `login` / `logout` | `{ provider, authType }`; runs daemon-side, credentials never cross the wire |
 | | `get_login_providers` / `get_logout_providers` | eligible providers |
 
-> This is wolli's set, not pi's. There is no `cycle_model`, `cycle_thinking_level`, `set_steering_mode`/`set_follow_up_mode`, `bash`, `fork`/`clone`/`switch_session`, `export_html`, `get_session_stats`, or `set_session_name`. Wolli adds `deploy`, `shutdown`, `reload`, `create_session`, `install_plugin`/`remove_plugin`/`update_plugins`/`onboard_plugin`, `login`/`logout`/`get_login_providers`/`get_logout_providers`, `get_available_models`, `set_scoped_models`/`set_enabled_models`, and the granular `get_*_info` reads.
+> This is wolli's set, not pi's. There is no `cycle_model`, `cycle_thinking_level`, `set_steering_mode`/`set_follow_up_mode`, `bash`, `fork`/`clone`/`switch_session`, `export_html`, `get_session_stats`, or `set_session_name`. Wolli adds `shutdown`, `reload`, `create_session`, `install_plugin`/`remove_plugin`/`update_plugins`/`onboard_plugin`, `login`/`logout`/`get_login_providers`/`get_logout_providers`, `get_available_models`, `set_scoped_models`/`set_enabled_models`, and the granular `get_*_info` reads.
 
 Example — `set_model`:
 
@@ -645,9 +643,9 @@ The agent collection on disk — holds no required state.
 import { Wolli } from "@opsyhq/wolli";
 
 const wolli = new Wolli();
-wolli.list();                                  // Agent[] — every agent under the agents root
-wolli.get("my-agent");                         // Agent | undefined
-wolli.create("my-agent", { purpose, model }); // create the home tree, return the handle
+wolli.list();                              // Agent[] — every agent under the agents root
+wolli.get("my-agent");                     // Agent | undefined
+await wolli.create("my-agent", { model }); // create the home tree, install + start the OS unit, return the handle
 ```
 
 #### Agent
@@ -664,7 +662,6 @@ await agent.getSession(id);             // open (or return cached) SessionHandle
 await agent.getLatestSession();         // the most-recent session (the daemon guarantees one exists)
 
 await agent.createSession();            // additive: a fresh session snapshot (caller switches to it)
-await agent.deploy();                   // commit the deploy + drive the stop-then-start daemon handoff
 await agent.restart();                  // bounce the daemon so it picks up code changes
 await agent.delete();                   // uninstall the OS unit, stop the daemon, delete the home dir
 
@@ -672,7 +669,7 @@ const off = agent.on("sessionAdded", (s) => { /* … */ });  // control-stream l
 agent.close();                          // close every session stream + the control stream
 ```
 
-> `connect()` opens **no** session — call `getSession(id)` / `getLatestSession()` afterward. `createSession`/`deploy` are agent-level (they spawn a session and may swap the transport), so they live on `Agent`, not `SessionHandle`.
+> `connect()` opens **no** session — call `getSession(id)` / `getLatestSession()` afterward. `createSession` is agent-level (it spawns a session), so it lives on `Agent`, not `SessionHandle`.
 
 #### SessionHandle
 
@@ -748,8 +745,8 @@ Per-agent on-disk layout (`~/.wolli/agents/<name>/`):
 
 ```
 agents/<name>/
-  agent.json        AgentConfig: name, purpose, port, token, deployedAt latch, settings (incl. defaultModel)
-  SOUL.md           who the agent is / what it's for (authored at deploy)
+  agent.json        AgentConfig: name, port, token, settings (incl. defaultModel)
+  SOUL.md           who the agent is / what it's for (authored by the agent; first line is its purpose)
   MEMORY.md         durable notes (edited via the memory tool)
   USER.md           facts about the human
   sessions/         JsonlSessionRepo session tree

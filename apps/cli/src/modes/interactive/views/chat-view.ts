@@ -57,7 +57,6 @@ import {
 	getEditorTheme,
 	getMarkdownTheme,
 	getThemeByName,
-	isDeployed,
 	isValidThinkingLevel,
 	keyDisplayText,
 	type KeyId,
@@ -111,15 +110,6 @@ const DEFAULT_HIDDEN_THINKING_LABEL = "Thinking...";
 
 /** Cap on total widget lines so an extension widget can't push the editor off-screen. */
 const MAX_WIDGET_LINES = 10;
-
-/**
- * Sent to the agent when the human types `/deploy` — it nudges the agent to call the
- * deploy tool with its distilled purpose + final SOUL.md. The tool runs, then the
- * human confirms via the Yes/No dialog before the latch flips; `/deploy` is just the
- * nudge, not the consent (so there is one path: tool → confirm → deploy).
- */
-const DEPLOY_INSTRUCTION =
-	"Your human asked you to deploy. If you're ready, call the deploy tool now with your distilled purpose and final SOUL.md.";
 
 /**
  * Constructor opts decided by the CLI/main layer and read in the startup method.
@@ -180,8 +170,8 @@ export class ChatView extends Container implements AppView {
 	private readonly widgetContainerBelow: Container;
 	private readonly footerContainer: Container;
 	private readonly footerDataProvider: FooterDataProvider;
-	// Extension dialogs swapped into editorContainer (like the deploy selector), the widgets
-	// rendered around the editor, and the custom header/footer currently installed.
+	// Extension dialogs swapped into editorContainer, the widgets rendered around the
+	// editor, and the custom header/footer currently installed.
 	private extensionInput?: ExtensionInputComponent;
 	private extensionEditor?: ExtensionEditorComponent;
 	private readonly extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
@@ -229,14 +219,9 @@ export class ChatView extends Container implements AppView {
 	private isBashMode = false;
 	private bashComponent?: BashExecutionComponent;
 	private bashAbortController?: AbortController;
-	// Deploy flow state. The deploy tool (forming-only) writes the agent's purpose +
-	// SOUL.md but does NOT flip the latch — the human confirms here, symmetric with
-	// SOUL being written-but-unconfirmed. `extensionSelector` is the Yes/No dialog
-	// (see showExtensionConfirm). `deployToolCallId`/`deployToolErrored` track the
-	// in-flight deploy tool call so agent_end knows it ran and whether it succeeded.
+	// The selector dialog extensions raise (select/confirm), swapped into editorContainer
+	// while open — see showExtensionSelector/showExtensionConfirm.
 	private extensionSelector?: ExtensionSelectorComponent;
-	private deployToolCallId?: string;
-	private deployToolErrored = false;
 	// Editor autocomplete (the slash-command menu). The engine —
 	// `CombinedAutocompleteProvider` plus the SelectList dropdown — lives in
 	// `@opsyhq/tui`; this layer only builds the provider from the live command set and
@@ -490,12 +475,9 @@ export class ChatView extends Container implements AppView {
 	private appendHeader(): void {
 		const config = this.session.config;
 		const lines = [theme.bold(config.name)];
-		const trimmedPurpose = config.purpose.trim();
-		if (trimmedPurpose) {
-			lines.push(theme.fg("dim", trimmedPurpose));
-		}
-		if (!isDeployed(config)) {
-			lines.push(theme.fg("dim", "Forming — it'll ask to deploy when ready, or type /deploy."));
+		const purpose = this.session.getPurpose();
+		if (purpose) {
+			lines.push(theme.fg("dim", purpose));
 		}
 		// Bash key hints, joined with a compact " · " separator. The header is a reduced
 		// plain-text form, so the hints live here.
@@ -540,13 +522,7 @@ export class ChatView extends Container implements AppView {
 		if (trimmed.length === 0) return;
 
 		// Built-in slash commands are intercepted before reaching the model via a
-		// hardcoded dispatch in onSubmit. `/deploy` is the human's go-ahead to deploy
-		// (no args — the agent authors its own purpose).
-		if (trimmed === "/deploy") {
-			this.editor.setText("");
-			await this.handleDeployCommand();
-			return;
-		}
+		// hardcoded dispatch in onSubmit.
 		// `/new` — start a fresh session and switch to it.
 		if (trimmed === "/new") {
 			this.editor.setText("");
@@ -673,80 +649,10 @@ export class ChatView extends Container implements AppView {
 	}
 
 	/**
-	 * `/deploy` — the human's nudge to deploy. It cannot deploy on its own: it prompts
-	 * the agent to author its purpose + final SOUL.md via the deploy tool, and the
-	 * post-tool Yes/No confirm (finalizeDeploy) is what actually flips the latch. One
-	 * path only — `/deploy` always nudges, the tool runs, the human confirms, deploy.
-	 */
-	private async handleDeployCommand(): Promise<void> {
-		if (isDeployed(this.session.config)) {
-			this.appendErrorLine("Already deployed.");
-			this.ui.requestRender();
-			return;
-		}
-		// Nudge the agent to author its purpose + SOUL.md via the deploy tool. When the tool
-		// finishes (agent_end), finalizeDeploy asks the human to confirm. The nudge is a
-		// command, not a user turn, so no `/deploy` bubble is rendered (its DEPLOY_INSTRUCTION
-		// is suppressed in handleEvent's user message_start branch).
-		this.statusContainer.clear();
-		this.ui.requestRender();
-		try {
-			await this.session.prompt(DEPLOY_INSTRUCTION);
-		} catch (error) {
-			if (error instanceof AgentHarnessError && error.code === "busy") return;
-			this.appendErrorLine(error instanceof Error ? error.message : String(error));
-			this.ui.requestRender();
-		}
-	}
-
-	/**
-	 * Called at agent_end when the deploy tool ran successfully. Always confirm with a
-	 * Yes/No dialog before deploying: the tool finishes, the UI asks, the human decides.
-	 */
-	private async finalizeDeploy(): Promise<void> {
-		this.deployToolCallId = undefined;
-		const confirmed = await this.showExtensionConfirm(
-			`Deploy "${this.session.config.name}"?`,
-			"Its purpose and SOUL.md are written. It will start now as a persistent background service (and relaunch on login/boot), in a fresh session.",
-		);
-		if (!confirmed) {
-			this.chatContainer.addChild(
-				new Text(theme.fg("dim", "Deploy cancelled — keep forming, or /deploy when ready."), 1, 0),
-			);
-			this.ui.requestRender();
-			return;
-		}
-		await this.doDeploy();
-	}
-
-	/**
-	 * Commit the deploy. The daemon flips the latch, registers the OS service unit, and creates a fresh
-	 * deployed session (with a real backend it also stands up the supervised daemon and re-points the
-	 * client transport onto it). The App then replaces this chat with the new session's.
-	 */
-	private async doDeploy(): Promise<void> {
-		try {
-			const sessionId = await this.ctx.deploy();
-			await this.ctx.switchSession(sessionId);
-		} catch (error) {
-			this.appendErrorLine(error instanceof Error ? error.message : String(error));
-			this.ui.requestRender();
-		}
-	}
-
-	/**
 	 * `/new` — create a fresh session (additive: the daemon keeps the others live) and have the App
-	 * switch to its chat. While the agent is still forming it stays in its single birth session, so
-	 * `/new` is refused here (the primary guard) and again by the daemon (the birth-session invariant).
+	 * switch to its chat.
 	 */
 	private async handleNewCommand(): Promise<void> {
-		if (!isDeployed(this.session.config)) {
-			this.appendErrorLine(
-				"This agent is still forming — it stays in its birth session until it deploys. Type /deploy when it's ready.",
-			);
-			this.ui.requestRender();
-			return;
-		}
 		try {
 			const sessionId = await this.ctx.createSession();
 			await this.ctx.switchSession(sessionId);
@@ -1231,8 +1137,7 @@ export class ChatView extends Container implements AppView {
 	/**
 	 * Show a selector dialog: swap the editor for the selector in `editorContainer`, focus
 	 * it (the TUI then routes input to it), and resolve when the user picks or cancels. An
-	 * optional signal/timeout dismisses it programmatically — the deploy confirm passes
-	 * neither; extensions may.
+	 * optional signal/timeout dismisses it programmatically.
 	 */
 	private showExtensionSelector(
 		title: string,
@@ -1915,9 +1820,7 @@ export class ChatView extends Container implements AppView {
 			case "message_start":
 				if (event.message.role === "user") {
 					// User-role turns (typed, or injected from an integration like Telegram)
-					// render their bubble straight from the event. The `/deploy` nudge is a
-					// command, not a user turn, so its injected instruction shows no bubble.
-					if (this.getUserMessageText(event.message) === DEPLOY_INSTRUCTION) break;
+					// render their bubble straight from the event.
 					this.addMessageToChat(event.message);
 					this.updatePendingMessagesDisplay();
 				} else if (isAssistantMessage(event.message) && event.message.stopReason !== "error" && event.message.stopReason !== "aborted") {
@@ -1938,12 +1841,6 @@ export class ChatView extends Container implements AppView {
 				this.updatePendingMessagesDisplay();
 				break;
 			case "tool_execution_start": {
-				// Track the deploy tool so agent_end knows it ran (the tool writes the
-				// agent's purpose + SOUL.md; the human-held latch is flipped here, not there).
-				if (event.toolName === "deploy") {
-					this.deployToolCallId = event.toolCallId;
-					this.deployToolErrored = false;
-				}
 				let component = this.pendingTools.get(event.toolCallId);
 				if (!component) {
 					component = new ToolExecutionComponent(
@@ -1977,19 +1874,11 @@ export class ChatView extends Container implements AppView {
 					component.updateResult({ ...event.result, isError: event.isError });
 					this.pendingTools.delete(event.toolCallId);
 				}
-				if (event.toolCallId === this.deployToolCallId) {
-					this.deployToolErrored = event.isError;
-				}
 				break;
 			}
 			case "agent_end":
 				this.setBusy(false);
 				this.pendingTools.clear();
-				// If the deploy tool ran and succeeded this turn, confirm + deploy now
-				// that the turn has settled. Detached: finalizeDeploy awaits a UI dialog.
-				if (this.deployToolCallId && !this.deployToolErrored) {
-					void this.finalizeDeploy();
-				}
 				break;
 			case "compaction_start": {
 				// Keep the editor active; submissions are queued during compaction. Repurpose Escape to

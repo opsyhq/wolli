@@ -26,7 +26,7 @@ let env: Environment;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "wolli-test-"));
 	process.env.WOLLI_HOME = home;
-	AgentSettingsManager.createAgent({ name: "scribe", purpose: "notes" });
+	AgentSettingsManager.createAgent({ name: "scribe" });
 	dir = getAgentDir("scribe");
 	env = createHostEnvironment(dir);
 });

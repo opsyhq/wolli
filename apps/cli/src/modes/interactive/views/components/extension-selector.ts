@@ -1,7 +1,6 @@
 /**
  * Generic selector component: displays a list of string options with keyboard
- * navigation. wolli uses it as the Yes/No dialog the deploy flow drives directly
- * (see ChatView.showExtensionConfirm).
+ * navigation. wolli uses it as the Yes/No dialog behind ChatView.showExtensionConfirm.
  */
 
 import { Container, getKeybindings, Spacer, Text, type TUI } from "@opsyhq/tui";

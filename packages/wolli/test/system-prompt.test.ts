@@ -13,7 +13,7 @@ let home: string;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "wolli-test-"));
 	process.env.WOLLI_HOME = home;
-	AgentSettingsManager.createAgent({ name: "scribe", purpose: "Keep meeting notes" });
+	AgentSettingsManager.createAgent({ name: "scribe" });
 });
 
 afterEach(() => {
@@ -22,10 +22,10 @@ afterEach(() => {
 });
 
 describe("buildSystemPrompt", () => {
-	it("includes the agent identity and purpose", () => {
+	it("includes the agent identity and no purpose line", () => {
 		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
 		expect(prompt).toContain("You are scribe");
-		expect(prompt).toContain("Keep meeting notes");
+		expect(prompt).not.toContain("Your purpose:");
 	});
 
 	it("always renders the curated-file sections, empty marked", () => {
@@ -70,36 +70,41 @@ describe("buildSystemPrompt", () => {
 	});
 });
 
-describe("birth instruction (deploy)", () => {
-	it("appends the birth instruction when not yet deployed", () => {
-		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
-		expect(prompt).toContain("not yet deployed");
-		expect(prompt).toContain("`deploy` tool");
-		expect(prompt).toContain("/deploy");
+describe("onboarding instruction", () => {
+	it("appends the onboarding block while SOUL.md is empty", () => {
+		for (const soul of ["", "   \n\t\n", undefined]) {
+			const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config, soul });
+			expect(prompt).toContain("your SOUL.md is empty");
+			expect(prompt).toContain("write SOUL.md yourself with the file tools");
+		}
 	});
 
-	it("gates deploy on being able to do the job", () => {
+	it("gates settling on a purpose on being able to do the job", () => {
 		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
 		expect(prompt).toContain("make sure you can actually do the job");
-		expect(prompt).toContain("never deploy into a purpose you have no way to fulfill");
+		expect(prompt).toContain("never settle into a purpose you have no way to fulfill");
 	});
 
-	it("omits the birth instruction once deployed", () => {
-		AgentSettingsManager.create("scribe").setAgentDeployed();
-		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
-		expect(prompt).not.toContain("not yet deployed");
+	it("omits the onboarding block once SOUL.md has content", () => {
+		const prompt = buildSystemPrompt({
+			config: AgentSettingsManager.create("scribe").config,
+			soul: "I am the scribe",
+		});
+		expect(prompt).not.toContain("your SOUL.md is empty");
 		expect(prompt).toContain("## Extending yourself");
 	});
 });
 
 describe("always-on guidance", () => {
-	it("includes the Extending yourself block whether forming or deployed", () => {
-		const forming = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
-		expect(forming).toContain("## Extending yourself");
+	it("includes the Extending yourself block with and without a SOUL.md", () => {
+		const onboarding = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
+		expect(onboarding).toContain("## Extending yourself");
 
-		AgentSettingsManager.create("scribe").setAgentDeployed();
-		const deployed = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
-		expect(deployed).toContain("## Extending yourself");
+		const settled = buildSystemPrompt({
+			config: AgentSettingsManager.create("scribe").config,
+			soul: "I am the scribe",
+		});
+		expect(settled).toContain("## Extending yourself");
 	});
 
 	it("enumerates the full doc set", () => {

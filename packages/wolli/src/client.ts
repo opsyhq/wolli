@@ -16,7 +16,7 @@ import {
 	type Model,
 } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, AgentMessage, SessionContext, SessionTreeEntry, ThinkingLevel } from "@opsyhq/agent";
-import { getDaemonHost, getDaemonToken, getHomeDir } from "./config.ts";
+import { getDaemonHost, getDaemonToken, getHomeDir, getSoulPath } from "./config.ts";
 import type { ContextInfo, IntegrationInfo } from "./core/agent-runtime.ts";
 import { type AgentConfig, AgentSettingsManager } from "./core/agent-settings-manager.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
@@ -32,6 +32,7 @@ import type {
 	UserBashEventResult,
 } from "./core/extensions/index.ts";
 import type { KeyId } from "./core/keybindings.ts";
+import { readMemoryFile } from "./core/memory.ts";
 import { ModelRegistry } from "./core/model-registry.ts";
 import type { ScopedModel } from "./core/model-resolver.ts";
 import type { ConfiguredPlugin } from "./core/plugin-manager.ts";
@@ -166,9 +167,32 @@ export class Wolli {
 		return store ? new Agent(store.config) : undefined;
 	}
 
-	/** Create the agent's home tree and return its handle. */
-	create(name: string, opts: { purpose?: string; model?: string } = {}): Agent {
-		return new Agent(AgentSettingsManager.createAgent({ name, ...opts }).config);
+	/**
+	 * Create the agent's home tree, install + start its OS service unit, and return its handle once the
+	 * daemon is healthy. On a failed start the unit and home tree are rolled back. The `none` backend
+	 * has no supervisor — `connect()` spawns a detached daemon on attach.
+	 */
+	async create(name: string, opts: { model?: string } = {}): Promise<Agent> {
+		const store = AgentSettingsManager.createAgent({ name, ...opts });
+		const agent = new Agent(store.config);
+		const service = getServiceManager();
+		if (service.kind === "none") return agent;
+		try {
+			service.install(name);
+			service.start(name);
+			await waitForHealth(`http://${getDaemonHost()}:${store.config.port}`);
+		} catch (error) {
+			// Roll back through the one teardown path: uninstall the unit (also boots out a
+			// crash-looping one), stop any daemon that did come up, delete the home tree.
+			await agent.delete();
+			throw new Error(
+				`Could not start the ${service.kind} service for "${name}": ` +
+					`${error instanceof Error ? error.message : String(error)} ` +
+					`(set WOLLI_SERVICE_MANAGER=none to create agents without OS supervision)`,
+				{ cause: error },
+			);
+		}
+		return agent;
 	}
 
 	/**
@@ -203,15 +227,15 @@ export interface AgentControlEvents {
 /**
  * One agent: registry data, per-agent lifecycle, and the `fetch`/SSE transport to its per-agent daemon
  * — the single `fetch` site (`send`), the root control stream (agent snapshot + session lifecycle), and
- * the `SessionHandle` map. Per-session work rides a `SessionHandle` from `getSession(id)`; agent-level
- * session ops (`createSession`/`deploy`) live here, since they spawn a new session and may swap transport.
+ * the `SessionHandle` map. Per-session work rides a `SessionHandle` from `getSession(id)`; the
+ * agent-level session op (`createSession`) lives here, since it spawns a new session.
  */
 export class Agent {
 	readonly config: AgentConfig;
 	/** The resident `SessionHandle`s, keyed by session id. */
 	readonly sessions = new Map<string, SessionHandle>();
 
-	// Not readonly: a deploy handoff re-points the transport at the supervised daemon.
+	// Set by connect(), which may run after construction.
 	private base?: string;
 	private token?: string;
 	private agentState?: DaemonAgentState;
@@ -228,6 +252,21 @@ export class Agent {
 
 	get name(): string {
 		return this.config.name;
+	}
+
+	/**
+	 * The agent's one-line purpose: the first non-empty line of its SOUL.md, leading heading
+	 * marks stripped and whitespace collapsed. "" while SOUL.md is still empty (onboarding).
+	 */
+	getPurpose(): string {
+		for (const line of readMemoryFile(getSoulPath(this.name)).split("\n")) {
+			const cleaned = line
+				.replace(/^\s*#+\s*/, "")
+				.replace(/\s+/g, " ")
+				.trim();
+			if (cleaned) return cleaned;
+		}
+		return "";
 	}
 
 	/**
@@ -339,44 +378,6 @@ export class Agent {
 		return this.send<DaemonSessionState>(latest.sessionId, { type: "create_session" });
 	}
 
-	/**
-	 * Commit the deploy. The daemon flips the latch, enables the OS unit, and creates a fresh deployed
-	 * session (returned). With a real backend the client then drives a stop-then-start handoff on the fixed
-	 * port: shut the birth daemon down, start the unit's daemon (same port, resumes the session), reconnect.
-	 * Brief socket gap, no state loss (session on disk). The `none` backend has no supervisor, so the birth
-	 * daemon stays put.
-	 */
-	async deploy(): Promise<DaemonSessionState> {
-		const { port, token: persisted } = AgentSettingsManager.create(this.name).config;
-		const base = `http://${getDaemonHost()}:${port}`;
-		const token = getDaemonToken() || persisted;
-		// Routed like create_session (agent-global, but posted to a session's /control): use the latest.
-		const [latest] = this.getAgentState().sessions;
-		if (!latest) throw new Error(`No session for agent "${this.name}".`);
-		// Birth daemon's boot time, so the handoff waits for its replacement (see waitForRestart).
-		const birthStartedAt = (await getDaemonInfo(base))?.startedAt ?? null;
-		const snap = await this.send<DaemonSessionState>(latest.sessionId, { type: "deploy" });
-
-		if (getServiceManager().kind === "none") return snap;
-
-		// Stop the birth daemon, wait for the fixed port to free, then start the supervised unit's daemon
-		// on it and wait for that replacement before reconnecting.
-		await requestDaemonShutdown(base, token);
-		await waitForShutdown(base);
-		getServiceManager().start(this.name);
-		await waitForRestart(base, birthStartedAt);
-
-		// Reconnect onto the (same-address) supervised daemon: close the old control + session streams
-		// (sessions reopen on the new daemon) and reconnect.
-		this.controlStream?.close();
-		for (const handle of this.sessions.values()) handle.close();
-		this.sessions.clear();
-		this.base = base;
-		this.token = token;
-		await this.openControlStream(base, token);
-		return snap;
-	}
-
 	/** Open the root control stream, capture the agent snapshot from its hello, fan lifecycle frames out. */
 	private async openControlStream(base: string, token: string): Promise<void> {
 		this.controlStream = new SseStream(`${base}/events`, token);
@@ -403,8 +404,8 @@ export class Agent {
 
 	/**
 	 * Tear the agent down: uninstall the OS service (so a supervised daemon won't relaunch), ask any
-	 * daemon still running to shut down (a birth daemon has no unit but is a live process), then delete
-	 * the home dir. `AgentSettingsManager.delete` touches only the agent home.
+	 * daemon still running to shut down (a `none`-backend daemon has no unit but is a live process),
+	 * then delete the home dir. `AgentSettingsManager.delete` touches only the agent home.
 	 */
 	async delete(): Promise<{ ok: boolean; method: "trash" | "unlink"; error?: string }> {
 		getServiceManager().uninstall(this.name);
@@ -423,7 +424,7 @@ export class Agent {
 	/**
 	 * Restart the agent's daemon so it picks up code changes (the in-process reload rebuilds only
 	 * resources, not the running binary). A supervised daemon (launchd/systemd unit) is bounced via the
-	 * service manager; an unsupervised dev/birth daemon is asked to exit and respawned here. Resolves once
+	 * service manager; an unsupervised dev daemon is asked to exit and respawned here. Resolves once
 	 * the replacement is healthy; sessions resume from disk, so in-memory turn state is lost.
 	 */
 	async restart(): Promise<void> {
@@ -440,7 +441,7 @@ export class Agent {
 			await waitForShutdown(base);
 			service.start(this.name);
 		} else {
-			// Unsupervised dev/birth daemon: ask it to exit, wait for the port, then respawn it directly.
+			// Unsupervised dev daemon: ask it to exit, wait for the port, then respawn it directly.
 			await requestDaemonShutdown(base, token);
 			await waitForShutdown(base);
 			const [command, ...commandArgs] = daemonLaunchCommand(this.name);
@@ -755,6 +756,11 @@ export class SessionHandle {
 	// ---- Snapshot reads — no round-trip ----
 	get config(): AgentConfig {
 		return this.agent.getAgentState().config;
+	}
+
+	/** The agent's one-line purpose (SOUL.md's first line) — read off the owning agent. */
+	getPurpose(): string {
+		return this.agent.getPurpose();
 	}
 
 	getCwd(): string {

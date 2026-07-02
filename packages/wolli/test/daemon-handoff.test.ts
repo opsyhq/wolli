@@ -1,5 +1,5 @@
 /**
- * The deploy/restart handoff must wait for the *replacement* daemon, not just any `/health` 200: undici
+ * The restart handoff must wait for the *replacement* daemon, not just any `/health` 200: undici
  * keep-alive can answer a probe from the old daemon before the replacement has bound the reused port, so
  * `waitForRestart` keys on the reported `startedAt`. Exercised against a fake `/health` whose `startedAt`
  * is flipped under the test's control (old daemon lingering, then the replacement coming up).

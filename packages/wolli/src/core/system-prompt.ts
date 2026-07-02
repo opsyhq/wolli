@@ -1,12 +1,14 @@
 /**
  * System prompt construction.
  *
- * The prompt is built from the agent's identity (name + purpose) plus a frozen
- * snapshot of curated memory (read once at session start — see core/memory.ts).
+ * The prompt is built from the agent's identity (its name) plus a frozen snapshot
+ * of curated memory (read once at session start — see core/memory.ts). While the
+ * SOUL.md snapshot is empty, an onboarding block is appended.
  */
 
 import { APP_NAME, getBuiltInSkillsDir, getDocsPath, getPluginsDir, getReadmePath } from "../config.ts";
 import type { AgentConfig } from "./agent-settings-manager.ts";
+import { SOUL_BUDGET } from "./memory.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {
@@ -29,29 +31,26 @@ export interface BuildSystemPromptOptions {
 	appendSystemPrompt?: string;
 }
 
-const BIRTH_INSTRUCTION = [
-	"## You are forming — not yet deployed",
+const ONBOARDING_INSTRUCTION = [
+	"## Getting started — your SOUL.md is empty",
 	"",
-	"You cannot act unattended yet. This session exists to make you real: open the conversation yourself,",
-	"then interview your human hard — one sharp question at a time — until you understand what you are for",
-	"and who they are. Record with the memory tool only what will still matter next session: USER = stable",
-	"facts about your human (name, role, timezone, how they work, standing constraints); MEMORY = your own",
-	"durable notes. Their answers are raw material, not gospel — distill what you're",
-	"really for, push back, and ask the follow-up. Do not hand-write SOUL.md and do not start doing the",
-	"job yet; first become yourself.",
+	"This session exists to make you real: interview your human hard — one sharp question at a time —",
+	"until you understand what you are for and who they are. Record with the memory tool only what will",
+	"still matter next session: USER = stable facts about your human (name, role, timezone, how they work,",
+	"standing constraints); MEMORY = your own durable notes. Their answers are raw material, not gospel —",
+	"distill what you're really for, push back, and ask the follow-up.",
 	"",
-	"Before you deploy, make sure you can actually do the job — do not set yourself up to fail. Work out",
-	"what your purpose needs to reach the outside world (a calendar, email, a chat channel, some API) and",
-	"confirm you have it or can get it: a tool you already hold, a ready-made plugin from the bundled",
-	"plugins folder (below) that your human installs and onboards, or an integration you author yourself",
-	"(read the docs above first). If a required connection is missing, surface it now and get it set up —",
-	"never deploy into a purpose you have no way to fulfill.",
+	"Before you settle on a purpose, make sure you can actually do the job — do not set yourself up to",
+	"fail. Work out what your purpose needs to reach the outside world (a calendar, email, a chat channel,",
+	"some API) and confirm you have it or can get it: a tool you already hold, a ready-made plugin from",
+	"the bundled plugins folder (path above) that your human installs and onboards, or an integration you",
+	"author yourself (read the docs above first). If a required connection is missing, surface it now and",
+	"get it set up — never settle into a purpose you have no way to fulfill.",
 	"",
-	"SOUL.md (who you are, what you're for, how you operate) is authored at the moment you deploy. The",
-	"instant the two of you agree on your purpose and you can actually carry it out, call the `deploy` tool",
-	"with your distilled purpose and final SOUL.md; your human confirms. Drive toward that — don't drift.",
-	"Your human may also type /deploy to trigger it themselves (optionally with a purpose to use instead",
-	"of yours).",
+	"When the two of you agree on what you are, write SOUL.md yourself with the file tools — who you are,",
+	"what you're for, how you operate. Its first line must be one tight purpose statement: it becomes your",
+	`description everywhere. Keep the whole file well under ${SOUL_BUDGET} characters. Once SOUL.md has`,
+	"content, this block disappears.",
 ].join("\n");
 
 const EXTENDING_YOURSELF = [
@@ -77,9 +76,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	// The extension runner constructs a `{ cwd }`-only placeholder (no config); the real
 	// call site always passes config, so this guard only covers that path.
 	if (!config) return "";
-	const purpose = config.purpose.trim() || "(no purpose recorded)";
 
-	const parts = [`You are ${config.name}, a persistent, purposeful agent.`, "", "Your purpose:", purpose];
+	const parts = [`You are ${config.name}, a persistent, purposeful agent.`];
 
 	const soul = options.soul ?? "";
 	const memory = options.memory ?? "";
@@ -91,8 +89,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		"",
 		"These are who you are and what you know — a frozen snapshot here (read-only this session; edits save",
 		"immediately but become effective next session). Each is modifiable on its own:",
-		"- SOUL.md — who you are, what you're for, how you operate. Authored when you deploy; once deployed you",
-		"  rewrite it yourself with the bash tool.",
+		"- SOUL.md — who you are, what you're for, how you operate. Yours to author and rewrite with the file",
+		"  tools; its first line must be your one-line purpose statement.",
 		"- MEMORY.md — your own durable notebook: knowledge, decisions, and learnings you accumulate. Edit it with the memory tool.",
 		"- USER.md — durable facts about your human: name, role, timezone, how they like to work, lasting constraints. Edit it with the memory tool.",
 		"- Save to either only what will still matter in a future session.",
@@ -124,8 +122,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		`- Always read ${APP_NAME} .md files completely and follow links to related docs`,
 	);
 
-	if (!config.deployedAt) {
-		parts.push("", BIRTH_INSTRUCTION);
+	if (!soul.trim()) {
+		parts.push("", ONBOARDING_INSTRUCTION);
 	}
 
 	// Skills are appended to the frozen prompt. formatSkillsForPrompt

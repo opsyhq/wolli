@@ -39,7 +39,6 @@ export {
 	AgentConfigSchema,
 	AgentSettingsManager,
 	type CreateAgentOptions,
-	isDeployed,
 	isValidAgentName,
 } from "./core/agent-settings-manager.ts";
 export {
@@ -223,7 +222,7 @@ export {
 	type CreateAgentSessionResult,
 	createAgentSession,
 } from "./core/sdk.ts";
-// OS service backend (deploy/delete + the daemon entry use it to keep a deployed agent always-on).
+// OS service backend (create/delete + the daemon entry use it to keep an agent always-on).
 export { detectServiceManager, type ServiceKind, type ServiceManager } from "./core/service/service-manager.ts";
 export {
 	type OpenAgentSessionOptions,
@@ -257,7 +256,6 @@ export { BUILTIN_SLASH_COMMANDS, HOME_SLASH_COMMANDS } from "./core/slash-comman
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export { type BuildSystemPromptOptions, buildSystemPrompt } from "./core/system-prompt.ts";
 export { type BashToolDetails, type BashToolInput, createBashTool } from "./core/tools/bash.ts";
-export { createDeployTool, type DeployToolDetails } from "./core/tools/deploy.ts";
 export { createEditTool, type EditToolDetails, type EditToolInput } from "./core/tools/edit.ts";
 // edit-diff render helpers consumed by the apps/cli built-in edit renderer (Phase 2, Slice 1).
 export {

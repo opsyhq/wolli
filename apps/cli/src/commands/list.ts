@@ -11,7 +11,7 @@ export function runList(): number {
 		return 0;
 	}
 	for (const agent of agents) {
-		const purpose = agent.config.purpose.trim().replace(/\s+/g, " ");
+		const purpose = agent.getPurpose();
 		const summary = purpose.length > 72 ? `${purpose.slice(0, 69)}...` : purpose;
 		console.log(`${agent.name}  —  ${summary}`);
 	}

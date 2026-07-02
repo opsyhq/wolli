@@ -19,6 +19,10 @@
 - Always ask before removing functionality or code that appears intentional.
 - Do not preserve backward compatibility unless the user asks for it.
 
+## Local Development
+
+- `wolli new` from a checkout registers a real boot-persistent launchd/systemd unit pointing at the checkout; set `WOLLI_SERVICE_MANAGER=none` in dev so daemons stay unsupervised.
+
 ## Clauses
 
 1. Ask, don't assume. if something is unclear, ask before writing a single line. Never make silent assumptuions about intent, architecture, or requirements.

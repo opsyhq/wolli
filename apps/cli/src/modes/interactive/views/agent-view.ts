@@ -1,6 +1,6 @@
 /** Agent detail page: config header plus live capability sections read from the daemon. */
 
-import { type Agent, type SessionHandle, isDeployed, theme } from "@opsyhq/wolli";
+import { type Agent, type SessionHandle, theme } from "@opsyhq/wolli";
 import { type Component, Container, matchesKey, type OverlayHandle, Spacer, Text } from "@opsyhq/tui";
 import type { AppView, ViewContext } from "../app.ts";
 import { DeleteConfirm } from "./components/delete-confirm.ts";
@@ -22,12 +22,10 @@ export class AgentView extends Container implements AppView {
 		const config = this.agent.config;
 
 		this.addChild(new Text(theme.bold(config.name), 1, 0));
-		const deployed = isDeployed(config);
-		const when = deployed && config.deployedAt ? config.deployedAt : config.createdAt;
-		this.addChild(new Text(theme.fg("dim", `${deployed ? "Deployed" : "Forming"} · ${when}`), 1, 0));
+		this.addChild(new Text(theme.fg("dim", `Created ${config.createdAt}`), 1, 0));
 		this.addChild(new Spacer(1));
 
-		const purpose = config.purpose.trim();
+		const purpose = this.agent.getPurpose();
 		if (purpose) {
 			this.addChild(new Text(purpose, 1, 0));
 			this.addChild(new Spacer(1));

@@ -1,10 +1,10 @@
 /**
- * `new <name>` — create an agent, then drop into its birth conversation.
+ * `new <name>` — create an agent, then drop into its first conversation.
  *
- * Creates the home tree (allocating the agent's fixed port + token into agent.json), then opens a
- * daemon client and runs the interactive birth session seeded with the opener. Birth is daemon-first:
- * abandoning a forming agent leaves only a detached daemon that idles out — no OS service unit (those
- * land only at deploy). The daemon binds the fixed port from agent.json.
+ * Creates the home tree (allocating the agent's fixed port + token into agent.json) and provisions
+ * the OS service unit — the agent's daemon is always-on from creation (with the `none` backend a
+ * detached daemon spawns on attach instead). Then opens a daemon client and runs the interactive
+ * session seeded with the opener. The daemon binds the fixed port from agent.json.
  */
 
 import { APP_NAME, Wolli } from "@opsyhq/wolli";
@@ -24,10 +24,10 @@ export async function runNew(positionals: string[]): Promise<number> {
 
 	// `create` throws on an invalid name; cli.ts's top-level handler prints the message and exits 1
 	// (identical to a local catch), and `agent.connect()` already bubbles there — so no local try/catch.
-	const agent = wolli.create(name);
+	const agent = await wolli.create(name);
 	process.stdout.write(`Created agent "${agent.config.name}".\n`);
 
-	// Drop into the birth chat (seeded with the opener). App opens the daemon session for the route.
+	// Drop into the chat (seeded with the opener). App opens the daemon session for the route.
 	const app = new App(wolli);
 	await app.start({ to: "chat", name: agent.name, initialAssistantMessage: BIRTH_OPENER });
 	return 0;

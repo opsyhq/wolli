@@ -26,25 +26,25 @@ wolli
 ```
 
 The first run sets up your provider and creates your first agent. A new agent
-starts in a **forming** state: it interviews you to work out its purpose and
-records what it learns, and does not act unattended until you deploy it. Agents and
-state live under `~/.wolli`. `●` deployed and `○` forming.
+opens by interviewing you to work out its purpose, then writes its own
+`SOUL.md` — its first line becomes the agent's description everywhere. Agents
+and state live under `~/.wolli`.
 
 ```
  Agents
 
- → ● inbox    Triage my email each morning, draft replies to the routine ones, flag what needs me.
-   ● scout    Watch the repos and deps we ship; when a release or CVE needs action, open an issue and ping me.
-   ● ledger   Track project spend across providers, reconcile invoices weekly, warn me before a budget tips over.
-   ○ sprout   Still working out my purpose.
+ → inbox    Triage my email each morning, draft replies to the routine ones, flag what needs me.
+   scout    Watch the repos and deps we ship; when a release or CVE needs action, open an issue and ping me.
+   ledger   Track project spend across providers, reconcile invoices weekly, warn me before a budget tips over.
 
  ↑/↓ browse · enter chat · tab details · type to search commands · ctrl+c quit
 ```
 
 ## How it works
 
-- **Purpose-built.** You state the agent's purpose at birth. It decides what the
-  agent stores, when it speaks up, and what it does unattended.
+- **Purpose-built.** The agent works its purpose out with you in its first
+  conversation and records it as the first line of its `SOUL.md`. It decides what
+  the agent stores, when it speaks up, and what it does unattended.
 - **Self-extending.** The agent builds itself out for its purpose. It curates its
   own memory and authors and installs its own skills, tools, extensions and integrations; they
   live in its home and load on reload. The agent grows more capable at its job
@@ -57,7 +57,7 @@ state live under `~/.wolli`. `●` deployed and `○` forming.
 
   | File | Holds |
   | --- | --- |
-  | `SOUL.md` | Identity, authored at deploy. |
+  | `SOUL.md` | Identity, authored by the agent; the first line is its purpose. |
   | `MEMORY.md` | Durable notes the agent keeps. |
   | `USER.md` | Facts about its human. |
 
@@ -70,10 +70,10 @@ state live under `~/.wolli`. `●` deployed and `○` forming.
 
 ## Lifecycle
 
-| State | What happens |
-| --- | --- |
-| **forming** | Interviews its human and records memory. Does not act unattended. |
-| **deployed** | The agent has authored its purpose and `SOUL.md`, and you confirmed `/deploy`, the single human-held latch. It now runs on schedules and events. |
+An agent is live from the moment it is created: its daemon is installed as an
+OS service at creation and runs on schedules and events from birth. While its
+`SOUL.md` is empty it interviews you to work out its purpose, then authors
+`SOUL.md` itself.
 
 `wolli delete <name>` removes an agent and its state.
 
@@ -98,7 +98,7 @@ Two integrations ship bundled: **Telegram** (bidirectional chat) and a
 | Command | Action |
 | --- | --- |
 | `wolli` | Set up on first run; otherwise pick an agent and open it |
-| `wolli new <name>` | Create and birth a new agent |
+| `wolli new <name>` | Create a new agent and start chatting with it |
 | `wolli <agent>` | Open a specific agent interactively |
 | `wolli <agent> "msg" --print` | One-shot, non-interactive reply |
 | `wolli list` | List agents |

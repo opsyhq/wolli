@@ -18,7 +18,6 @@ import {
   getSelectListTheme,
   HOME_SLASH_COMMANDS,
   isApiKeyLoginProvider,
-  isDeployed,
   LoginDialogComponent,
   OAuthSelectorComponent,
   rawKeyHint,
@@ -41,6 +40,7 @@ import {
   SelectList,
   Spacer,
   Text,
+  type TUI,
 } from "@opsyhq/tui";
 import type { KeybindingsManager } from "../../../keybindings-manager.ts";
 import { type AppView, BIRTH_OPENER, type ViewContext } from "../app.ts";
@@ -137,8 +137,8 @@ export class DashboardView extends Container implements AppView {
     }
     const items: SelectItem[] = agents.map((agent) => ({
       value: agent.name,
-      label: `${isDeployed(agent.config) ? theme.fg("success", "●") : theme.fg("dim", "○")} ${agent.name}`,
-      description: agent.config.purpose.trim().replace(/\s+/g, " "),
+      label: agent.name,
+      description: agent.getPurpose(),
     }));
     this.list = new SelectList(items, 12, getSelectListTheme());
     this.list.onSelect = (item) => void this.ctx.navigate({ to: "chat", name: item.value });
@@ -205,7 +205,7 @@ export class DashboardView extends Container implements AppView {
   private openCreate(): void {
     // Drop the bar cursor while the overlay owns input, else a stray marker lands behind it.
     this.editor.focused = false;
-    const create = new CreateAgent({
+    const create = new CreateAgent(this.ctx.tui, {
       create: (name) => this.ctx.wolli.create(name),
       onCreated: (agent) => {
         this.overlay?.hide();
@@ -509,7 +509,7 @@ class HomeCommandProvider implements AutocompleteProvider {
 }
 
 interface CreateAgentCallbacks {
-  create: (name: string) => Agent;
+  create: (name: string) => Promise<Agent>;
   onCreated: (agent: Agent) => void;
   onCancel: () => void;
   onQuit: () => void;
@@ -517,12 +517,16 @@ interface CreateAgentCallbacks {
 
 // New-agent modal; dashboard-only, so it lives here rather than in its own file.
 class CreateAgent implements Component, Focusable {
+  private readonly tui: TUI;
   private readonly callbacks: CreateAgentCallbacks;
   private readonly input = new Input();
   private readonly status = new Text("", 1, 0);
   private readonly box = new Box(2, 1, (t) => theme.bg("selectedBg", t));
+  // Creation provisions the OS service and waits for health — guard re-entry while it runs.
+  private busy = false;
 
-  constructor(callbacks: CreateAgentCallbacks) {
+  constructor(tui: TUI, callbacks: CreateAgentCallbacks) {
+    this.tui = tui;
     this.callbacks = callbacks;
     this.box.addChild(new Text(theme.fg("accent", "You're bringing a new agent to life."), 1, 0));
     this.box.addChild(new Text(theme.fg("dim", "What should we call it?"), 1, 0));
@@ -544,24 +548,31 @@ class CreateAgent implements Component, Focusable {
       this.callbacks.onQuit();
       return;
     }
+    if (this.busy) return;
     if (matchesKey(data, "escape")) {
       this.callbacks.onCancel();
       return;
     }
     if (matchesKey(data, "enter")) {
-      this.submit();
+      void this.submit();
       return;
     }
     this.input.handleInput(data);
   }
 
-  private submit(): void {
+  private async submit(): Promise<void> {
     const name = this.input.getValue().trim();
     if (name.length === 0) return;
+    this.busy = true;
+    this.status.setText(theme.fg("dim", "Starting agent..."));
+    this.tui.requestRender();
     try {
-      this.callbacks.onCreated(this.callbacks.create(name));
+      this.callbacks.onCreated(await this.callbacks.create(name));
     } catch (error) {
       this.status.setText(theme.fg("warning", error instanceof Error ? error.message : String(error)));
+    } finally {
+      this.busy = false;
+      this.tui.requestRender();
     }
   }
 

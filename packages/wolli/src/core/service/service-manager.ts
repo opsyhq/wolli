@@ -1,5 +1,5 @@
 /**
- * OS service backend — keeps a deployed agent's daemon always-on and boot-persistent. One loopback
+ * OS service backend — keeps an agent's daemon always-on and boot-persistent. One loopback
  * daemon per agent, keyed by agent name: `launchd` (darwin) / `systemd --user` (linux) / `none`
  * (the unsupported-OS fallback). The unit runs the same `daemon <name>` subcommand a client spawns.
  */

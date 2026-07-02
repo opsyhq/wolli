@@ -10,13 +10,13 @@ Install Wolli with npm:
 npm install -g @opsyhq/wolli
 ```
 
-Then birth a new agent and start its birth conversation:
+Then create a new agent and start its first conversation:
 
 ```bash
 wolli new <name>
 ```
 
-The agent opens by asking what it is for. Answer conversationally; it interviews you, distills its purpose, and when you both agree it understands its job, deploy it (it offers to, or type `/deploy`). Reconnect to a deployed agent any time with `wolli <name>`.
+The agent opens by asking what it is for. Answer conversationally; it interviews you, distills its purpose, and when you both agree it understands its job, it writes its own SOUL.md. Reconnect any time with `wolli <name>`.
 
 Authenticate with `/login` for subscription/OAuth providers (Claude and others), or set an API key such as `ANTHROPIC_API_KEY` before starting wolli. Credentials persist to the shared `~/.wolli/agent/auth.json` and are reused by every agent.
 
