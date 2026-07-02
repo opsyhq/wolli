@@ -1,5 +1,5 @@
-// The session-playback hook. It fetches a `.jsonl` when the chat scrolls into view,
-// reconstructs it with the ported loader (src/lib/session.ts), then replays it.
+// Session-level playback for the demo rail: everything it takes to turn one `.jsonl`
+// into a playing transcript. The pieces, top to bottom:
 //
 //   - `replay(messages)` emits the real AgentEvent stream in canonical order, streaming
 //     assistant text by yielding message_update with a growing cumulative AssistantMessage
@@ -11,13 +11,14 @@
 //   - `applyEvent` mirrors InteractiveMode.handleEvent (interactive-mode.ts): a streaming
 //     assistant block, a pendingTools map keyed by tool-call id, a busy flag, and the
 //     composer `input` text.
+//   - `SessionPlayer` (bottom) owns one session's lifecycle — load (fetched + cached),
+//     play (the self-timed driver), fold (instant full transcript) — and is the sole
+//     owner of its idle/playing/done status.
 //
 // Playback is self-timed: each frame is applied, then the driver waits that frame's own
 // delay before the next, so a user's typing or an assistant's stream runs to its end before
-// the next thing starts. Autoplay fires once via IntersectionObserver; play()/seek() are
-// exposed so a later phase can drive playback by scroll.
-
-import { useCallback, useEffect, useRef, useState } from "react";
+// the next thing starts. Orchestration across sessions (which one is active, the scroll
+// frontier) lives with the rail in routes/index.tsx.
 
 import type { AgentEvent, AgentMessage, AssistantMessage, TextContent, ThinkingContent, ToolCall } from "@/lib/session";
 import { loadSession } from "@/lib/session";
@@ -385,12 +386,48 @@ function* replay(messages: AgentMessage[]): Generator<Frame> {
 	if (running) yield { type: "agent_end", messages };
 }
 
-// Fully-fold the replay: the completely revealed transcript (used for the initial/SSR
-// state and available for a static, non-animated render).
+// Fully-fold the replay: the completely revealed transcript (used to fold skipped/done
+// sections to their complete transcript without playing them).
 export function sessionToBlocks(messages: AgentMessage[]): TranscriptBlock[] {
 	let state = initialState();
 	for (const event of replay(messages)) state = applyEvent(state, event);
 	return state.blocks;
+}
+
+// ---------------------------------------------------------------------------
+// File derivation (the tree is disk truth: what the transcripts actually wrote)
+// ---------------------------------------------------------------------------
+
+// The `path` arg of a write tool block, when it is a real string (WriteToolInput).
+function writePath(block: ToolBlock): string | undefined {
+	const path = (block.args as { path?: unknown } | undefined)?.path;
+	return typeof path === "string" ? path : undefined;
+}
+
+// Files a session actually created: completed, non-error `write` blocks -> args.path
+// (WriteToolInput), deduped in first-write order. Works on live and sessionToBlocks-folded
+// blocks, so the tree accumulates across sessions.
+export function writtenFiles(blocks: TranscriptBlock[]): string[] {
+	const paths: string[] = [];
+	for (const block of blocks) {
+		if (block.kind !== "tool" || block.name !== "write") continue;
+		if (block.isPartial || !block.result || block.result.isError) continue;
+		const path = writePath(block);
+		if (path && !paths.includes(path)) paths.push(path);
+	}
+	return paths;
+}
+
+// The path of an in-flight or just-completed non-error write — drives FileTree's
+// `currentFile` for the ACTIVE session only.
+export function activeWriteFile(blocks: TranscriptBlock[]): string | undefined {
+	for (let i = blocks.length - 1; i >= 0; i--) {
+		const block = blocks[i]!;
+		if (block.kind !== "tool" || block.name !== "write") continue;
+		if (block.result?.isError) continue;
+		return writePath(block);
+	}
+	return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -401,23 +438,24 @@ export function sessionToBlocks(messages: AgentMessage[]): TranscriptBlock[] {
 // frame, waits this long, then applies the next — so each unit (the user typing, an
 // assistant stream, a tool run) plays to its own end before the next thing starts, instead
 // of sharing one global budget. User typing dwells longer so it is readable; the assistant
-// streams faster. The small jitter keeps both from feeling mechanical.
+// streams faster. The small jitter keeps both from feeling mechanical. Tuned for the rail's
+// short "mini preview" sessions: a deliberate, watchable pace rather than a quick skim.
 function eventCost(event: Frame): number {
 	switch (event.type) {
 		case "input":
-			return 62 + Math.random() * 48; // ~62-110ms per token: visible, human typing
+			return 75 + Math.random() * 55; // ~75-130ms per token: visible, human typing
 		case "submit":
-			return 340; // beat while the message "sends"
+			return 420; // beat while the message "sends"
 		case "message_update":
-			return 16 + Math.random() * 14; // assistant streams faster than the user types
+			return 26 + Math.random() * 18; // assistant streams faster than the user types
 		case "message_start":
-			return event.message.role === "user" ? 40 : 160;
+			return event.message.role === "user" ? 40 : 240;
 		case "message_end":
-			return event.message.role === "user" ? 220 : 260;
+			return event.message.role === "user" ? 260 : 420;
 		case "tool_execution_start":
-			return 220; // the tool spins up
+			return 480; // the tool spins up
 		case "tool_execution_end":
-			return 260; // read the result before moving on
+			return 600; // read the result before moving on
 		default:
 			return 0;
 	}
@@ -443,114 +481,112 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Hook
+// SessionPlayer: one session's lifecycle
 // ---------------------------------------------------------------------------
 
-export interface UseSessionResult {
-	ref: (node: Element | null) => void;
+export type SessionPlayerStatus = "idle" | "playing" | "done";
+
+export interface SessionSnapshot {
 	blocks: TranscriptBlock[];
 	busy: boolean;
 	input: string;
-	started: boolean;
-	done: boolean;
-	play: () => void;
-	seek: (index: number) => void;
 }
 
-export function useSession(url: string): UseSessionResult {
-	const [state, setState] = useState<TranscriptState>(initialState);
-	const [started, setStarted] = useState(false);
-	const [done, setDone] = useState(false);
+const IDLE_SNAPSHOT: SessionSnapshot = { blocks: [], busy: false, input: "" };
 
-	const eventsRef = useRef<Frame[] | null>(null);
-	const cursorRef = useRef(0);
-	const stateRef = useRef<TranscriptState>(state);
-	const observerElRef = useRef<Element | null>(null);
+// One player per session url; the sole owner of its status. `play` is the self-timed
+// driver, `fold` reveals the complete transcript instantly, `pause`/`resume` freeze the
+// driver between frames. Knows nothing about other sessions, scroll, or React.
+export class SessionPlayer {
+	status: SessionPlayerStatus = "idle";
+	/** Last emitted state — what the chat renders for this session. */
+	snapshot: SessionSnapshot = IDLE_SNAPSHOT;
 
-	// Self-timed driver: apply a frame, wait its own delay (eventCost), apply the next. Each
-	// unit therefore runs to completion before the next begins.
-	const run = useCallback(async (signal: AbortSignal) => {
-		const events = eventsRef.current;
-		if (!events) return;
-		let working = stateRef.current;
-		for (let i = cursorRef.current; i < events.length; i++) {
+	private readonly url: string;
+	private messages: Promise<AgentMessage[]> | null = null;
+	private paused = false;
+	private resumeResolvers: Array<() => void> = [];
+
+	constructor(url: string) {
+		this.url = url;
+	}
+
+	// Fetch + reconstruct, cached on the instance. Evicts on rejection so a transient
+	// failure (e.g. flaky network during the mount prefetch) is retried by the next
+	// caller instead of bricking the session forever.
+	load(): Promise<AgentMessage[]> {
+		if (!this.messages) {
+			const promise = fetch(this.url)
+				.then((response) => {
+					if (!response.ok) throw new Error(`Failed to load ${this.url}: ${response.status}`);
+					return response.text();
+				})
+				.then((text) => loadSession(text, this.url).messages);
+			this.messages = promise;
+			promise.catch(() => {
+				this.messages = null;
+			});
+		}
+		return this.messages;
+	}
+
+	// Self-timed driver: apply a frame, wait its own delay (eventCost), apply the next.
+	// A pause holds the loop between frames until resume; an abort returns without
+	// writes — the aborting caller folds the player itself.
+	async play(onChange: (snapshot: SessionSnapshot) => void, signal: AbortSignal): Promise<void> {
+		this.status = "playing";
+		try {
+			const messages = await this.load();
 			if (signal.aborted) return;
-			const event = events[i]!;
-			working = applyEvent(working, event);
-			stateRef.current = working;
-			cursorRef.current = i + 1;
-			setState(working);
-			await sleep(eventCost(event), signal);
-		}
-		if (!signal.aborted) setDone(true);
-	}, []);
-
-	// seek(index): recompute state by folding events[0..index]. Kept simple (fold from
-	// scratch) so a later phase can drive playback by scroll position.
-	const seek = useCallback((index: number) => {
-		const events = eventsRef.current;
-		if (!events) return;
-		const clamped = Math.max(0, Math.min(index, events.length));
-		let working = initialState();
-		for (let i = 0; i < clamped; i++) working = applyEvent(working, events[i]!);
-		cursorRef.current = clamped;
-		stateRef.current = working;
-		setState(working);
-		setDone(clamped >= events.length);
-	}, []);
-
-	const beginPlayback = useCallback(
-		async (signal: AbortSignal) => {
-			try {
-				const response = await fetch(url, { signal });
-				if (!response.ok) throw new Error(`Failed to load ${url}: ${response.status}`);
-				const text = await response.text();
+			let working = initialState();
+			for (const frame of replay(messages)) {
+				await this.waitWhilePaused(signal);
 				if (signal.aborted) return;
-				const context = loadSession(text, url);
-				eventsRef.current = Array.from(replay(context.messages));
-				cursorRef.current = 0;
-				stateRef.current = initialState();
-				await run(signal);
-			} catch (error) {
-				if (!signal.aborted) console.error(error);
+				working = applyEvent(working, frame);
+				this.emit({ blocks: working.blocks, busy: working.busy, input: working.input }, onChange);
+				await sleep(eventCost(frame), signal);
 			}
-		},
-		[url, run],
-	);
-
-	// Autoplay once when the chat scrolls into view.
-	useEffect(() => {
-		const element = observerElRef.current;
-		if (!element || started) return;
-		if (typeof IntersectionObserver === "undefined") {
-			setStarted(true);
-			return;
+			if (signal.aborted) return;
+			this.status = "done";
+			this.emit({ blocks: working.blocks, busy: false, input: "" }, onChange);
+		} catch (error) {
+			if (!signal.aborted) console.error(error);
 		}
-		const observer = new IntersectionObserver(
-			(entries) => {
-				if (entries.some((entry) => entry.isIntersecting)) {
-					setStarted(true);
-					observer.disconnect();
-				}
-			},
-			{ rootMargin: "0px 0px -20% 0px" },
-		);
-		observer.observe(element);
-		return () => observer.disconnect();
-	}, [started]);
+	}
 
-	useEffect(() => {
-		if (!started) return;
-		const controller = new AbortController();
-		void beginPlayback(controller.signal);
-		return () => controller.abort();
-	}, [started, beginPlayback]);
+	/** Freeze the driver between frames (the section scrolled out of view). No-op unless playing. */
+	pause(): void {
+		if (this.status === "playing") this.paused = true;
+	}
 
-	const play = useCallback(() => setStarted(true), []);
+	/** Let a paused driver continue from exactly where it froze. */
+	resume(): void {
+		this.paused = false;
+		for (const resolve of this.resumeResolvers.splice(0)) resolve();
+	}
 
-	const ref = useCallback((node: Element | null) => {
-		observerElRef.current = node;
-	}, []);
+	// Resolves immediately when not paused; otherwise on resume() or abort.
+	private waitWhilePaused(signal: AbortSignal): Promise<void> {
+		if (!this.paused || signal.aborted) return Promise.resolve();
+		return new Promise((resolve) => {
+			this.resumeResolvers.push(resolve);
+			signal.addEventListener("abort", () => resolve(), { once: true });
+		});
+	}
 
-	return { ref, blocks: state.blocks, busy: state.busy, input: state.input, started, done, play, seek };
+	// Fold to the complete transcript without playing.
+	async fold(onChange: (snapshot: SessionSnapshot) => void): Promise<void> {
+		this.status = "done";
+		try {
+			const messages = await this.load();
+			this.emit({ blocks: sessionToBlocks(messages), busy: false, input: "" }, onChange);
+		} catch (error) {
+			console.error(error);
+		}
+	}
+
+	private emit(snapshot: SessionSnapshot, onChange: (snapshot: SessionSnapshot) => void): void {
+		this.snapshot = snapshot;
+		onChange(snapshot);
+	}
 }

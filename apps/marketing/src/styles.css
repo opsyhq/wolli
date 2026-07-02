@@ -173,3 +173,12 @@ body {
     opacity: 0;
   }
 }
+
+/* Demo rail: routes/index.tsx writes `--rail-progress` (0 = rail a viewport
+   below, 1 = locked in). Raw linear, no transition — stop scrolling and it
+   freezes. Unset without JS (prerender), falling back to the locked slot. */
+@media (min-width: 48rem) and (prefers-reduced-motion: no-preference) {
+  .rail-card {
+    transform: translateX(calc((var(--rail-progress, 1) - 1) * 15vw));
+  }
+}
