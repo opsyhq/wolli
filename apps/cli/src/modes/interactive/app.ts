@@ -1,7 +1,7 @@
 /**
  * The interactive TUI shell. `App` owns the terminal and swaps between pages (dashboard, agent
  * detail, chat). A chat is 1:1 with a session: the shell shows exactly one `ChatView` at a time, and
- * `switchSession(id)` replaces it (used by `/new` and deploy). Navigation is flat: `home()` (←/Esc)
+ * `switchSession(id)` replaces it (used by `/new`). Navigation is flat: `home()` (←/Esc)
  * returns to the dashboard, `navigate()` opens a page, `quit()` (Ctrl+C) exits. Global init and the
  * sole `tui.start()`/`stop()` live here.
  */
@@ -38,9 +38,7 @@ export interface ViewContext {
 	quit: () => void;
 	/** Create a fresh session on the daemon (additive) and return its id. */
 	createSession: () => Promise<string>;
-	/** Commit the agent's deploy and return the fresh deployed session's id. */
-	deploy: () => Promise<string>;
-	/** Replace the visible chat with another session of the current agent (used by `/new` and deploy). */
+	/** Replace the visible chat with another session of the current agent (used by `/new`). */
 	switchSession: (sessionId: string) => Promise<void>;
 	/** The agent's stored sessions with the rich fields the resume selector renders. */
 	listSessions: () => Promise<DaemonSessionInfo[]>;
@@ -81,7 +79,6 @@ export class App {
 			home: () => void this.openView({ to: "dashboard" }),
 			quit: () => this.stop(),
 			createSession: async () => (await this.requireChatAgent().createSession()).sessionId,
-			deploy: async () => (await this.requireChatAgent().deploy()).sessionId,
 			switchSession: (sessionId) => this.switchSession(sessionId),
 			listSessions: () => this.requireChatAgent().listSessionsDetail(),
 		};
@@ -169,9 +166,8 @@ export class App {
 
 	/**
 	 * Replace the visible chat with another session's. The old `ChatView` is unmounted (its stream
-	 * closes, so the idle session evicts on the daemon); a fresh one is mounted for `sessionId`. Used by
-	 * `/new` and deploy — after a deploy reconnect, `agent.getSession()` resolves the handle on the new
-	 * transport.
+	 * closes, so the idle session evicts on the daemon); a fresh one is mounted for `sessionId`. Used
+	 * by `/new`.
 	 */
 	private async switchSession(sessionId: string): Promise<void> {
 		if (!this.chatAgent) return;

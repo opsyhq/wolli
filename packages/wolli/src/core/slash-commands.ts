@@ -21,10 +21,9 @@ export interface BuiltinSlashCommand {
  * `createBaseAutocompleteProvider`.
  *
  * Limited to what `handleSubmit` actually dispatches so the menu only ever offers real
- * commands. `deploy` is valid only while forming.
+ * commands.
  */
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
-	{ name: "deploy", description: "Deploy the agent once its purpose and SOUL.md are ready" },
 	{ name: "new", description: "Start a new session" },
 	{ name: "sessions", description: "Switch to another session" },
 	{ name: "compact", description: "Manually compact the session context" },

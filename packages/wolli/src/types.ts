@@ -45,14 +45,11 @@ export type DaemonCommand =
 	| { id?: string; type: "wait_for_idle" }
 	| { id?: string; type: "clear_queue" }
 	// Additive: create a fresh session and return its snapshot. Every other resident session stays
-	// live; the TUI switches to the new one. A forming agent refuses (it stays in its birth session).
+	// live; the TUI switches to the new one.
 	| { id?: string; type: "create_session" }
 	| { id?: string; type: "reload" }
-	// The single post-confirm deploy commit: flip the latch, install the OS service, swap to a
-	// fresh deployed session. Returns the fresh snapshot (config now reads as deployed).
-	| { id?: string; type: "deploy" }
 	// Ask the daemon to self-exit gracefully (the pid-free replacement for SIGTERM): it acks, then
-	// closes its listener and exits, freeing the fixed port. Drives the stop-then-start deploy handoff.
+	// closes its listener and exits, freeing the fixed port. Drives the stop-then-start restart handoff.
 	| { id?: string; type: "shutdown" }
 
 	// State
@@ -69,12 +66,12 @@ export type DaemonCommand =
 	| { id?: string; type: "get_skills" }
 	| { id?: string; type: "get_plugins" }
 	| { id?: string; type: "get_context_info" }
-	// Session-mutation helpers the TUI client drives (birth opener seed; resumed-message append).
+	// Session-mutation helpers the TUI client drives (opener seed; resumed-message append).
 	| { id?: string; type: "seed_assistant_message"; text: string }
 	| { id?: string; type: "append_message"; message: AgentMessage }
 	// Session management the resume selector drives — rename/delete any stored session of the agent.
 	// Agent-global (the target is `targetSessionId`, not the URL session); routed through any session's
-	// `/control` rail like create_session/deploy. The daemon broadcasts the matching lifecycle frame.
+	// `/control` rail like create_session. The daemon broadcasts the matching lifecycle frame.
 	| { id?: string; type: "rename_session"; targetSessionId: string; sessionName: string }
 	| { id?: string; type: "delete_session"; targetSessionId: string }
 

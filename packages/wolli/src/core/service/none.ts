@@ -1,7 +1,7 @@
 /**
  * none backend — the unsupported-OS fallback (no launchd/systemd). There is no supervisor, so
- * `install`/`start` are inert: the daemon that handled deploy keeps running for this session, and a
- * client re-spawns one on demand (`Agent.connect`) rather than the backend supervising it.
+ * `install`/`start` are inert: a client spawns a detached daemon on demand (`Agent.connect`)
+ * rather than the backend supervising it.
  * `stop`/`isRunning` act on the agent's fixed port (from agent.json): a `/health` probe for liveness,
  * a `shutdown` request to stop.
  */

@@ -6,21 +6,11 @@ commitment. Each item gives one line of where things stand today; the bullets
 are the work. What ships lives in the [README](README.md) and is described
 there in present tense.
 
-### Agents deployed by default
-
-Status: Planned
-
-Today: a new agent forms — it interviews its human, pinned to its single birth session — until the human confirms deploy; the daemon then flips `deployedAt` and installs the OS service unit. Events and schedules are not actually gated on deployment.
-
-Remaining:
-
-- Remove the forming/deployed distinction: drop the `deployedAt` latch, the birth-session pin, and the forming-only deploy tool, and install the service unit at creation so every agent runs on schedules and events from birth. Rehome purpose and SOUL.md authoring, which the deploy tool owns today.
-
 ### Logging and log retrieval (Logger)
 
 Status: Proposed
 
-Today: only launchd redirects daemon stdout/stderr to files (in the OS temp dir); systemd output goes to journald, and unsupervised daemons (forming agents, the `none` backend) discard output entirely. The JSONL session tree already records reasoning and tool calls per conversation.
+Today: only launchd redirects daemon stdout/stderr to files (in the OS temp dir); systemd output goes to journald, and unsupervised daemons (the `none` backend) discard output entirely. The JSONL session tree already records reasoning and tool calls per conversation.
 
 Remaining:
 
@@ -104,7 +94,7 @@ Remaining:
 
 Status: Proposed
 
-Today: a deployed agent's daemon restarts on death and at boot via launchd/systemd, and sessions rebuild deterministically from the JSONL tree — a crash loses only the currently streaming message and in-memory queues.
+Today: an agent's daemon restarts on death and at boot via launchd/systemd, and sessions rebuild deterministically from the JSONL tree — a crash loses only the currently streaming message and in-memory queues.
 
 Remaining:
 
@@ -128,7 +118,7 @@ Today: `@opsyhq/agent` (engine) and `@opsyhq/tui` are split out, but `@opsyhq/wo
 
 Remaining:
 
-- Split `@opsyhq/wolli` into separate packages along those boundaries, placing the unassigned systems as well. The client/spawner boundary currently cuts through `client.ts`: it spawns daemons and drives the `ServiceManager` during deploy, restart, and delete.
+- Split `@opsyhq/wolli` into separate packages along those boundaries, placing the unassigned systems as well. The client/spawner boundary currently cuts through `client.ts`: it spawns daemons and drives the `ServiceManager` during create, restart, and delete.
 
 Notes:
 

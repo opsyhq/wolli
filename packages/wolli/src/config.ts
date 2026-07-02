@@ -86,8 +86,8 @@ export const ENV_DAEMON_TOKEN = `${APP_NAME.toUpperCase()}_DAEMON_TOKEN`;
 export const ENV_DAEMON_HOST = `${APP_NAME.toUpperCase()}_DAEMON_HOST`;
 
 // Force the OS service backend, e.g. WOLLI_SERVICE_MANAGER=none|launchd|systemd. Overrides
-// the platform autodetect — `none` keeps deploy from registering a real launchd/systemd unit
-// (used in dev/CI so the deploy flow can be exercised without an OS-managed side effect).
+// the platform autodetect — `none` keeps agent creation from registering a real launchd/systemd
+// unit (used in dev/CI so creation can be exercised without an OS-managed side effect).
 export const ENV_SERVICE_MANAGER = `${APP_NAME.toUpperCase()}_SERVICE_MANAGER`;
 
 // Select the file/shell confinement backend, e.g. WOLLI_SANDBOX=host|local-os|docker|auto (default `auto`).

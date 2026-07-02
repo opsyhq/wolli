@@ -45,7 +45,6 @@ import type { Integration, IntegrationOnboardUI } from "./core/integrations/type
 import { ModelRegistry } from "./core/model-registry.ts";
 import { findInitialModel } from "./core/model-resolver.ts";
 import type { DefaultPluginManager } from "./core/plugin-manager.ts";
-import { getServiceManager } from "./core/service/service-manager.ts";
 import { type Theme, theme } from "./theme/theme.ts";
 import {
 	type DaemonAgentState,
@@ -244,26 +243,13 @@ async function handleCommand(
 		case "clear_queue":
 			return ok(id, "clear_queue", await session.clearQueue());
 		case "create_session": {
-			// Additive: a fresh session alongside the rest. A forming agent stays in its birth session.
-			if (!AgentSettingsManager.create(runtime.config.name).getAgentDeployed()) {
-				throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
-			}
+			// Additive: a fresh session alongside the rest.
 			const created = await runtime.createSession();
 			return ok(id, "create_session", sessionSnapshot(created));
 		}
 		case "reload":
 			await runtime.reload();
 			return ok(id, "reload");
-		case "deploy": {
-			// The human's single Yes: flip the latch, enable the OS unit, and create a fresh deployed
-			// session (persisted, so the restarted daemon resumes it). The client drives the stop-then-start
-			// handoff on the fixed port; with the `none` backend this daemon just stays on the fresh session.
-			const name = runtime.config.name;
-			AgentSettingsManager.create(name).setAgentDeployed();
-			getServiceManager().install(name);
-			const deployed = await runtime.createSession();
-			return ok(id, "deploy", sessionSnapshot(deployed));
-		}
 		case "shutdown":
 			// Ack first; self-exit on a microtask so the response flushes before the listener closes.
 			queueMicrotask(() => requestShutdown());
@@ -893,9 +879,6 @@ export async function runDaemonMode(
 			for (const session of runtime.listLiveSessions()) session.ui.notify(`${e.path}: ${e.error}`, "error");
 		},
 		newSession: async () => {
-			if (!AgentSettingsManager.create(runtime.config.name).getAgentDeployed()) {
-				throw new Error("This agent is still forming — it stays in its birth session until it deploys.");
-			}
 			await runtime.createSession();
 			return { cancelled: false };
 		},

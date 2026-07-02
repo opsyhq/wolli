@@ -2,7 +2,7 @@
  * `list` — list agents with a one-line purpose summary. A pure read of the agents root; no daemon.
  */
 
-import { APP_NAME, Wolli } from "@opsyhq/wolli";
+import { APP_NAME, Wolli, getAgentPurpose } from "@opsyhq/wolli";
 
 export function runList(): number {
 	const agents = new Wolli().list();
@@ -11,7 +11,7 @@ export function runList(): number {
 		return 0;
 	}
 	for (const agent of agents) {
-		const purpose = agent.config.purpose.trim().replace(/\s+/g, " ");
+		const purpose = getAgentPurpose(agent.name);
 		const summary = purpose.length > 72 ? `${purpose.slice(0, 69)}...` : purpose;
 		console.log(`${agent.name}  —  ${summary}`);
 	}

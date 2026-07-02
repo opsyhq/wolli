@@ -2,7 +2,7 @@
  * Per-agent identity + settings.
  *
  * `AgentSettingsManager` owns the whole `agent.json` for one agent: its identity
- * (name/purpose/createdAt/deployedAt) AND a `settings` override block. The top-level
+ * (name/createdAt) AND a `settings` override block. The top-level
  * shared `~/.wolli/agent/settings.json` (the global tier, in settings-manager.ts) holds the
  * defaults; each agent's `settings` block deep-merges over those defaults, recomputed on load.
  * There is no per-child `settings.json` — runtime mutations write the override straight into
@@ -43,19 +43,11 @@ export const AGENT_SCHEMA_VERSION = 2;
 export const AgentConfigSchema = Type.Object({
 	schemaVersion: Type.Number(),
 	name: Type.String(),
-	purpose: Type.String(),
 	createdAt: Type.String(),
 	/** The fixed port the agent's daemon binds, allocated at creation (required; missing → fails loud). */
 	port: Type.Number(),
 	/** The bearer token for the daemon's `/events` + `/control`, minted at creation. */
 	token: Type.String(),
-	/**
-	 * The single human-held latch. `null` (or absent) means the agent is still in
-	 * its birth phase — it maintains its own files but may not act unattended. An
-	 * ISO timestamp grants it that right. Optional/nullable so agent.json written
-	 * before this field still validates (treated as not deployed).
-	 */
-	deployedAt: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 	/**
 	 * Per-agent settings override, deep-merged over the shared defaults. Loosely typed
 	 * on disk (any keys); narrowed to `Partial<Settings>` in `AgentConfig` below.
@@ -79,15 +71,8 @@ export function isValidAgentName(name: string): boolean {
 	return AGENT_NAME_PATTERN.test(name);
 }
 
-/** Whether the agent has been deployed (granted the right to act unattended). */
-export function isDeployed(config: AgentConfig): boolean {
-	return Boolean(config.deployedAt);
-}
-
 export interface CreateAgentOptions {
 	name: string;
-	/** Optional at birth — left empty until the agent authors its own purpose via the deploy tool. Defaults to "". */
-	purpose?: string;
 	/** Optional `provider/modelId` reference; folded into `settings.defaultModel`. */
 	model?: string;
 }
@@ -147,7 +132,7 @@ export class AgentSettingsManager {
 
 	/** Create an agent's home tree (`agent.json`, empty memory files, sessions/, workspace/). */
 	static createAgent(options: CreateAgentOptions): AgentSettingsManager {
-		const { name, purpose, model } = options;
+		const { name, model } = options;
 		if (!isValidAgentName(name)) {
 			throw new Error(
 				`Invalid agent name "${name}". Use lowercase letters, digits, and hyphens (must start with a letter or digit).`,
@@ -174,16 +159,15 @@ export class AgentSettingsManager {
 		const config: AgentConfig = {
 			schemaVersion: AGENT_SCHEMA_VERSION,
 			name,
-			purpose: purpose ?? "",
 			createdAt: new Date().toISOString(),
-			deployedAt: null,
 			port,
 			token: randomBytes(32).toString("hex"),
 			...(model ? { settings: { defaultModel: model } } : {}),
 		};
 		AgentSettingsManager.saveConfig(name, config);
 
-		// Empty curated files; the agent populates them via the self_update tool.
+		// Empty curated files; the agent populates them (MEMORY/USER via the memory tool,
+		// SOUL via its file tools).
 		if (!existsSync(getSoulPath(name))) writeFileSync(getSoulPath(name), "", "utf-8");
 		if (!existsSync(getMemoryPath(name))) writeFileSync(getMemoryPath(name), "", "utf-8");
 		if (!existsSync(getUserMemoryPath(name))) writeFileSync(getUserMemoryPath(name), "", "utf-8");
@@ -254,22 +238,6 @@ export class AgentSettingsManager {
 	// --- identity ------------------------------------------------------------
 
 	get config(): AgentConfig {
-		return this._config;
-	}
-
-	getAgentDeployed(): boolean {
-		return Boolean(this._config.deployedAt);
-	}
-
-	/** Stamp deployedAt once (idempotent: a second call leaves the timestamp unchanged). */
-	setAgentDeployed(): AgentConfig {
-		this.update((config) => (config.deployedAt ? config : { ...config, deployedAt: new Date().toISOString() }));
-		return this._config;
-	}
-
-	/** Set the agent's purpose (authored by the agent via the deploy tool) and persist. */
-	setAgentPurpose(purpose: string): AgentConfig {
-		this.update((config) => ({ ...config, purpose }));
 		return this._config;
 	}
 

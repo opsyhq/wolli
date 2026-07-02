@@ -1,10 +1,10 @@
 # @opsyhq/wolli
 
 Wolli is a persistent, purposeful agent that runs in your terminal. Unlike a
-chat session, a Wolli agent is created *for* something — a purpose stated by
-its human at birth — and that purpose becomes the organizing principle for its
-life. It remembers across conversations, curates its own memory, and works
-toward its purpose until you retire it.
+chat session, a Wolli agent is created *for* something — a purpose it works
+out with its human in its first conversation — and that purpose becomes the
+organizing principle for its life. It remembers across conversations, curates
+its own memory, and works toward its purpose until you retire it.
 
 ```
 $ wolli new calories
@@ -12,9 +12,10 @@ agent: What is my purpose?
 you:   Help me count calories and lose weight.
 ```
 
-That answer becomes the agent's purpose. It doesn't reset between
-conversations. The agent maintains its own curated memory, picks up where it
-left off, and grows more specialized over time.
+From that conversation the agent distills its purpose — the first line of the
+`SOUL.md` it writes for itself. It doesn't reset between conversations. The
+agent maintains its own curated memory, picks up where it left off, and grows
+more specialized over time.
 
 ## Quick start
 
@@ -32,7 +33,7 @@ it before starting:
 export ANTHROPIC_API_KEY=sk-...
 ```
 
-Create your first agent and start its birth conversation:
+Create your first agent and start its first conversation:
 
 ```bash
 wolli new calories
@@ -40,29 +41,24 @@ wolli new calories
 
 The agent opens by asking what it's for. Answer conversationally — it
 interviews you, records what it learns, and distills its own purpose. When you
-both agree it understands its job, it deploys and begins working.
+both agree it understands its job, it writes its `SOUL.md` and gets to work.
 
-## Lifecycle: forming → deploy
+## Onboarding
 
-Every agent has two phases:
-
-- **Forming.** A newly created agent is *not yet deployed*. Its only job is to
-  understand its purpose and its human. It interviews you one question at a
-  time, recording facts about you (`USER.md`) and its own durable notes
-  (`MEMORY.md`). It does not act unattended and does not start doing the job —
-  first it becomes itself.
-- **Deployed.** When the two of you agree the agent understands its purpose, it
-  calls the `deploy` tool with its distilled purpose and a final `SOUL.md` (who
-  it is, what it's for, how it operates). You confirm, and the agent is
-  deployed. You can also type `/deploy` to start that yourself.
-
-Deployment is the single human-held latch: until an agent is deployed it
-maintains its own files but may not act on its own.
+An agent is live from the moment it is created — its daemon is installed as an
+OS service at creation and runs on schedules and events from birth. What a new
+agent lacks is an identity: while its `SOUL.md` is empty, its system prompt
+carries an onboarding block. It interviews you one question at a time,
+recording facts about you (`USER.md`) and its own durable notes (`MEMORY.md`),
+until the two of you agree what it's for. Then it authors `SOUL.md` itself
+(who it is, what it's for, how it operates) with its file tools; the first
+line is its one-line purpose and becomes its description everywhere. Once
+`SOUL.md` has content, the onboarding block disappears.
 
 ## CLI
 
 ```
-wolli new <name> [--model provider/id]      Create an agent, then start its birth conversation
+wolli new <name> [--model provider/id]      Create an agent, then start chatting with it
 wolli list                                  List agents
 wolli delete <name>                          Delete an agent (type-the-name confirm)
 wolli <name> [message] [--new] [--print]    Talk to an agent
@@ -91,7 +87,6 @@ In the editor you can:
 - Type a message and press Enter to talk to the agent.
 - Use `/` commands (prompt templates and skills register as slash commands).
 - Run a shell command inline by prefixing it with `!`.
-- Type `/deploy` to deploy a forming agent.
 
 For one-shot, non-interactive use, pass a message and `--print`:
 
@@ -112,11 +107,12 @@ so you have the full context in front of you.
 
 ## Context and system prompt
 
-The agent's system prompt is built from its identity (name + purpose) plus a
-frozen snapshot of its curated memory, read once at session start:
+The agent's system prompt is built from its identity (its name) plus a frozen
+snapshot of its curated memory, read once at session start:
 
-- **`SOUL.md`** — who the agent is, what it's for, how it operates. Written at
-  deploy time and revised deliberately.
+- **`SOUL.md`** — who the agent is, what it's for, how it operates. Authored
+  and revised by the agent with its file tools; the first line is its one-line
+  purpose.
 - **`MEMORY.md`** — the agent's durable notes about its work and the world.
 - **`USER.md`** — facts the agent has learned about its human.
 
@@ -151,7 +147,7 @@ also cleans up everything attached to it.
 | Path | Contents |
 |------|----------|
 | `~/.wolli/agents/<name>/` | Per-agent home |
-| `~/.wolli/agents/<name>/agent.json` | Identity config (name, purpose, deploy state) |
+| `~/.wolli/agents/<name>/agent.json` | Identity config (name, port, token, settings) |
 | `~/.wolli/agents/<name>/SOUL.md` | Curated identity |
 | `~/.wolli/agents/<name>/MEMORY.md` | Curated durable memory |
 | `~/.wolli/agents/<name>/USER.md` | Curated facts about the human |

@@ -59,8 +59,7 @@ function makeRuntime(): { runtime: AgentRuntime; registration: ReturnType<typeof
  */
 let shutdownRequests = 0;
 
-async function startDaemon(opts: { deploy?: boolean } = {}): Promise<ReturnType<typeof registerFauxProvider>> {
-	if (opts.deploy) AgentSettingsManager.create(AGENT).setAgentDeployed();
+async function startDaemon(): Promise<ReturnType<typeof registerFauxProvider>> {
 	const { runtime, registration } = makeRuntime();
 	activeRuntime = runtime;
 	activeServer = await runDaemonMode(runtime, {
@@ -249,8 +248,8 @@ beforeEach(() => {
 	sharedDir = mkdtempSync(join(tmpdir(), "wolli-daemon-shared-"));
 	process.env.WOLLI_HOME = home;
 	process.env.WOLLI_SHARED_DIR = sharedDir;
-	// The deploy verb installs an OS service — force the inert `none` backend so the suite never
-	// registers a real launchd/systemd unit.
+	// Force the inert `none` service backend so nothing in the suite ever registers a real
+	// launchd/systemd unit.
 	process.env.WOLLI_SERVICE_MANAGER = "none";
 	// The package/onboarding verbs install local fixtures only — never let resolution hit the network.
 	process.env.WOLLI_OFFLINE = "1";
@@ -432,7 +431,7 @@ describe("daemon HTTP/SSE server", () => {
 	});
 
 	it("create_session adds a second resident session that streams independently", async () => {
-		const registration = await startDaemon({ deploy: true });
+		const registration = await startDaemon();
 		registration.setResponses([() => fauxAssistantMessage("first turn"), () => fauxAssistantMessage("second turn")]);
 
 		// Subscribe to session A and run a turn on it.
@@ -501,28 +500,6 @@ describe("daemon client-support verbs (Slice 0)", () => {
 		expect(append).toMatchObject({ command: "append_message", success: true });
 		const msgs = await control({ type: "get_messages" });
 		expect(JSON.stringify(msgs.data.messages)).toContain("appended note");
-	});
-
-	it("create_session is refused while the agent is still forming", async () => {
-		await startDaemon(); // forming (not pre-deployed)
-		const res = await control({ type: "create_session" });
-		expect(res.success).toBe(false);
-		expect(res.error).toMatch(/still forming/);
-	});
-
-	it("deploy flips the latch and swaps to a fresh deployed session", async () => {
-		await startDaemon(); // forming (not pre-deployed)
-		expect(AgentSettingsManager.create(AGENT).getAgentDeployed()).toBe(false);
-		const birthSessionId = sessionId;
-
-		const res = await control({ type: "deploy" });
-		expect(res).toMatchObject({ command: "deploy", success: true });
-		expect(res.data).toMatchObject({ isStreaming: false });
-		// Deploy always creates a fresh session — the supervised daemon resumes the most-recent one.
-		expect(res.data.sessionId).not.toBe(birthSessionId);
-		// The latch is persisted to disk; the agent snapshot now reads as deployed.
-		expect(AgentSettingsManager.create(AGENT).getAgentDeployed()).toBe(true);
-		expect((await agentState()).config.deployedAt).toBeTruthy();
 	});
 });
 

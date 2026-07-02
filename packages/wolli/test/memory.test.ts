@@ -5,7 +5,7 @@ import type { AgentToolResult } from "@opsyhq/agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getMemoryPath, getSoulPath, getUserMemoryPath } from "../src/config.ts";
 import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
-import { loadMemory, MEMORY_BUDGET, readMemoryFile, writeMemoryFile } from "../src/core/memory.ts";
+import { getAgentPurpose, loadMemory, MEMORY_BUDGET, readMemoryFile, writeMemoryFile } from "../src/core/memory.ts";
 import { createMemoryTool, type MemoryToolDetails } from "../src/core/tools/memory.ts";
 
 let home: string;
@@ -13,7 +13,7 @@ let home: string;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "wolli-test-"));
 	process.env.WOLLI_HOME = home;
-	AgentSettingsManager.createAgent({ name: "scribe", purpose: "notes" });
+	AgentSettingsManager.createAgent({ name: "scribe" });
 });
 
 afterEach(() => {
@@ -125,5 +125,26 @@ describe("loadMemory", () => {
 		const memory = loadMemory("scribe");
 		expect(memory.memory.length).toBeLessThanOrEqual(MEMORY_BUDGET);
 		expect(memory.memory).toContain("truncated");
+	});
+});
+
+describe("getAgentPurpose", () => {
+	it("returns '' for an empty or absent SOUL.md", () => {
+		expect(getAgentPurpose("scribe")).toBe("");
+	});
+
+	it("strips a leading heading mark", () => {
+		writeMemoryFile(getSoulPath("scribe"), "# Track my calories\nMore body text.\n");
+		expect(getAgentPurpose("scribe")).toBe("Track my calories");
+	});
+
+	it("skips blank leading lines", () => {
+		writeMemoryFile(getSoulPath("scribe"), "\n   \nKeep the meeting minutes\n");
+		expect(getAgentPurpose("scribe")).toBe("Keep the meeting minutes");
+	});
+
+	it("collapses internal whitespace", () => {
+		writeMemoryFile(getSoulPath("scribe"), "Track  my\tcalories  \n");
+		expect(getAgentPurpose("scribe")).toBe("Track my calories");
 	});
 });

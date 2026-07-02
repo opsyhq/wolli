@@ -10,8 +10,8 @@
  * harness↔extension event wiring. Every event/tool/command is threaded the originating `AgentSession`,
  * so the shared runner serves all sessions without an ambient "current".
  *
- * The system prompt is frozen for a session's lifetime, so changing it (the birth instruction dropping
- * at deploy) needs a fresh session.
+ * The system prompt is frozen for a session's lifetime, so changing it (the onboarding block dropping
+ * once SOUL.md has content) needs a fresh session.
  *
  * The harness event mechanism is split three ways:
  *  (a) `harness.on(type)` native mutating hooks — tool_call, tool_result, context,
@@ -58,7 +58,7 @@ import {
 import type { AuthSelectorProvider, DaemonSessionInfo } from "../types.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { createAgentPluginManager } from "./agent-plugin-manager.ts";
-import { type AgentConfig, AgentSettingsManager, isDeployed } from "./agent-settings-manager.ts";
+import { type AgentConfig, AgentSettingsManager } from "./agent-settings-manager.ts";
 import { createApprovalGate, createBypassGate } from "./approval/approval-gate.ts";
 import { ApprovalStore } from "./approval/approval-storage.ts";
 import type { AuthStorage } from "./auth-storage.ts";
@@ -107,7 +107,6 @@ import type { Skill } from "./skills.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
-import { createDeployTool } from "./tools/deploy.ts";
 // File tools live under tools/. memory is wolli's own curated-notes tool; the
 // rest — read/write/edit/ls/grep/find and bash — are wired with no overrides.
 import {
@@ -192,9 +191,9 @@ export interface InteractiveContextBindings {
 	createLoginCallbacks: (sessionId: string, signal: AbortSignal) => OAuthLoginCallbacks;
 	mode: ExtensionMode;
 	/**
-	 * Host-provided new-session handler backing `session.newSession()` — applies the host's policy (e.g.
-	 * the forming-agent guard) then creates a fresh session. Optional: non-interactive hosts leave it
-	 * unset and `newSession()` is a no-op that reports `{ cancelled: false }`.
+	 * Host-provided new-session handler backing `session.newSession()` — creates a fresh session.
+	 * Optional: non-interactive hosts leave it unset and `newSession()` is a no-op that reports
+	 * `{ cancelled: false }`.
 	 */
 	newSession?: NewSessionHandler;
 	onError?: ExtensionErrorListener;
@@ -1182,8 +1181,6 @@ export class AgentRuntime {
 		// read/write/edit/ls/grep/find plus bash, routed through the session's default target.
 		const baseTools: AgentTool[] = [
 			createMemoryTool(name),
-			// The deploy tool only exists while forming — once deployed it has served its purpose.
-			...(isDeployed(config) ? [] : [createDeployTool(name)]),
 			createReadTool(defaultEnv),
 			createWriteTool(defaultEnv),
 			createEditTool(defaultEnv),
@@ -1316,7 +1313,7 @@ export class AgentSession {
 
 	/**
 	 * Persist a minimal assistant message into the current session (e.g. the seeded "What is my
-	 * purpose?" that opens a forming agent's first chat) and return it so the caller can also render it.
+	 * purpose?" that opens a new agent's first chat) and return it so the caller can also render it.
 	 */
 	async seedAssistantMessage(text: string): Promise<AssistantMessage> {
 		const model = this.harness.getModel();
