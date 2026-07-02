@@ -20,9 +20,8 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { codeToHtml } from "shiki";
 import { Streamdown } from "streamdown";
-
-import type { ToolBlock, TranscriptBlock } from "@/hooks/use-session";
 import type { AssistantMessage } from "@/lib/session";
+import type { ToolBlock, TranscriptBlock } from "@/lib/session-player";
 import { cn } from "@/lib/utils";
 
 export interface ChatProps {

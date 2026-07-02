@@ -1,8 +1,5 @@
-// Session playback for the demo rail. Activation comes from the rail scroll effect in
-// routes/index.tsx: when a story section crosses the activation line, useSessionPlaylist
-// plays that section's `.jsonl` (fetched, then reconstructed with the ported loader,
-// src/lib/session.ts) into its own transcript slot. Sections skipped by a fast scroll fold
-// instantly to their complete transcript via sessionToBlocks.
+// Session-level playback for the demo rail: everything it takes to turn one `.jsonl`
+// into a playing transcript. The pieces, top to bottom:
 //
 //   - `replay(messages)` emits the real AgentEvent stream in canonical order, streaming
 //     assistant text by yielding message_update with a growing cumulative AssistantMessage
@@ -14,12 +11,14 @@
 //   - `applyEvent` mirrors InteractiveMode.handleEvent (interactive-mode.ts): a streaming
 //     assistant block, a pendingTools map keyed by tool-call id, a busy flag, and the
 //     composer `input` text.
+//   - `SessionPlayer` (bottom) owns one session's lifecycle — load (fetched + cached),
+//     play (the self-timed driver), fold (instant full transcript) — and is the sole
+//     owner of its idle/playing/done status.
 //
 // Playback is self-timed: each frame is applied, then the driver waits that frame's own
 // delay before the next, so a user's typing or an assistant's stream runs to its end before
-// the next thing starts.
-
-import { useCallback, useEffect, useRef, useState } from "react";
+// the next thing starts. Orchestration across sessions (which one is active, the scroll
+// frontier) lives in hooks/use-session-playlist.ts.
 
 import type { AgentEvent, AgentMessage, AssistantMessage, TextContent, ThinkingContent, ToolCall } from "@/lib/session";
 import { loadSession } from "@/lib/session";
@@ -482,136 +481,91 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Playlist hook
+// SessionPlayer: one session's lifecycle
 // ---------------------------------------------------------------------------
 
-export type SectionStatus = "idle" | "playing" | "done";
+export type SessionPlayerStatus = "idle" | "playing" | "done";
 
-export interface PlaylistSection {
-	status: SectionStatus;
-	/** Empty while idle; live while playing; the folded full transcript when done. */
+export interface SessionSnapshot {
 	blocks: TranscriptBlock[];
 	busy: boolean;
 	input: string;
 }
 
-export interface UseSessionPlaylistResult {
-	/** One slot per url, in playlist order. */
-	sections: PlaylistSection[];
-	/** The section the viewer sees; -1 before the first activation. */
-	activeIndex: number;
-	/** Idempotent; safe to call straight from a scroll handler. */
-	activate: (index: number) => void;
-}
+const IDLE_SNAPSHOT: SessionSnapshot = { blocks: [], busy: false, input: "" };
 
-const IDLE_SECTION: PlaylistSection = { status: "idle", blocks: [], busy: false, input: "" };
+// One player per session url. `play` is the self-timed driver (apply frame -> emit ->
+// sleep); `fold` reveals the complete transcript instantly (for sessions skipped by a
+// fast scroll: prior chapters — their files must exist by the time a later session
+// plays); both settle the player as done. The player is the sole owner of its status;
+// the playlist hook reads it synchronously and projects `snapshot` into React state via
+// the `onChange` it passes in. Knows nothing about other sessions, scroll, or React.
+export class SessionPlayer {
+	status: SessionPlayerStatus = "idle";
+	/** Last emitted state — what the chat renders for this session. */
+	snapshot: SessionSnapshot = IDLE_SNAPSHOT;
 
-// One transcript slot per session url. The rail calls activate(j) as the viewer scrolls; the
-// playlist enforces play-once/never-rewind semantics around an internal frontier (the highest
-// index ever activated). Invariant: below the frontier every section is done; the frontier is
-// playing or done; above it everything is idle.
-//   - j <= frontier: only activeIndex moves — a done section shows its folded transcript, and
-//     a still-playing frontier keeps playing (scrolling back never aborts it).
-//   - j > frontier: the current driver is aborted, every not-done section in [frontier, j)
-//     folds to its complete transcript (earlier sections are prior chapters — their files
-//     must exist by the time a later section plays), and j starts its self-timed driver.
-// `urls` is treated as immutable (a module constant in the route).
-export function useSessionPlaylist(urls: string[]): UseSessionPlaylistResult {
-	const [sections, setSections] = useState<PlaylistSection[]>(() => urls.map(() => IDLE_SECTION));
-	const [activeIndex, setActiveIndex] = useState(-1);
+	private readonly url: string;
+	private messages: Promise<AgentMessage[]> | null = null;
 
-	const frontierRef = useRef(-1);
-	const statusRef = useRef<SectionStatus[]>(urls.map(() => "idle"));
-	const controllerRef = useRef<AbortController | null>(null);
-	const fetchesRef = useRef<Map<string, Promise<AgentMessage[]>>>(new Map());
+	constructor(url: string) {
+		this.url = url;
+	}
 
-	const messagesFor = useCallback((url: string): Promise<AgentMessage[]> => {
-		let promise = fetchesRef.current.get(url);
-		if (!promise) {
-			promise = fetch(url)
+	// Fetch + reconstruct, cached on the instance. Evicts on rejection so a transient
+	// failure (e.g. flaky network during the mount prefetch) is retried by the next
+	// caller instead of bricking the session forever.
+	load(): Promise<AgentMessage[]> {
+		if (!this.messages) {
+			const promise = fetch(this.url)
 				.then((response) => {
-					if (!response.ok) throw new Error(`Failed to load ${url}: ${response.status}`);
+					if (!response.ok) throw new Error(`Failed to load ${this.url}: ${response.status}`);
 					return response.text();
 				})
-				.then((text) => loadSession(text, url).messages);
-			fetchesRef.current.set(url, promise);
-			// Evict on rejection so a transient failure (e.g. flaky network during the mount
-			// prefetch) is retried by the next caller instead of bricking the section forever.
-			promise.catch(() => fetchesRef.current.delete(url));
+				.then((text) => loadSession(text, this.url).messages);
+			this.messages = promise;
+			promise.catch(() => {
+				this.messages = null;
+			});
 		}
-		return promise;
-	}, []);
+		return this.messages;
+	}
 
-	// Prefetch every session on mount so folding a skipped section is effectively synchronous.
-	useEffect(() => {
-		for (const url of urls) messagesFor(url).catch((error) => console.error(error));
-	}, [urls, messagesFor]);
-
-	// Unmount aborts whatever driver is running. Mount-only: tying this to `urls` would let a
-	// caller-side re-render (a fresh array identity) abort a live driver mid-play.
-	useEffect(() => () => controllerRef.current?.abort(), []);
-
-	const setSection = useCallback((index: number, section: PlaylistSection) => {
-		setSections((previous) => previous.map((existing, i) => (i === index ? section : existing)));
-	}, []);
-
-	// Self-timed driver: apply a frame, wait its own delay (eventCost), apply the next. An
-	// abort returns without writes — the aborting activate() folds the section itself.
-	const playSection = useCallback(
-		async (index: number, signal: AbortSignal) => {
-			try {
-				const messages = await messagesFor(urls[index]!);
+	// Self-timed driver: apply a frame, wait its own delay (eventCost), apply the next.
+	// An abort returns without writes — the aborting caller folds the player itself.
+	async play(onChange: (snapshot: SessionSnapshot) => void, signal: AbortSignal): Promise<void> {
+		this.status = "playing";
+		try {
+			const messages = await this.load();
+			if (signal.aborted) return;
+			let working = initialState();
+			for (const frame of replay(messages)) {
 				if (signal.aborted) return;
-				let working = initialState();
-				for (const frame of replay(messages)) {
-					if (signal.aborted) return;
-					working = applyEvent(working, frame);
-					setSection(index, {
-						status: "playing",
-						blocks: working.blocks,
-						busy: working.busy,
-						input: working.input,
-					});
-					await sleep(eventCost(frame), signal);
-				}
-				if (signal.aborted) return;
-				statusRef.current[index] = "done";
-				setSection(index, { status: "done", blocks: working.blocks, busy: false, input: "" });
-			} catch (error) {
-				if (!signal.aborted) console.error(error);
+				working = applyEvent(working, frame);
+				this.emit({ blocks: working.blocks, busy: working.busy, input: working.input }, onChange);
+				await sleep(eventCost(frame), signal);
 			}
-		},
-		[urls, messagesFor, setSection],
-	);
+			if (signal.aborted) return;
+			this.status = "done";
+			this.emit({ blocks: working.blocks, busy: false, input: "" }, onChange);
+		} catch (error) {
+			if (!signal.aborted) console.error(error);
+		}
+	}
 
-	const activate = useCallback(
-		(index: number) => {
-			if (index < 0 || index >= urls.length) return;
-			// At or behind the frontier: just move the viewer; never rewind or replay.
-			if (index <= frontierRef.current) {
-				setActiveIndex(index);
-				return;
-			}
-			controllerRef.current?.abort();
-			// Fold every not-done section below the new frontier to its full transcript.
-			for (let i = Math.max(frontierRef.current, 0); i < index; i++) {
-				if (statusRef.current[i] === "done") continue;
-				statusRef.current[i] = "done";
-				messagesFor(urls[i]!)
-					.then((messages) => {
-						setSection(i, { status: "done", blocks: sessionToBlocks(messages), busy: false, input: "" });
-					})
-					.catch((error) => console.error(error));
-			}
-			frontierRef.current = index;
-			statusRef.current[index] = "playing";
-			setActiveIndex(index);
-			const controller = new AbortController();
-			controllerRef.current = controller;
-			void playSection(index, controller.signal);
-		},
-		[urls, messagesFor, playSection, setSection],
-	);
+	// Fold to the complete transcript without playing.
+	async fold(onChange: (snapshot: SessionSnapshot) => void): Promise<void> {
+		this.status = "done";
+		try {
+			const messages = await this.load();
+			this.emit({ blocks: sessionToBlocks(messages), busy: false, input: "" }, onChange);
+		} catch (error) {
+			console.error(error);
+		}
+	}
 
-	return { sections, activeIndex, activate };
+	private emit(snapshot: SessionSnapshot, onChange: (snapshot: SessionSnapshot) => void): void {
+		this.snapshot = snapshot;
+		onChange(snapshot);
+	}
 }

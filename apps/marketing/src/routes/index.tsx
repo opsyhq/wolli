@@ -5,7 +5,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Chat } from "@/components/chat";
 import { type FileNode, FileTree } from "@/components/file-tree";
 import { Button } from "@/components/ui/button";
-import { activeWriteFile, type PlaylistSection, useSessionPlaylist, writtenFiles } from "@/hooks/use-session";
+import { type PlaylistSection, useSessionPlaylist } from "@/hooks/use-session-playlist";
+import { activeWriteFile, writtenFiles } from "@/lib/session-player";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({ component: Home });
