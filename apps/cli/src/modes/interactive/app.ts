@@ -95,6 +95,9 @@ export class App {
 
 	/** Build a fresh page for the route and swap it in. Unknown agents fall back to the dashboard. */
 	private async openView(route: Route): Promise<void> {
+		// An async flow (e.g. the dashboard's awaited create) may resolve after quit — never
+		// navigate a stopped app, or its freshly opened streams would outlive the terminal.
+		if (this.stopped) return;
 		switch (route.to) {
 			case "dashboard":
 				this.closeChat();

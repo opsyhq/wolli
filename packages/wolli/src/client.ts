@@ -169,7 +169,7 @@ export class Wolli {
 	/**
 	 * Create the agent's home tree, install + start its OS service unit, and return its handle once the
 	 * daemon is healthy. On a failed start the unit and home tree are rolled back. The `none` backend
-	 * has no supervisor — `connect()` spawns a detached daemon on attach, as before.
+	 * has no supervisor — `connect()` spawns a detached daemon on attach.
 	 */
 	async create(name: string, opts: { model?: string } = {}): Promise<Agent> {
 		const store = AgentSettingsManager.createAgent({ name, ...opts });
@@ -184,7 +184,12 @@ export class Wolli {
 			// Roll back through the one teardown path: uninstall the unit (also boots out a
 			// crash-looping one), stop any daemon that did come up, delete the home tree.
 			await agent.delete();
-			throw error;
+			throw new Error(
+				`Could not start the ${service.kind} service for "${name}": ` +
+					`${error instanceof Error ? error.message : String(error)} ` +
+					`(set WOLLI_SERVICE_MANAGER=none to create agents without OS supervision)`,
+				{ cause: error },
+			);
 		}
 		return agent;
 	}

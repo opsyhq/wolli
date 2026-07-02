@@ -1,10 +1,10 @@
 /**
  * Per-agent identity + settings.
  *
- * `AgentSettingsManager` owns the whole `agent.json` for one agent: its identity
- * (name/createdAt) AND a `settings` override block. The top-level
- * shared `~/.wolli/agent/settings.json` (the global tier, in settings-manager.ts) holds the
- * defaults; each agent's `settings` block deep-merges over those defaults, recomputed on load.
+ * `AgentSettingsManager` owns the whole `agent.json` for one agent: its identity (name/createdAt)
+ * AND a `settings` override block. The top-level shared `~/.wolli/agent/settings.json` (the global
+ * tier, in settings-manager.ts) holds the defaults; each agent's `settings` block deep-merges over
+ * those defaults, recomputed on load.
  * There is no per-child `settings.json` — runtime mutations write the override straight into
  * `agent.json`. The shared `Settings` types + the shared-defaults reader live in settings-manager.ts.
  */

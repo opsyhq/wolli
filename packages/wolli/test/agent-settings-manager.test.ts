@@ -139,7 +139,7 @@ describe("shared defaults writers", () => {
 });
 
 describe("legacy configs", () => {
-	it("tolerates stale purpose/deployedAt keys from the removed lifecycle (lax schema)", () => {
+	it("tolerates stale legacy purpose/deployedAt keys (lax schema)", () => {
 		AgentSettingsManager.createAgent({ name: "old" });
 		const legacy = {
 			schemaVersion: 1,

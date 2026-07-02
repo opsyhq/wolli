@@ -2,7 +2,7 @@
  * `list` — list agents with a one-line purpose summary. A pure read of the agents root; no daemon.
  */
 
-import { APP_NAME, Wolli, getAgentPurpose } from "@opsyhq/wolli";
+import { APP_NAME, getAgentPurpose, Wolli } from "@opsyhq/wolli";
 
 export function runList(): number {
 	const agents = new Wolli().list();

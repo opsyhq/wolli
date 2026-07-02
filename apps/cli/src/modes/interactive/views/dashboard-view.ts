@@ -523,7 +523,7 @@ class CreateAgent implements Component, Focusable {
   private readonly input = new Input();
   private readonly status = new Text("", 1, 0);
   private readonly box = new Box(2, 1, (t) => theme.bg("selectedBg", t));
-  // Creation now provisions the OS service and waits for health — guard re-entry while it runs.
+  // Creation provisions the OS service and waits for health — guard re-entry while it runs.
   private busy = false;
 
   constructor(tui: TUI, callbacks: CreateAgentCallbacks) {
