@@ -494,13 +494,9 @@ export interface SessionSnapshot {
 
 const IDLE_SNAPSHOT: SessionSnapshot = { blocks: [], busy: false, input: "" };
 
-// One player per session url. `play` is the self-timed driver (apply frame -> emit ->
-// sleep); `fold` reveals the complete transcript instantly (for sessions skipped by a
-// fast scroll: prior chapters — their files must exist by the time a later session
-// plays); both settle the player as done. `pause`/`resume` freeze the driver between
-// frames while the section is out of view. The player is the sole owner of its status;
-// the playlist hook reads it synchronously and projects `snapshot` into React state via
-// the `onChange` it passes in. Knows nothing about other sessions, scroll, or React.
+// One player per session url; the sole owner of its status. `play` is the self-timed
+// driver, `fold` reveals the complete transcript instantly, `pause`/`resume` freeze the
+// driver between frames. Knows nothing about other sessions, scroll, or React.
 export class SessionPlayer {
 	status: SessionPlayerStatus = "idle";
 	/** Last emitted state — what the chat renders for this session. */
