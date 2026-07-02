@@ -563,7 +563,7 @@ class CreateAgent implements Component, Focusable {
 
   private async submit(): Promise<void> {
     const name = this.input.getValue().trim();
-    if (name.length === 0 || this.busy) return;
+    if (name.length === 0) return;
     this.busy = true;
     this.status.setText(theme.fg("dim", "Starting agent..."));
     this.tui.requestRender();

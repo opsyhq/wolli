@@ -181,9 +181,9 @@ export class Wolli {
 			service.start(name);
 			await waitForHealth(`http://${getDaemonHost()}:${store.config.port}`);
 		} catch (error) {
-			// Best-effort rollback; uninstall also boots out a crash-looping unit.
-			service.uninstall(name);
-			AgentSettingsManager.delete(name);
+			// Roll back through the one teardown path: uninstall the unit (also boots out a
+			// crash-looping one), stop any daemon that did come up, delete the home tree.
+			await agent.delete();
 			throw error;
 		}
 		return agent;

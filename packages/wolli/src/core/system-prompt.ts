@@ -8,6 +8,7 @@
 
 import { APP_NAME, getBuiltInSkillsDir, getDocsPath, getPluginsDir, getReadmePath } from "../config.ts";
 import type { AgentConfig } from "./agent-settings-manager.ts";
+import { SOUL_BUDGET } from "./memory.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {
@@ -48,8 +49,8 @@ const ONBOARDING_INSTRUCTION = [
 	"",
 	"When the two of you agree on what you are, write SOUL.md yourself with the file tools — who you are,",
 	"what you're for, how you operate. Its first line must be one tight purpose statement: it becomes your",
-	"description everywhere. Keep the whole file well under 8000 characters. Once SOUL.md has content,",
-	"this block disappears.",
+	`description everywhere. Keep the whole file well under ${SOUL_BUDGET} characters. Once SOUL.md has`,
+	"content, this block disappears.",
 ].join("\n");
 
 const EXTENDING_YOURSELF = [
