@@ -516,7 +516,6 @@ export function useSessionPlaylist(urls: string[]): UseSessionPlaylistResult {
 	const [sections, setSections] = useState<PlaylistSection[]>(() => urls.map(() => IDLE_SECTION));
 	const [activeIndex, setActiveIndex] = useState(-1);
 
-	const urlsRef = useRef(urls);
 	const frontierRef = useRef(-1);
 	const statusRef = useRef<SectionStatus[]>(urls.map(() => "idle"));
 	const controllerRef = useRef<AbortController | null>(null);
@@ -537,11 +536,13 @@ export function useSessionPlaylist(urls: string[]): UseSessionPlaylistResult {
 	}, []);
 
 	// Prefetch every session on mount so folding a skipped section is effectively synchronous.
-	// Unmount aborts whatever driver is running.
 	useEffect(() => {
-		for (const url of urlsRef.current) messagesFor(url).catch((error) => console.error(error));
-		return () => controllerRef.current?.abort();
-	}, [messagesFor]);
+		for (const url of urls) messagesFor(url).catch((error) => console.error(error));
+	}, [urls, messagesFor]);
+
+	// Unmount aborts whatever driver is running. Mount-only: tying this to `urls` would let a
+	// caller-side re-render (a fresh array identity) abort a live driver mid-play.
+	useEffect(() => () => controllerRef.current?.abort(), []);
 
 	const setSection = useCallback((index: number, section: PlaylistSection) => {
 		setSections((previous) => previous.map((existing, i) => (i === index ? section : existing)));
@@ -552,10 +553,10 @@ export function useSessionPlaylist(urls: string[]): UseSessionPlaylistResult {
 	const playSection = useCallback(
 		async (index: number, signal: AbortSignal) => {
 			try {
-				const messages = await messagesFor(urlsRef.current[index]!);
+				const messages = await messagesFor(urls[index]!);
 				if (signal.aborted) return;
 				let working = initialState();
-				for (const frame of Array.from(replay(messages))) {
+				for (const frame of replay(messages)) {
 					if (signal.aborted) return;
 					working = applyEvent(working, frame);
 					setSection(index, {
@@ -573,12 +574,12 @@ export function useSessionPlaylist(urls: string[]): UseSessionPlaylistResult {
 				if (!signal.aborted) console.error(error);
 			}
 		},
-		[messagesFor, setSection],
+		[urls, messagesFor, setSection],
 	);
 
 	const activate = useCallback(
 		(index: number) => {
-			if (index < 0 || index >= urlsRef.current.length) return;
+			if (index < 0 || index >= urls.length) return;
 			// At or behind the frontier: just move the viewer; never rewind or replay.
 			if (index <= frontierRef.current) {
 				setActiveIndex(index);
@@ -589,7 +590,7 @@ export function useSessionPlaylist(urls: string[]): UseSessionPlaylistResult {
 			for (let i = Math.max(frontierRef.current, 0); i < index; i++) {
 				if (statusRef.current[i] === "done") continue;
 				statusRef.current[i] = "done";
-				messagesFor(urlsRef.current[i]!)
+				messagesFor(urls[i]!)
 					.then((messages) => {
 						setSection(i, { status: "done", blocks: sessionToBlocks(messages), busy: false, input: "" });
 					})
@@ -602,7 +603,7 @@ export function useSessionPlaylist(urls: string[]): UseSessionPlaylistResult {
 			controllerRef.current = controller;
 			void playSection(index, controller.signal);
 		},
-		[messagesFor, playSection, setSection],
+		[urls, messagesFor, playSection, setSection],
 	);
 
 	return { sections, activeIndex, activate };

@@ -22,6 +22,9 @@ const BIRTH_FILES = ["SOUL.md", "MEMORY.md", "USER.md"] as const;
 // SESSION_URLS[i] when its block crosses the activation line.
 const SESSION_URLS = ["/sessions/forming.jsonl"];
 
+// Shown in the empty chat before the first section activates.
+const RAIL_HINT = "scroll to watch scout form";
+
 // The rail effect writes `--rail-progress` onto the rail element (raw linear, so the card
 // tracks the scroll 1:1 and freezes when it stops); below SETTLE_AT the intro attribute
 // hides the copy and activation is held off (ungated, section 1 would start playing
@@ -89,12 +92,18 @@ function Home() {
 		if (!rail) return;
 		const anchors = Array.from(rail.querySelectorAll<HTMLElement>("[data-rail-section]"));
 		let lastIndex = -1;
+		let lastProgress = "";
 
-		function onScroll() {
-			if (!rail) return;
+		const onScroll = () => {
 			const progress = Math.min(Math.max(1 - rail.getBoundingClientRect().top / window.innerHeight, 0), 1);
-			rail.style.setProperty("--rail-progress", progress.toFixed(4));
-			rail.toggleAttribute("data-rail-intro", progress < SETTLE_AT);
+			// Skip the style write once the value settles (pinned at 1 for most of the page)
+			// so scrolling below the rail doesn't invalidate its subtree every frame.
+			const next = progress.toFixed(4);
+			if (next !== lastProgress) {
+				lastProgress = next;
+				rail.style.setProperty("--rail-progress", next);
+				rail.toggleAttribute("data-rail-intro", progress < SETTLE_AT);
+			}
 
 			// Activation, gated on the intro settling: the last anchor above the line wins.
 			let index = -1;
@@ -108,7 +117,7 @@ function Home() {
 				lastIndex = index;
 				if (index >= 0) activate(index);
 			}
-		}
+		};
 
 		onScroll();
 		window.addEventListener("scroll", onScroll, { passive: true });
@@ -189,7 +198,7 @@ function Home() {
 						<div className="mt-8 md:hidden">
 							<DemoCard
 								view={sections[0]!}
-								hint="scroll to watch scout form"
+								hint={RAIL_HINT}
 								files={files}
 								currentFile={activeIndex === 0 ? currentFile : undefined}
 							/>
@@ -201,7 +210,7 @@ function Home() {
 						<DemoCard
 							className="rail-card"
 							view={active}
-							hint="scroll to watch scout form"
+							hint={RAIL_HINT}
 							files={files}
 							currentFile={currentFile}
 						/>
