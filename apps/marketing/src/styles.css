@@ -173,3 +173,26 @@ body {
     opacity: 0;
   }
 }
+
+/* --- Demo rail -------------------------------------------------------------
+   The rail effect in routes/index.tsx writes `--rail-progress` (0 = rail a
+   viewport below, 1 = pinned) onto the rail element and toggles
+   `data-rail-intro` below 0.8.
+   The card slide is a raw linear calc with NO transition (stop scrolling and
+   it freezes); the copy reveal is a gated 220ms fade/rise. Desktop-only and
+   motion-safe; without JS (prerender) neither is set, so the fallback is the
+   settled layout with copy visible. */
+@media (min-width: 48rem) and (prefers-reduced-motion: no-preference) {
+  .rail-card {
+    transform: translateX(calc((var(--rail-progress, 1) - 1) * 22vw));
+  }
+  .rail-copy {
+    opacity: 1;
+    transform: translateY(0);
+    transition: opacity 220ms ease, transform 220ms ease;
+  }
+  [data-rail-intro] .rail-copy {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}

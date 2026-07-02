@@ -1,5 +1,5 @@
 // Chat: the web copy of the wolli chat. It renders the replayed transcript blocks from
-// useSession, mirroring wolli's component + tool-renderer structure (coding-agent's
+// useSessionPlaylist, mirroring wolli's component + tool-renderer structure (coding-agent's
 // modes/interactive/interactive-mode.ts, modes/interactive/components/*, core/tools/*):
 //   - user messages render in a subtle bubble,
 //   - assistant bubbles render TEXT/THINKING only (toolCall blocks are skipped, exactly
@@ -20,15 +20,16 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { codeToHtml } from "shiki";
 import { Streamdown } from "streamdown";
-
-import type { ToolBlock, TranscriptBlock } from "@/hooks/use-session";
 import type { AssistantMessage } from "@/lib/session";
+import type { ToolBlock, TranscriptBlock } from "@/lib/session-player";
 import { cn } from "@/lib/utils";
 
 export interface ChatProps {
 	blocks: TranscriptBlock[];
 	busy?: boolean;
 	input: string;
+	/** Shown centered in the empty scroll area before playback starts. */
+	hint?: string;
 	className?: string;
 }
 
@@ -441,7 +442,7 @@ function Composer({ input }: { input: string }) {
 // Chat
 // ---------------------------------------------------------------------------
 
-export function Chat({ blocks, busy = false, input, className }: ChatProps) {
+export function Chat({ blocks, busy = false, input, hint, className }: ChatProps) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 
 	// Keep the newest content in view as the transcript grows and the composer types.
@@ -459,6 +460,10 @@ export function Chat({ blocks, busy = false, input, className }: ChatProps) {
 			)}
 		>
 			<div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] pt-[18px] pb-3" ref={scrollRef}>
+				{/* The !input guard covers sessions that open with the user typing. */}
+				{blocks.length === 0 && !busy && !input && hint ? (
+					<div className="flex h-full items-center justify-center text-chat-muted select-none">{hint}</div>
+				) : null}
 				{blocks.map((block) => (
 					<Block key={block.key} block={block} />
 				))}

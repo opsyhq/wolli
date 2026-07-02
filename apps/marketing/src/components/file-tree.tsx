@@ -44,19 +44,20 @@ export function FileTree({ files, currentFile, className }: FileTreeProps) {
 			))}
 			{NATIVE_FOLDERS.map((folder) => {
 				const prefix = `${folder}/`;
+				const children = files.filter((file) => file.path.startsWith(prefix));
+				// Birth creates no native folders; one appears when a session first writes into it.
+				if (children.length === 0) return null;
 				return (
 					<div key={folder}>
 						<div className={ROW}>{prefix}</div>
-						{files
-							.filter((file) => file.path.startsWith(prefix))
-							.map((file) => (
-								<FileRow
-									key={file.path}
-									label={file.path.slice(prefix.length)}
-									active={file.path === currentFile}
-									nested
-								/>
-							))}
+						{children.map((file) => (
+							<FileRow
+								key={file.path}
+								label={file.path.slice(prefix.length)}
+								active={file.path === currentFile}
+								nested
+							/>
+						))}
 					</div>
 				);
 			})}
