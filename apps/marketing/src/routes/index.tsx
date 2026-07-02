@@ -178,7 +178,9 @@ function Home() {
 	}, [activate]);
 
 	const active = activeIndex >= 0 ? sections[activeIndex] : undefined;
-	const currentFile = active?.status === "playing" ? activeWriteFile(active.blocks) : undefined;
+	// The active section's write stays highlighted for as long as the section is active —
+	// the cue to what it added — and clears only when another section takes over.
+	const currentFile = active ? activeWriteFile(active.blocks) : undefined;
 
 	// Seed files plus everything transcripts write; the in-flight write appears immediately.
 	const files = useMemo<FileNode[]>(() => {
