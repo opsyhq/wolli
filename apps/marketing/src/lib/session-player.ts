@@ -332,14 +332,18 @@ function* replay(messages: AgentMessage[]): Generator<Frame> {
 	for (let i = 0; i < messages.length; i++) {
 		const message = messages[i]!;
 		if (message.role === "user") {
-			// Type the message into the composer (idle), send it, then the run starts.
+			// Type the message into the composer (idle), then the run opens and the
+			// message "sends". agent_start comes BEFORE submit so the transcript is
+			// never in the fully-idle state (empty blocks, empty input, not busy)
+			// between the composer clearing and the user bubble landing — the chat
+			// would flash its hint there.
 			let acc = "";
 			for (const token of streamTokens(getUserMessageText(message.content))) {
 				acc += token;
 				yield { type: "input", text: acc };
 			}
-			yield { type: "submit" };
 			yield { type: "agent_start" };
+			yield { type: "submit" };
 			running = true;
 			yield { type: "message_start", message };
 			yield { type: "message_end", message };

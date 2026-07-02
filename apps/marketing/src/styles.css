@@ -174,11 +174,37 @@ body {
   }
 }
 
-/* Demo rail: routes/index.tsx writes `--rail-progress` (0 = rail a viewport
-   below, 1 = locked in). Raw linear, no transition — stop scrolling and it
-   freezes. Unset without JS (prerender), falling back to the locked slot. */
+/* Demo rail card slide: a scroll-driven animation on the rail's view timeline,
+   no JS involved — the browser derives it from geometry, so the first paint is
+   already correct (no hydration flash). Rail top traveling 100vh -> 50vh maps
+   to translateX(-15vw) -> 0; the 50vh span mirrors LOCK_AT in routes/index.tsx.
+   Browsers without scroll-driven animations show the card in its locked slot. */
 @media (min-width: 48rem) and (prefers-reduced-motion: no-preference) {
+  #demo-rail {
+    view-timeline: --rail block;
+  }
   .rail-card {
-    transform: translateX(calc((var(--rail-progress, 1) - 1) * 15vw));
+    animation: rail-slide linear both;
+    animation-timeline: --rail;
+    animation-range: entry 0vh entry 50vh;
+  }
+  @keyframes rail-slide {
+    from {
+      transform: translateX(-15vw);
+    }
+    to {
+      transform: none;
+    }
+  }
+}
+
+/* Header focus: routes/index.tsx writes `--focus` per section (1 = within
+   FOCUS_HOLD of the focal line, falling all the way to 0 over FOCUS_FALLOFF).
+   Raw scroll-driven, no transition. Desktop only — on mobile the demo card
+   lives inside the section and must stay readable. Unset without JS
+   (prerender), falling back to full opacity. */
+@media (min-width: 48rem) {
+  [data-rail-section] {
+    opacity: var(--focus, 1);
   }
 }

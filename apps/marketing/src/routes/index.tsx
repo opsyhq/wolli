@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Check, Copy } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Blocks, BookOpen, Check, Copy, GitBranch, type LucideIcon, Plug, Shield, Target } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Chat } from "@/components/chat";
 import { type FileNode, FileTree } from "@/components/file-tree";
@@ -24,12 +24,61 @@ const agentName = "scout";
 const SEED_FILES = ["MEMORY.md", "USER.md"];
 
 // One url per [data-rail-section] block below, in DOM order.
-const SESSION_URLS = ["/sessions/forming.jsonl"];
+const SESSION_URLS = [
+	"/sessions/forming.jsonl",
+	"/sessions/placeholder-1.jsonl",
+	"/sessions/placeholder-2.jsonl",
+	"/sessions/placeholder-3.jsonl",
+];
 
 const RAIL_HINT = "scroll to watch scout form";
 
+// The secondary-features grid below the rail.
+const FEATURES: Array<{ icon: LucideIcon; title: string; description: string }> = [
+	{
+		icon: Target,
+		title: "Purpose-built",
+		description:
+			"The agent works out its purpose with you in its first conversation and writes it as the first line of its SOUL.md.",
+	},
+	{
+		icon: Blocks,
+		title: "Self-extending",
+		description:
+			"The agent authors and installs its own skills, tools, and integrations. It grows more capable at its job instead of staying a fixed tool.",
+	},
+	{
+		icon: GitBranch,
+		title: "Persistent",
+		description:
+			"Sessions are an append-only JSONL tree, the agent's lifetime memory. Nothing is rewritten; the latest leaf resumes by default.",
+	},
+	{
+		icon: BookOpen,
+		title: "Curated memory",
+		description:
+			"SOUL.md, MEMORY.md, and USER.md are frozen into the system prompt each session, maintained by the agent itself.",
+	},
+	{
+		icon: Shield,
+		title: "Sandboxed",
+		description:
+			"Runs sandboxed by default: Apple Seatbelt, bubblewrap, or Docker. Your real machine is an approval-gated escalation away.",
+	},
+	{
+		icon: Plug,
+		title: "Any model",
+		description: "Multi-provider via OAuth login: Anthropic, OpenAI, and others.",
+	},
+];
+
 const LOCK_AT = 0.5; // fraction of the pin distance the slide takes
-const ACTIVATION_LINE = 0.7; // fraction of viewport height
+const FOCAL_LINE = 0.5; // fraction of viewport height headers focus around
+const FOCUS_HOLD = 0.18; // headers stay fully bold within this range of the focal line
+const FOCUS_FALLOFF = 0.2; // then fade out over this much more viewport
+
+// useLayoutEffect warns during SSR; the scroll driver only matters in the browser.
+const useBrowserLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 type PlaylistSection = { status: SessionPlayerStatus } & SessionSnapshot;
 
@@ -135,31 +184,41 @@ function Home() {
 		[players, sync],
 	);
 
-	// One passive listener drives the card slide (--rail-progress) and section activation.
-	// Direct DOM writes are safe: the rail's className is static.
-	useEffect(() => {
+	// One passive listener drives header focus and section activation. The card slide
+	// itself is a CSS scroll-driven animation (styles.css); JS only mirrors the same
+	// slide value to gate activation. Direct DOM writes are safe: the rail's className
+	// is static. Layout effect so focus values land before paint on load.
+	useBrowserLayoutEffect(() => {
 		const rail = railRef.current;
 		if (!rail) return;
 		const anchors = Array.from(rail.querySelectorAll<HTMLElement>("[data-rail-section]"));
 		let lastIndex = -1;
-		let lastProgress = "";
 
 		const onScroll = () => {
 			const progress = Math.min(Math.max(1 - rail.getBoundingClientRect().top / window.innerHeight, 0), 1);
 			const slide = Math.min(progress / LOCK_AT, 1);
-			// Skip the write when unchanged so scrolling below the rail stays free.
-			const next = slide.toFixed(4);
-			if (next !== lastProgress) {
-				lastProgress = next;
-				rail.style.setProperty("--rail-progress", next);
-			}
 
-			// The last anchor above the line wins; nothing activates before the card locks in.
+			// Each header's focus comes from its distance to the focal line: fully bold
+			// within FOCUS_HOLD of it, fading to 0 over the next FOCUS_FALLOFF;
+			// styles.css maps it to opacity. The closest header is the active
+			// section — but nothing activates before the card locks in.
+			const line = window.innerHeight * FOCAL_LINE;
+			const hold = window.innerHeight * FOCUS_HOLD;
+			const falloff = window.innerHeight * FOCUS_FALLOFF;
 			let index = -1;
-			if (slide >= 1) {
-				const line = window.innerHeight * ACTIVATION_LINE;
-				for (let i = 0; i < anchors.length; i++) {
-					if (anchors[i]!.getBoundingClientRect().top <= line) index = i;
+			let best = Infinity;
+			for (let i = 0; i < anchors.length; i++) {
+				const anchor = anchors[i]!;
+				const rect = anchor.getBoundingClientRect();
+				const offset = rect.top + rect.height / 2 - line;
+				// The last header never fades back out upward — it stays bold as the rail
+				// runs out.
+				const distance = i === anchors.length - 1 ? Math.max(offset, 0) : Math.abs(offset);
+				const focus = Math.min(Math.max(1 - (distance - hold) / falloff, 0), 1);
+				anchor.style.setProperty("--focus", focus.toFixed(3));
+				if (slide >= 1 && distance < best) {
+					best = distance;
+					index = i;
 				}
 			}
 			if (index !== lastIndex) {
@@ -182,13 +241,16 @@ function Home() {
 	// the cue to what it added — and clears only when another section takes over.
 	const currentFile = active ? activeWriteFile(active.blocks) : undefined;
 
-	// Seed files plus everything transcripts write; the in-flight write appears immediately.
+	// Seed files plus what the sections up to the active one wrote — scrolling back
+	// out of a section takes its files with it. The in-flight write appears immediately.
 	const files = useMemo<FileNode[]>(() => {
 		const paths = new Set<string>(SEED_FILES);
-		for (const section of sections) for (const path of writtenFiles(section.blocks)) paths.add(path);
+		for (const section of sections.slice(0, activeIndex + 1)) {
+			for (const path of writtenFiles(section.blocks)) paths.add(path);
+		}
 		if (currentFile) paths.add(currentFile);
 		return [...paths].map((path) => ({ path }));
-	}, [sections, currentFile]);
+	}, [sections, activeIndex, currentFile]);
 
 	function copyInstall() {
 		navigator.clipboard.writeText(INSTALL_COMMAND).then(() => {
@@ -199,8 +261,8 @@ function Home() {
 
 	return (
 		<>
-			{/* Short hero (88svh) so the card below peeks under the fold, hinting there's more. */}
-			<main className="flex min-h-[88svh] flex-col items-center justify-center px-6">
+			{/* Short hero (72svh) so the card below peeks well under the fold, hinting there's more. */}
+			<main className="flex min-h-[72svh] flex-col items-center justify-center px-6">
 				<div className="mx-auto flex max-w-3xl flex-col items-center text-center">
 					<h1 className="text-5xl font-semibold tracking-tight text-balance sm:text-6xl md:text-7xl">
 						Create agents that grow around a purpose
@@ -229,12 +291,15 @@ function Home() {
 			</main>
 			<section
 				ref={railRef}
+				id="demo-rail"
 				className="relative mx-auto w-full max-w-[88rem] px-6 pb-32 md:grid md:grid-cols-[minmax(280px,340px)_minmax(0,1fr)] md:gap-12"
 			>
-				<div>
+				{/* Tail padding lets the last header travel all the way to the focal line
+				    while the card is still pinned. */}
+				<div className="md:pb-[30svh]">
 					{/* Section 0: forming. Each future section is its own block with
 					    data-rail-section + a SESSION_URLS entry. */}
-					<div data-rail-section className="py-16 md:min-h-svh md:py-0 md:pt-[30svh]">
+					<div data-rail-section className="py-16 md:flex md:min-h-[60svh] md:flex-col md:justify-center md:py-0">
 						<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
 							Give each agent a purpose
 						</h2>
@@ -247,6 +312,55 @@ function Home() {
 								hint={RAIL_HINT}
 								files={files}
 								currentFile={activeIndex === 0 ? currentFile : undefined}
+							/>
+						</div>
+					</div>
+					{/* Placeholder sections: lorem ipsum copy over arbitrary demo sessions. */}
+					<div data-rail-section className="py-16 md:flex md:min-h-[60svh] md:flex-col md:justify-center md:py-0">
+						<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+							Lorem ipsum dolor sit amet
+						</h2>
+						<p className="mt-4 max-w-md text-lg text-muted-foreground">
+							Consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+						</p>
+						<div className="mt-8 md:hidden">
+							<DemoCard
+								view={sections[1]!}
+								hint={RAIL_HINT}
+								files={files}
+								currentFile={activeIndex === 1 ? currentFile : undefined}
+							/>
+						</div>
+					</div>
+					<div data-rail-section className="py-16 md:flex md:min-h-[60svh] md:flex-col md:justify-center md:py-0">
+						<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+							Ut enim ad minim veniam
+						</h2>
+						<p className="mt-4 max-w-md text-lg text-muted-foreground">
+							Quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+						</p>
+						<div className="mt-8 md:hidden">
+							<DemoCard
+								view={sections[2]!}
+								hint={RAIL_HINT}
+								files={files}
+								currentFile={activeIndex === 2 ? currentFile : undefined}
+							/>
+						</div>
+					</div>
+					<div data-rail-section className="py-16 md:flex md:min-h-[60svh] md:flex-col md:justify-center md:py-0">
+						<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+							Duis aute irure dolor
+						</h2>
+						<p className="mt-4 max-w-md text-lg text-muted-foreground">
+							In reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
+						</p>
+						<div className="mt-8 md:hidden">
+							<DemoCard
+								view={sections[3]!}
+								hint={RAIL_HINT}
+								files={files}
+								currentFile={activeIndex === 3 ? currentFile : undefined}
 							/>
 						</div>
 					</div>
@@ -263,6 +377,41 @@ function Home() {
 					</div>
 				</div>
 			</section>
+			<section className="mx-auto w-full max-w-6xl px-6 py-24 md:py-32">
+				<div className="mx-auto max-w-2xl text-center">
+					<h2 className="text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
+						Everything an agent needs to grow
+					</h2>
+					<p className="mt-5 text-lg text-balance text-muted-foreground">
+						Memory, autonomy, sandboxing, and scheduling are built into every agent. Focus on its purpose.
+					</p>
+				</div>
+				<div className="mt-16 grid gap-x-12 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
+					{FEATURES.map((feature) => (
+						<div key={feature.title}>
+							<div className="flex items-center gap-2.5">
+								<feature.icon className="size-4.5" aria-hidden />
+								<h3 className="font-medium">{feature.title}</h3>
+							</div>
+							<p className="mt-3 leading-relaxed text-muted-foreground">{feature.description}</p>
+						</div>
+					))}
+				</div>
+			</section>
+			{/* Single-bar footer mirroring the header's container dimensions. */}
+			<footer className="border-t border-border bg-muted/50">
+				<div className="mx-auto flex h-14 w-full items-center justify-between px-16 text-sm text-muted-foreground md:px-32 lg:px-48">
+					<p>© 2026 Opsy, Inc.</p>
+					<a
+						href="https://github.com/opsyhq/wolli"
+						target="_blank"
+						rel="noreferrer"
+						className="transition-colors hover:text-foreground"
+					>
+						GitHub
+					</a>
+				</div>
+			</footer>
 		</>
 	);
 }
