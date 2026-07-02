@@ -468,7 +468,7 @@ export function Chat({ blocks, busy = false, input, hint, className }: ChatProps
 		>
 			{/* Scrollbar hidden: the demo scrolls itself, so the indicator is just noise. */}
 			<div
-				className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-none px-[18px] pt-[18px] pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+				className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] pt-[18px] pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
 				ref={scrollRef}
 			>
 				{/* The !input guard covers sessions that open with the user typing. */}
