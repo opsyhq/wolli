@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { Chat } from "@/components/chat";
 import { type FileNode, FileTree } from "@/components/file-tree";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
 	activeWriteFile,
 	SessionPlayer,
@@ -118,10 +118,11 @@ function DemoCard({
 				<div className="h-[440px] min-h-0 min-w-0 overflow-hidden md:h-full">
 					<Chat blocks={view?.blocks ?? []} busy={view?.busy ?? false} input={view?.input ?? ""} hint={hint} />
 				</div>
+				{/* The tree is desktop-only; on mobile the card is just the chat. */}
 				<FileTree
 					files={files}
 					currentFile={currentFile}
-					className="border-t border-chat-border md:border-t-0 md:border-l"
+					className="hidden md:block md:border-l md:border-chat-border"
 				/>
 			</div>
 		</div>
@@ -398,9 +399,23 @@ function Home() {
 					))}
 				</div>
 			</section>
+			{/* Closing call to action. */}
+			<section className="mx-auto w-full max-w-6xl px-6 py-32 text-center md:py-48">
+				<h2 className="text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
+					Create your own agent today
+				</h2>
+				<div className="mt-10">
+					<a
+						href="/docs/getting-started"
+						className={cn(buttonVariants({ size: "lg" }), "h-12 rounded-full px-7 text-base")}
+					>
+						Get started
+					</a>
+				</div>
+			</section>
 			{/* Single-bar footer mirroring the header's container dimensions. */}
 			<footer className="border-t border-border bg-muted/50">
-				<div className="mx-auto flex h-14 w-full items-center justify-between px-16 text-sm text-muted-foreground md:px-32 lg:px-48">
+				<div className="mx-auto flex h-14 w-full items-center justify-between px-6 text-sm text-muted-foreground md:px-32 lg:px-48">
 					<p>© 2026 Opsy, Inc.</p>
 					<a
 						href="https://github.com/opsyhq/wolli"

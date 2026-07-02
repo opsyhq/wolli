@@ -41,11 +41,11 @@ function GitHubIcon({ className }: { className?: string }) {
 function SiteHeader() {
 	return (
 		<header className="sticky top-0 z-50 border-b border-black/5 bg-background/80 backdrop-blur-xl backdrop-saturate-150">
-			<div className="mx-auto flex h-14 w-full items-center px-16 md:px-32 lg:px-48">
+			<div className="mx-auto flex h-14 w-full items-center px-6 md:px-32 lg:px-48">
 				<a href="/" className="text-lg font-bold tracking-tight text-foreground">
 					Wolli
 				</a>
-				<nav className="ml-10 flex items-center gap-8 text-sm text-muted-foreground">
+				<nav className="ml-6 flex items-center gap-5 text-sm text-muted-foreground md:ml-10 md:gap-8">
 					<a href="/" className="transition-colors hover:text-foreground">
 						Docs
 					</a>
