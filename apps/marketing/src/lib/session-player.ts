@@ -18,7 +18,7 @@
 // Playback is self-timed: each frame is applied, then the driver waits that frame's own
 // delay before the next, so a user's typing or an assistant's stream runs to its end before
 // the next thing starts. Orchestration across sessions (which one is active, the scroll
-// frontier) lives in hooks/use-session-playlist.ts.
+// frontier) lives with the rail in routes/index.tsx.
 
 import type { AgentEvent, AgentMessage, AssistantMessage, TextContent, ThinkingContent, ToolCall } from "@/lib/session";
 import { loadSession } from "@/lib/session";
@@ -497,7 +497,8 @@ const IDLE_SNAPSHOT: SessionSnapshot = { blocks: [], busy: false, input: "" };
 // One player per session url. `play` is the self-timed driver (apply frame -> emit ->
 // sleep); `fold` reveals the complete transcript instantly (for sessions skipped by a
 // fast scroll: prior chapters — their files must exist by the time a later session
-// plays); both settle the player as done. The player is the sole owner of its status;
+// plays); both settle the player as done. `pause`/`resume` freeze the driver between
+// frames while the section is out of view. The player is the sole owner of its status;
 // the playlist hook reads it synchronously and projects `snapshot` into React state via
 // the `onChange` it passes in. Knows nothing about other sessions, scroll, or React.
 export class SessionPlayer {
@@ -507,6 +508,8 @@ export class SessionPlayer {
 
 	private readonly url: string;
 	private messages: Promise<AgentMessage[]> | null = null;
+	private paused = false;
+	private resumeResolvers: Array<() => void> = [];
 
 	constructor(url: string) {
 		this.url = url;
@@ -532,7 +535,8 @@ export class SessionPlayer {
 	}
 
 	// Self-timed driver: apply a frame, wait its own delay (eventCost), apply the next.
-	// An abort returns without writes — the aborting caller folds the player itself.
+	// A pause holds the loop between frames until resume; an abort returns without
+	// writes — the aborting caller folds the player itself.
 	async play(onChange: (snapshot: SessionSnapshot) => void, signal: AbortSignal): Promise<void> {
 		this.status = "playing";
 		try {
@@ -540,6 +544,7 @@ export class SessionPlayer {
 			if (signal.aborted) return;
 			let working = initialState();
 			for (const frame of replay(messages)) {
+				await this.waitWhilePaused(signal);
 				if (signal.aborted) return;
 				working = applyEvent(working, frame);
 				this.emit({ blocks: working.blocks, busy: working.busy, input: working.input }, onChange);
@@ -551,6 +556,26 @@ export class SessionPlayer {
 		} catch (error) {
 			if (!signal.aborted) console.error(error);
 		}
+	}
+
+	/** Freeze the driver between frames (the section scrolled out of view). No-op unless playing. */
+	pause(): void {
+		if (this.status === "playing") this.paused = true;
+	}
+
+	/** Let a paused driver continue from exactly where it froze. */
+	resume(): void {
+		this.paused = false;
+		for (const resolve of this.resumeResolvers.splice(0)) resolve();
+	}
+
+	// Resolves immediately when not paused; otherwise on resume() or abort.
+	private waitWhilePaused(signal: AbortSignal): Promise<void> {
+		if (!this.paused || signal.aborted) return Promise.resolve();
+		return new Promise((resolve) => {
+			this.resumeResolvers.push(resolve);
+			signal.addEventListener("abort", () => resolve(), { once: true });
+		});
 	}
 
 	// Fold to the complete transcript without playing.

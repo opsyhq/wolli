@@ -1,18 +1,27 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Check, Copy } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Chat } from "@/components/chat";
 import { type FileNode, FileTree } from "@/components/file-tree";
 import { Button } from "@/components/ui/button";
-import { type PlaylistSection, useSessionPlaylist } from "@/hooks/use-session-playlist";
-import { activeWriteFile, writtenFiles } from "@/lib/session-player";
+import {
+	activeWriteFile,
+	SessionPlayer,
+	type SessionPlayerStatus,
+	type SessionSnapshot,
+	writtenFiles,
+} from "@/lib/session-player";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({ component: Home });
 
 const INSTALL_COMMAND = "npm i -g wolli";
 const agentName = "scout";
+
+// In the tree from the start (createAgent seeds them empty at birth). SOUL.md is also
+// born empty, but the demo holds it back so the write visibly creates it.
+const SEED_FILES = ["MEMORY.md", "USER.md"];
 
 // One url per [data-rail-section] block below, in DOM order — section i plays
 // SESSION_URLS[i] when its block crosses the activation line.
@@ -21,12 +30,27 @@ const SESSION_URLS = ["/sessions/forming.jsonl"];
 // Shown in the empty chat before the first section activates.
 const RAIL_HINT = "scroll to watch scout form";
 
-// The rail effect writes `--rail-progress` onto the rail element (raw linear, so the card
-// tracks the scroll 1:1 and freezes when it stops); below SETTLE_AT the intro attribute
-// hides the copy and activation is held off (ungated, section 1 would start playing
-// mid-slide at ~0.3 progress).
-const SETTLE_AT = 0.8; // copy reveal gate + activation gate
+// The rail effect writes `--rail-progress` onto the rail element (raw linear, so the
+// card tracks the scroll 1:1 and freezes when it stops). Activation is held off below
+// SETTLE_AT — ungated, section 1 would start playing mid-slide at ~0.3 progress.
+const SETTLE_AT = 0.8; // activation gate
 const ACTIVATION_LINE = 0.7; // fraction of viewport height
+
+// ---------------------------------------------------------------------------
+// Playlist orchestration (inline: this page is its only consumer)
+// ---------------------------------------------------------------------------
+
+// What the card renders for one session slot.
+type PlaylistSection = { status: SessionPlayerStatus } & SessionSnapshot;
+
+// The immutable React-state view of a (mutable) player.
+function project(player: SessionPlayer): PlaylistSection {
+	return { status: player.status, ...player.snapshot };
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 // The demo card: split header (name over the chat, path over the tree) and Chat/FileTree
 // body. `view` is the active playlist slot; undefined before the first activation renders
@@ -52,13 +76,13 @@ function DemoCard({
 			)}
 		>
 			{/* Split header: name over the chat, path over the tree; divider carried through to align the body. */}
-			<div className="grid grid-cols-[1fr_auto] border-b border-chat-border md:grid-cols-[1fr_260px]">
+			<div className="grid grid-cols-[1fr_auto] border-b border-chat-border md:grid-cols-[1fr_200px]">
 				<div className="min-w-0 px-4 py-3 font-mono text-[13px] font-medium text-chat-text">{agentName}</div>
 				<div className="truncate px-4 py-3 font-mono text-[13px] text-chat-muted md:border-l md:border-chat-border">
 					~/.wolli/agents/{agentName}
 				</div>
 			</div>
-			<div className="flex flex-col md:grid md:h-[520px] md:grid-cols-[1fr_260px]">
+			<div className="flex flex-col md:grid md:h-[520px] md:grid-cols-[1fr_200px]">
 				{/* min-w-0 lets the chat shrink so wide code scrolls inside instead of shoving the tree off-screen. */}
 				<div className="h-[440px] min-h-0 min-w-0 overflow-hidden md:h-full">
 					<Chat blocks={view?.blocks ?? []} busy={view?.busy ?? false} input={view?.input ?? ""} hint={hint} />
@@ -76,13 +100,68 @@ function DemoCard({
 function Home() {
 	const [copied, setCopied] = useState(false);
 	const railRef = useRef<HTMLElement | null>(null);
-	const { sections, activeIndex, activate } = useSessionPlaylist(SESSION_URLS);
+
+	// One SessionPlayer per session url, created once. The rail effect below drives them
+	// through activate(): play once around a frontier (never rewind), fold anything a fast
+	// scroll skipped, and pause/resume the playing session as it leaves/enters view.
+	const playersRef = useRef<SessionPlayer[] | null>(null);
+	playersRef.current ??= SESSION_URLS.map((url) => new SessionPlayer(url));
+	const players = playersRef.current;
+
+	const [sections, setSections] = useState<PlaylistSection[]>(() => players.map(project));
+	const [activeIndex, setActiveIndex] = useState(-1);
+	const frontierRef = useRef(-1);
+	const controllerRef = useRef<AbortController | null>(null);
+
+	// Prefetch every session on mount so folding a skipped section is effectively synchronous.
+	useEffect(() => {
+		for (const player of players) player.load().catch((error) => console.error(error));
+	}, [players]);
+
+	// Unmount aborts whatever driver is running.
+	useEffect(() => () => controllerRef.current?.abort(), []);
+
+	// Players mutate in place; re-project them all into fresh section objects so React re-renders.
+	const sync = useCallback(() => setSections(players.map(project)), [players]);
+
+	const activate = useCallback(
+		(index: number) => {
+			const frontier = frontierRef.current;
+			const playing = frontier >= 0 ? players[frontier] : undefined;
+			// Nothing in view (above the rail): freeze the running session; content stays shown.
+			if (index < 0 || index >= players.length) {
+				playing?.pause();
+				return;
+			}
+			// At or behind the frontier: never rewind or replay — the frontier only runs
+			// while it is the section in view.
+			if (index <= frontier) {
+				if (index === frontier) playing?.resume();
+				else playing?.pause();
+				setActiveIndex(index);
+				return;
+			}
+			controllerRef.current?.abort();
+			// Fold every not-done section below the new frontier to its full transcript
+			// (prior chapters: their files must exist by the time a later section plays).
+			for (let i = Math.max(frontier, 0); i < index; i++) {
+				const player = players[i]!;
+				if (player.status !== "done") void player.fold(sync);
+			}
+			frontierRef.current = index;
+			setActiveIndex(index);
+			const controller = new AbortController();
+			controllerRef.current = controller;
+			void players[index]!.play(sync, controller.signal);
+		},
+		[players, sync],
+	);
 
 	// The rail scroll effect: one passive scroll listener writes normalized progress into
-	// `--rail-progress` (CSS maps it to the card slide), toggles `data-rail-intro` for the
-	// copy reveal, and calls activate(i) when a section's anchor crosses the activation
-	// line (play once, fold skipped, never rewind). Direct DOM writes are safe: the rail's
-	// className is a static string React never rewrites. Mount-only; anchors are static.
+	// `--rail-progress` (CSS maps it to the card slide) and reports the section under the
+	// activation line to activate() — including -1 when none is, which pauses playback.
+	// Direct DOM writes are safe: the rail's className is a static string React never
+	// rewrites. Mount-only; anchors are static.
 	useEffect(() => {
 		const rail = railRef.current;
 		if (!rail) return;
@@ -98,7 +177,6 @@ function Home() {
 			if (next !== lastProgress) {
 				lastProgress = next;
 				rail.style.setProperty("--rail-progress", next);
-				rail.toggleAttribute("data-rail-intro", progress < SETTLE_AT);
 			}
 
 			// Activation, gated on the intro settling: the last anchor above the line wins.
@@ -111,7 +189,7 @@ function Home() {
 			}
 			if (index !== lastIndex) {
 				lastIndex = index;
-				if (index >= 0) activate(index);
+				activate(index);
 			}
 		};
 
@@ -127,11 +205,11 @@ function Home() {
 	const active = activeIndex >= 0 ? sections[activeIndex] : undefined;
 	const currentFile = active?.status === "playing" ? activeWriteFile(active.blocks) : undefined;
 
-	// The tree is stateful: it starts empty and a row appears the moment a transcript
-	// writes it — the active section's in-flight write pops in (highlighted via
-	// `currentFile`), completed writes accumulate across sections, nothing is hardcoded.
+	// The tree is stateful: the seed files plus a row the moment a transcript writes it —
+	// the active section's in-flight write pops in (highlighted via `currentFile`),
+	// completed writes accumulate across sections.
 	const files = useMemo<FileNode[]>(() => {
-		const paths = new Set<string>();
+		const paths = new Set<string>(SEED_FILES);
 		for (const section of sections) for (const path of writtenFiles(section.blocks)) paths.add(path);
 		if (currentFile) paths.add(currentFile);
 		return [...paths].map((path) => ({ path }));
@@ -174,9 +252,9 @@ function Home() {
 					</div>
 				</div>
 			</main>
-			{/* The demo rail: story sections scroll past on the left while the pinned card on the
-			    right plays each section's session. Styling for the slide/reveal lives in styles.css
-			    under "Demo rail". */}
+			{/* The demo rail: story copy sits in normal document flow on the left (no reveal —
+			    it scrolls into view like any text) while the card on the right floats (sticky)
+			    and plays each section's session. Slide styling lives in styles.css. */}
 			<section
 				ref={railRef}
 				className="relative mx-auto w-full max-w-[88rem] px-6 pb-32 md:grid md:grid-cols-[minmax(280px,340px)_minmax(0,1fr)] md:gap-12"
@@ -184,13 +262,12 @@ function Home() {
 				<div>
 					{/* Section 0: forming. Future sections are their own hand-written blocks (each with
 					    data-rail-section + a SESSION_URLS entry), free to diverge in styling and movement. */}
-					<div data-rail-section className="rail-copy flex flex-col justify-center py-16 md:min-h-svh md:py-0">
+					<div data-rail-section className="py-16 md:min-h-svh md:py-0 md:pt-36">
 						<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
 							Give each agent a purpose
 						</h2>
 						<p className="mt-4 max-w-md text-lg text-muted-foreground">
-							A wolli agent is born empty — no memory, no habits, just a question. Tell it what it's for and it
-							writes who it is into its own SOUL.md, kept for every session after.
+							A wolli agent is born empty. Tell it what it's for and it writes who it is into its SOUL.md.
 						</p>
 						{/* Mobile: the section carries its own static card; playback still activates on scroll. */}
 						<div className="mt-8 md:hidden">

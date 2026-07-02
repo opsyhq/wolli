@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadSession } from "@/lib/session";
-import { activeWriteFile, sessionToBlocks, type ToolBlock, writtenFiles } from "@/lib/session-player";
+import { activeWriteFile, SessionPlayer, sessionToBlocks, type ToolBlock, writtenFiles } from "@/lib/session-player";
 
 // End-to-end over the real curated demos: loader -> replay generator -> reducer.
 // Asserts the fully-revealed transcript matches wolli's rendering rules (assistant
@@ -122,5 +122,54 @@ describe("writtenFiles / activeWriteFile", () => {
 		expect(activeWriteFile([toolBlock({ isPartial: true, result: undefined })])).toBe("notes.md");
 		expect(activeWriteFile(extendBlocks)).toBeUndefined();
 		expect(activeWriteFile([])).toBeUndefined();
+	});
+});
+
+describe("SessionPlayer", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	function stubFetch() {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, text: async () => FORMING })),
+		);
+	}
+
+	const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+	it("fold reveals the complete transcript instantly and settles the player", async () => {
+		stubFetch();
+		const player = new SessionPlayer("/sessions/forming.jsonl");
+		await player.fold(() => {});
+		expect(player.status).toBe("done");
+		expect(player.snapshot.blocks).toHaveLength(
+			sessionToBlocks(loadSession(FORMING, "forming.jsonl").messages).length,
+		);
+	});
+
+	it("pause freezes the driver between frames; resume continues where it froze", async () => {
+		stubFetch();
+		const player = new SessionPlayer("/sessions/forming.jsonl");
+		const controller = new AbortController();
+		const run = player.play(() => {}, controller.signal);
+
+		// Let a few frames land, pause, then let the in-flight frame's sleep drain
+		// (longest eventCost is 600ms) — after that the loop is parked before emit.
+		await wait(300);
+		player.pause();
+		await wait(800);
+		const frozen = player.snapshot;
+		await wait(500);
+		expect(player.snapshot).toBe(frozen); // no frames emitted while paused
+		expect(player.status).toBe("playing"); // paused, not done
+
+		player.resume();
+		await wait(400);
+		expect(player.snapshot).not.toBe(frozen); // frames flow again
+
+		controller.abort();
+		await run;
 	});
 });
