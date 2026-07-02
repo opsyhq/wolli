@@ -1,5 +1,8 @@
-// The session-playback hook. It fetches a `.jsonl` when the chat scrolls into view,
-// reconstructs it with the ported loader (src/lib/session.ts), then replays it.
+// Session playback for the demo rail. Activation comes from the rail scroll effect in
+// routes/index.tsx: when a story section crosses the activation line, useSessionPlaylist
+// plays that section's `.jsonl` (fetched, then reconstructed with the ported loader,
+// src/lib/session.ts) into its own transcript slot. Sections skipped by a fast scroll fold
+// instantly to their complete transcript via sessionToBlocks.
 //
 //   - `replay(messages)` emits the real AgentEvent stream in canonical order, streaming
 //     assistant text by yielding message_update with a growing cumulative AssistantMessage
@@ -14,8 +17,7 @@
 //
 // Playback is self-timed: each frame is applied, then the driver waits that frame's own
 // delay before the next, so a user's typing or an assistant's stream runs to its end before
-// the next thing starts. Autoplay fires once via IntersectionObserver; play()/seek() are
-// exposed so a later phase can drive playback by scroll.
+// the next thing starts.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -394,6 +396,42 @@ export function sessionToBlocks(messages: AgentMessage[]): TranscriptBlock[] {
 }
 
 // ---------------------------------------------------------------------------
+// File derivation (the tree is disk truth: what the transcripts actually wrote)
+// ---------------------------------------------------------------------------
+
+// The `path` arg of a write tool block, when it is a real string (WriteToolInput).
+function writePath(block: ToolBlock): string | undefined {
+	const path = (block.args as { path?: unknown } | undefined)?.path;
+	return typeof path === "string" ? path : undefined;
+}
+
+// Files a session actually created: completed, non-error `write` blocks -> args.path
+// (WriteToolInput), deduped in first-write order. Works on live and sessionToBlocks-folded
+// blocks, so the tree accumulates across sessions.
+export function writtenFiles(blocks: TranscriptBlock[]): string[] {
+	const paths: string[] = [];
+	for (const block of blocks) {
+		if (block.kind !== "tool" || block.name !== "write") continue;
+		if (block.isPartial || !block.result || block.result.isError) continue;
+		const path = writePath(block);
+		if (path && !paths.includes(path)) paths.push(path);
+	}
+	return paths;
+}
+
+// The path of an in-flight or just-completed non-error write — drives FileTree's
+// `currentFile` for the ACTIVE session only.
+export function activeWriteFile(blocks: TranscriptBlock[]): string | undefined {
+	for (let i = blocks.length - 1; i >= 0; i--) {
+		const block = blocks[i]!;
+		if (block.kind !== "tool" || block.name !== "write") continue;
+		if (block.result?.isError) continue;
+		return writePath(block);
+	}
+	return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Pacing
 // ---------------------------------------------------------------------------
 
@@ -401,23 +439,24 @@ export function sessionToBlocks(messages: AgentMessage[]): TranscriptBlock[] {
 // frame, waits this long, then applies the next — so each unit (the user typing, an
 // assistant stream, a tool run) plays to its own end before the next thing starts, instead
 // of sharing one global budget. User typing dwells longer so it is readable; the assistant
-// streams faster. The small jitter keeps both from feeling mechanical.
+// streams faster. The small jitter keeps both from feeling mechanical. Tuned for the rail's
+// short "mini preview" sessions: a deliberate, watchable pace rather than a quick skim.
 function eventCost(event: Frame): number {
 	switch (event.type) {
 		case "input":
-			return 62 + Math.random() * 48; // ~62-110ms per token: visible, human typing
+			return 75 + Math.random() * 55; // ~75-130ms per token: visible, human typing
 		case "submit":
-			return 340; // beat while the message "sends"
+			return 420; // beat while the message "sends"
 		case "message_update":
-			return 16 + Math.random() * 14; // assistant streams faster than the user types
+			return 26 + Math.random() * 18; // assistant streams faster than the user types
 		case "message_start":
-			return event.message.role === "user" ? 40 : 160;
+			return event.message.role === "user" ? 40 : 240;
 		case "message_end":
-			return event.message.role === "user" ? 220 : 260;
+			return event.message.role === "user" ? 260 : 420;
 		case "tool_execution_start":
-			return 220; // the tool spins up
+			return 480; // the tool spins up
 		case "tool_execution_end":
-			return 260; // read the result before moving on
+			return 600; // read the result before moving on
 		default:
 			return 0;
 	}
@@ -443,114 +482,128 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Hook
+// Playlist hook
 // ---------------------------------------------------------------------------
 
-export interface UseSessionResult {
-	ref: (node: Element | null) => void;
-	blocks: TranscriptBlock[];
+export type SectionStatus = "idle" | "playing" | "done";
+
+export interface PlaylistSection {
+	status: SectionStatus;
+	blocks: TranscriptBlock[]; // [] idle; live while playing; folded when done
 	busy: boolean;
 	input: string;
-	started: boolean;
-	done: boolean;
-	play: () => void;
-	seek: (index: number) => void;
 }
 
-export function useSession(url: string): UseSessionResult {
-	const [state, setState] = useState<TranscriptState>(initialState);
-	const [started, setStarted] = useState(false);
-	const [done, setDone] = useState(false);
+export interface UseSessionPlaylistResult {
+	sections: PlaylistSection[]; // parallel to urls
+	activeIndex: number; // -1 before first activation
+	activate: (index: number) => void; // idempotent; safe to call from a scroll handler
+}
 
-	const eventsRef = useRef<Frame[] | null>(null);
-	const cursorRef = useRef(0);
-	const stateRef = useRef<TranscriptState>(state);
-	const observerElRef = useRef<Element | null>(null);
+const IDLE_SECTION: PlaylistSection = { status: "idle", blocks: [], busy: false, input: "" };
 
-	// Self-timed driver: apply a frame, wait its own delay (eventCost), apply the next. Each
-	// unit therefore runs to completion before the next begins.
-	const run = useCallback(async (signal: AbortSignal) => {
-		const events = eventsRef.current;
-		if (!events) return;
-		let working = stateRef.current;
-		for (let i = cursorRef.current; i < events.length; i++) {
-			if (signal.aborted) return;
-			const event = events[i]!;
-			working = applyEvent(working, event);
-			stateRef.current = working;
-			cursorRef.current = i + 1;
-			setState(working);
-			await sleep(eventCost(event), signal);
+// One transcript slot per session url. The rail calls activate(j) as the viewer scrolls; the
+// playlist enforces play-once/never-rewind semantics around an internal frontier (the highest
+// index ever activated). Invariant: below the frontier every section is done; the frontier is
+// playing or done; above it everything is idle.
+//   - j <= frontier: only activeIndex moves — a done section shows its folded transcript, and
+//     a still-playing frontier keeps playing (scrolling back never aborts it).
+//   - j > frontier: the current driver is aborted, every not-done section in [frontier, j)
+//     folds to its complete transcript (earlier sections are prior chapters — their files
+//     must exist by the time a later section plays), and j starts its self-timed driver.
+// `urls` is treated as immutable (a module constant in the route).
+export function useSessionPlaylist(urls: string[]): UseSessionPlaylistResult {
+	const [sections, setSections] = useState<PlaylistSection[]>(() => urls.map(() => IDLE_SECTION));
+	const [activeIndex, setActiveIndex] = useState(-1);
+
+	const urlsRef = useRef(urls);
+	const frontierRef = useRef(-1);
+	const statusRef = useRef<SectionStatus[]>(urls.map(() => "idle"));
+	const controllerRef = useRef<AbortController | null>(null);
+	const fetchesRef = useRef<Map<string, Promise<AgentMessage[]>>>(new Map());
+
+	const messagesFor = useCallback((url: string): Promise<AgentMessage[]> => {
+		let promise = fetchesRef.current.get(url);
+		if (!promise) {
+			promise = fetch(url)
+				.then((response) => {
+					if (!response.ok) throw new Error(`Failed to load ${url}: ${response.status}`);
+					return response.text();
+				})
+				.then((text) => loadSession(text, url).messages);
+			fetchesRef.current.set(url, promise);
 		}
-		if (!signal.aborted) setDone(true);
+		return promise;
 	}, []);
 
-	// seek(index): recompute state by folding events[0..index]. Kept simple (fold from
-	// scratch) so a later phase can drive playback by scroll position.
-	const seek = useCallback((index: number) => {
-		const events = eventsRef.current;
-		if (!events) return;
-		const clamped = Math.max(0, Math.min(index, events.length));
-		let working = initialState();
-		for (let i = 0; i < clamped; i++) working = applyEvent(working, events[i]!);
-		cursorRef.current = clamped;
-		stateRef.current = working;
-		setState(working);
-		setDone(clamped >= events.length);
+	// Prefetch every session on mount so folding a skipped section is effectively synchronous.
+	// Unmount aborts whatever driver is running.
+	useEffect(() => {
+		for (const url of urlsRef.current) messagesFor(url).catch((error) => console.error(error));
+		return () => controllerRef.current?.abort();
+	}, [messagesFor]);
+
+	const setSection = useCallback((index: number, section: PlaylistSection) => {
+		setSections((previous) => previous.map((existing, i) => (i === index ? section : existing)));
 	}, []);
 
-	const beginPlayback = useCallback(
-		async (signal: AbortSignal) => {
+	// Self-timed driver: apply a frame, wait its own delay (eventCost), apply the next. An
+	// abort returns without writes — the aborting activate() folds the section itself.
+	const playSection = useCallback(
+		async (index: number, signal: AbortSignal) => {
 			try {
-				const response = await fetch(url, { signal });
-				if (!response.ok) throw new Error(`Failed to load ${url}: ${response.status}`);
-				const text = await response.text();
+				const messages = await messagesFor(urlsRef.current[index]!);
 				if (signal.aborted) return;
-				const context = loadSession(text, url);
-				eventsRef.current = Array.from(replay(context.messages));
-				cursorRef.current = 0;
-				stateRef.current = initialState();
-				await run(signal);
+				let working = initialState();
+				for (const frame of Array.from(replay(messages))) {
+					if (signal.aborted) return;
+					working = applyEvent(working, frame);
+					setSection(index, {
+						status: "playing",
+						blocks: working.blocks,
+						busy: working.busy,
+						input: working.input,
+					});
+					await sleep(eventCost(frame), signal);
+				}
+				if (signal.aborted) return;
+				statusRef.current[index] = "done";
+				setSection(index, { status: "done", blocks: working.blocks, busy: false, input: "" });
 			} catch (error) {
 				if (!signal.aborted) console.error(error);
 			}
 		},
-		[url, run],
+		[messagesFor, setSection],
 	);
 
-	// Autoplay once when the chat scrolls into view.
-	useEffect(() => {
-		const element = observerElRef.current;
-		if (!element || started) return;
-		if (typeof IntersectionObserver === "undefined") {
-			setStarted(true);
-			return;
-		}
-		const observer = new IntersectionObserver(
-			(entries) => {
-				if (entries.some((entry) => entry.isIntersecting)) {
-					setStarted(true);
-					observer.disconnect();
-				}
-			},
-			{ rootMargin: "0px 0px -20% 0px" },
-		);
-		observer.observe(element);
-		return () => observer.disconnect();
-	}, [started]);
+	const activate = useCallback(
+		(index: number) => {
+			if (index < 0 || index >= urlsRef.current.length) return;
+			// At or behind the frontier: just move the viewer; never rewind or replay.
+			if (index <= frontierRef.current) {
+				setActiveIndex(index);
+				return;
+			}
+			controllerRef.current?.abort();
+			// Fold every not-done section below the new frontier to its full transcript.
+			for (let i = Math.max(frontierRef.current, 0); i < index; i++) {
+				if (statusRef.current[i] === "done") continue;
+				statusRef.current[i] = "done";
+				messagesFor(urlsRef.current[i]!)
+					.then((messages) => {
+						setSection(i, { status: "done", blocks: sessionToBlocks(messages), busy: false, input: "" });
+					})
+					.catch((error) => console.error(error));
+			}
+			frontierRef.current = index;
+			statusRef.current[index] = "playing";
+			setActiveIndex(index);
+			const controller = new AbortController();
+			controllerRef.current = controller;
+			void playSection(index, controller.signal);
+		},
+		[messagesFor, playSection, setSection],
+	);
 
-	useEffect(() => {
-		if (!started) return;
-		const controller = new AbortController();
-		void beginPlayback(controller.signal);
-		return () => controller.abort();
-	}, [started, beginPlayback]);
-
-	const play = useCallback(() => setStarted(true), []);
-
-	const ref = useCallback((node: Element | null) => {
-		observerElRef.current = node;
-	}, []);
-
-	return { ref, blocks: state.blocks, busy: state.busy, input: state.input, started, done, play, seek };
+	return { sections, activeIndex, activate };
 }

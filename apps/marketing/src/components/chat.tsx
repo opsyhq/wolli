@@ -29,6 +29,8 @@ export interface ChatProps {
 	blocks: TranscriptBlock[];
 	busy?: boolean;
 	input: string;
+	/** Shown centered in the empty scroll area before playback starts. */
+	hint?: string;
 	className?: string;
 }
 
@@ -441,7 +443,7 @@ function Composer({ input }: { input: string }) {
 // Chat
 // ---------------------------------------------------------------------------
 
-export function Chat({ blocks, busy = false, input, className }: ChatProps) {
+export function Chat({ blocks, busy = false, input, hint, className }: ChatProps) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 
 	// Keep the newest content in view as the transcript grows and the composer types.
@@ -459,6 +461,10 @@ export function Chat({ blocks, busy = false, input, className }: ChatProps) {
 			)}
 		>
 			<div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] pt-[18px] pb-3" ref={scrollRef}>
+				{/* The !input guard covers sessions that open with the user typing. */}
+				{blocks.length === 0 && !busy && !input && hint ? (
+					<div className="flex h-full items-center justify-center text-chat-muted select-none">{hint}</div>
+				) : null}
 				{blocks.map((block) => (
 					<Block key={block.key} block={block} />
 				))}
