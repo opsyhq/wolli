@@ -138,8 +138,15 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
 	}, [code, lang]);
 
 	if (html) {
-		// biome-ignore lint/security/noDangerouslySetInnerHtml: Shiki output, sitting on the tool bg.
-		return <div dangerouslySetInnerHTML={{ __html: html }} />;
+		// Shiki emits its own <pre> with `white-space: pre`; force wrapping so long lines
+		// stay inside the tool block instead of overflowing the card.
+		return (
+			<div
+				className="[&_pre]:m-0 [&_pre]:whitespace-pre-wrap [&_pre]:break-words"
+				// biome-ignore lint/security/noDangerouslySetInnerHtml: Shiki output, sitting on the tool bg.
+				dangerouslySetInnerHTML={{ __html: html }}
+			/>
+		);
 	}
 	return <pre className={PRE_CLASS}>{code}</pre>;
 }

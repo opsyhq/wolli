@@ -14,11 +14,6 @@ export const Route = createFileRoute("/")({ component: Home });
 const INSTALL_COMMAND = "npm i -g wolli";
 const agentName = "scout";
 
-// What actually exists in ~/.wolli/agents/<name> at birth (AgentSettingsManager.createAgent):
-// three curated files, created EMPTY — the agent fills them itself. agent.json / sessions/ /
-// workspace/ are runtime plumbing, not the story.
-const BIRTH_FILES = ["SOUL.md", "MEMORY.md", "USER.md"] as const;
-
 // One url per [data-rail-section] block below, in DOM order — section i plays
 // SESSION_URLS[i] when its block crosses the activation line.
 const SESSION_URLS = ["/sessions/forming.jsonl"];
@@ -129,16 +124,18 @@ function Home() {
 		};
 	}, [activate]);
 
-	// The tree is disk truth: the birth files plus everything any section's transcript has
-	// written so far — accumulated across sessions, never hardcoded.
-	const files = useMemo<FileNode[]>(() => {
-		const paths = new Set<string>(BIRTH_FILES);
-		for (const section of sections) for (const path of writtenFiles(section.blocks)) paths.add(path);
-		return [...paths].map((path) => ({ path }));
-	}, [sections]);
-
 	const active = activeIndex >= 0 ? sections[activeIndex] : undefined;
 	const currentFile = active?.status === "playing" ? activeWriteFile(active.blocks) : undefined;
+
+	// The tree is stateful: it starts empty and a row appears the moment a transcript
+	// writes it — the active section's in-flight write pops in (highlighted via
+	// `currentFile`), completed writes accumulate across sections, nothing is hardcoded.
+	const files = useMemo<FileNode[]>(() => {
+		const paths = new Set<string>();
+		for (const section of sections) for (const path of writtenFiles(section.blocks)) paths.add(path);
+		if (currentFile) paths.add(currentFile);
+		return [...paths].map((path) => ({ path }));
+	}, [sections, currentFile]);
 
 	function copyInstall() {
 		navigator.clipboard.writeText(INSTALL_COMMAND).then(() => {
@@ -182,7 +179,7 @@ function Home() {
 			    under "Demo rail". */}
 			<section
 				ref={railRef}
-				className="relative mx-auto w-full max-w-6xl px-6 pb-32 md:grid md:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] md:gap-12"
+				className="relative mx-auto w-full max-w-[88rem] px-6 pb-32 md:grid md:grid-cols-[minmax(280px,340px)_minmax(0,1fr)] md:gap-12"
 			>
 				<div>
 					{/* Section 0: forming. Future sections are their own hand-written blocks (each with
