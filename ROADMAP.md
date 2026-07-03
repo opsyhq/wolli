@@ -42,6 +42,7 @@ Remaining:
 - Treat every agent action as a workflow step — a tool call becomes a workflow with steps underneath — so the unit of execution is a step the runtime runs inline locally or as a separate sandboxed/cloud job.
 - Lift the channel-aware routing logic currently embedded in the paired chat extensions into a default routing workflow that is itself first-class.
 - Support agent-authored workflows.
+- Top level `ctx.agent.*` in future we will add `ctx.db.*`, `ctx.proxy/webhook.*`
 
 ### Database primitive for agents
 
