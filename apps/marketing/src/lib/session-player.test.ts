@@ -9,50 +9,10 @@ import { activeWriteFile, SessionPlayer, sessionToBlocks, type ToolBlock, writte
 // Asserts the fully-revealed transcript matches wolli's rendering rules (assistant
 // bubbles carry text/thinking + toolCalls; each toolCall becomes a separate tool block
 // after the bubble, filled by its matching toolResult).
-const CURATED = readFileSync(join(process.cwd(), "public/sessions/extend.jsonl"), "utf-8");
 const FORMING = readFileSync(join(process.cwd(), "public/sessions/forming.jsonl"), "utf-8");
 const EXTENDING = readFileSync(join(process.cwd(), "public/sessions/extending.jsonl"), "utf-8");
 const TRIGGERED = readFileSync(join(process.cwd(), "public/sessions/triggered.jsonl"), "utf-8");
 const FORMING_BLOCKS = sessionToBlocks(loadSession(FORMING, "forming.jsonl").messages);
-
-describe("sessionToBlocks (curated demo)", () => {
-	const blocks = sessionToBlocks(loadSession(CURATED, "extend.jsonl").messages);
-
-	it("produces the expected block sequence", () => {
-		expect(blocks.map((b) => b.kind)).toEqual([
-			"user",
-			"assistant",
-			"user",
-			"assistant",
-			"tool",
-			"tool",
-			"assistant",
-		]);
-	});
-
-	it("opens the arc with the user's question", () => {
-		const first = blocks[0];
-		expect(first.kind).toBe("user");
-		expect(first.kind === "user" && first.text.toLowerCase()).toContain("extend yourself");
-	});
-
-	it("renders read then ls as settled, successful tool blocks", () => {
-		const read = blocks[4];
-		const ls = blocks[5];
-		expect(read.kind === "tool" && read.name).toBe("read");
-		expect(read.kind === "tool" && read.isPartial).toBe(false);
-		expect(read.kind === "tool" && read.result?.isError).toBe(false);
-		expect(ls.kind === "tool" && ls.name).toBe("ls");
-		expect(ls.kind === "tool" && ls.result?.isError).toBe(false);
-	});
-
-	it("keeps toolCall blocks in the assistant message that requested them", () => {
-		const assistant = blocks[3];
-		const toolCalls =
-			assistant.kind === "assistant" ? assistant.message.content.filter((c) => c.type === "toolCall").length : 0;
-		expect(toolCalls).toBe(2);
-	});
-});
 
 describe("sessionToBlocks (forming demo)", () => {
 	const blocks = FORMING_BLOCKS;
@@ -119,7 +79,6 @@ describe("sessionToBlocks (triggered demo)", () => {
 
 describe("writtenFiles / activeWriteFile", () => {
 	const formingBlocks = FORMING_BLOCKS;
-	const extendBlocks = sessionToBlocks(loadSession(CURATED, "extend.jsonl").messages);
 
 	function toolBlock(overrides: Partial<ToolBlock>): ToolBlock {
 		return {
@@ -140,10 +99,6 @@ describe("writtenFiles / activeWriteFile", () => {
 		expect(writtenFiles(formingBlocks)).toEqual(["SOUL.md"]);
 	});
 
-	it("derives nothing from a session that only reads (guards against invented files)", () => {
-		expect(writtenFiles(extendBlocks)).toEqual([]);
-	});
-
 	it("excludes partial, errored, and non-write tool blocks", () => {
 		expect(writtenFiles([toolBlock({ isPartial: true, result: undefined })])).toEqual([]);
 		expect(writtenFiles([toolBlock({ result: { content: [], isError: true } })])).toEqual([]);
@@ -152,7 +107,6 @@ describe("writtenFiles / activeWriteFile", () => {
 
 	it("highlights an in-flight write and nothing when there is none", () => {
 		expect(activeWriteFile([toolBlock({ isPartial: true, result: undefined })])).toBe("notes.md");
-		expect(activeWriteFile(extendBlocks)).toBeUndefined();
 		expect(activeWriteFile([])).toBeUndefined();
 	});
 });
