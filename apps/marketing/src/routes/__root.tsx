@@ -8,7 +8,7 @@ import geistWoff2 from "@fontsource-variable/geist/files/geist-latin-wght-normal
 import appCss from "../styles.css?url";
 
 const SITE_URL = "https://wolli.dev";
-const TITLE = "Wolli - Create agents that grow around a purpose";
+const TITLE = "Wolli";
 const DESCRIPTION =
 	"Wolli lets you create agents that grow around a purpose. Each agent remembers across sessions, runs on schedules, reacts to events, and extends itself over time.";
 
