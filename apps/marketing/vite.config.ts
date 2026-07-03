@@ -14,7 +14,15 @@ const config = defineConfig({
 		...(process.env.VITEST ? [] : [cloudflare({ viteEnvironment: { name: "ssr" } })]),
 		devtools(),
 		tailwindcss(),
-		tanstackStart({ prerender: { enabled: true, crawlLinks: true } }),
+		tanstackStart({
+			prerender: {
+				enabled: true,
+				crawlLinks: true,
+				// The header's Docs link points at the wolli-docs worker; there is
+				// no /docs route here for the crawler to prerender.
+				filter: (page) => !page.path.startsWith("/docs"),
+			},
+		}),
 		viteReact(),
 	],
 });

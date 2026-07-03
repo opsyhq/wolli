@@ -31,8 +31,13 @@
 			"apps/marketing/src/**/*.ts",
 			"apps/marketing/src/**/*.tsx",
 			"apps/marketing/vite.config.ts",
+			"apps/docs/src/**/*.ts",
+			"apps/docs/src/**/*.tsx",
+			"apps/docs/vite.config.ts",
+			"apps/docs/source.config.ts",
 			"!packages/coding-agent",
 			"!apps/marketing/src/routeTree.gen.ts",
+			"!apps/docs/src/routeTree.gen.ts",
 			"!**/node_modules/**/*",
 			"!**/dist/**/*",
 			"!**/*.generated.ts"

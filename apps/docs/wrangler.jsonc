@@ -1,0 +1,16 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "wolli-docs",
+	"compatibility_date": "2026-07-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"main": "@tanstack/react-start/server-entry",
+	// Zone routes (not a custom domain): the most specific pattern wins on the
+	// host, so /docs/* comes here and everything else stays with wolli-marketing.
+	"routes": [
+		{ "pattern": "wolli.dev/docs", "zone_name": "wolli.dev" },
+		{ "pattern": "wolli.dev/docs/*", "zone_name": "wolli.dev" }
+	],
+	"observability": {
+		"enabled": true
+	}
+}

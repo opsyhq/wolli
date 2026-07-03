@@ -26,5 +26,6 @@
     "**/dist/**",
     "packages/coding-agent/**",
     "apps/marketing/**",
+    "apps/docs/**",
   ],
 }

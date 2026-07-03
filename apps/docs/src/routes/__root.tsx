@@ -1,6 +1,7 @@
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
+import { RootProvider } from "fumadocs-ui/provider/tanstack";
 
 import appCss from "../styles.css?url";
 
@@ -15,7 +16,7 @@ export const Route = createRootRoute({
 				content: "width=device-width, initial-scale=1",
 			},
 			{
-				title: "TanStack Start Starter",
+				title: "Wolli Docs",
 			},
 		],
 		links: [
@@ -37,21 +38,23 @@ function GitHubIcon({ className }: { className?: string }) {
 	);
 }
 
-// Apple-style site header: thin, sticky, translucent, with generous side padding.
-// IMPORTANT: the docs app carries a copy of this header (apps/docs/src/routes/
-// __root.tsx, with the Docs link active); changes here must be applied there too.
+// Apple-style site header copied from apps/marketing/src/routes/__root.tsx.
+// IMPORTANT: header changes must be cross-applied between the two apps by
+// hand; the only intended difference here is the always-active Docs link.
+// Brand and nav links go back to the marketing worker, so they are plain
+// <a> tags on purpose.
 function SiteHeader() {
 	return (
 		<header className="sticky top-0 z-50 border-b border-black/5 bg-background/80 backdrop-blur-xl backdrop-saturate-150">
+			{/* h-14 is mirrored by --fd-docs-row-1 in routes/docs/$.tsx. */}
 			<div className="mx-auto flex h-14 w-full items-center px-6 md:px-32 lg:px-48">
 				<a href="/" className="text-lg font-bold tracking-tight text-foreground">
 					Wolli
 				</a>
 				<nav className="ml-6 flex items-center gap-5 text-sm text-muted-foreground md:ml-10 md:gap-8">
-					{/* The docs live on a second worker (wolli-docs) behind /docs/*, so
-					    this is a plain cross-app <a>, prerendered via the speculation
-					    rules in the shell head. */}
-					<a href="/docs/" className="transition-colors hover:text-foreground">
+					{/* Everything under this header is the docs section, so the
+					    Docs link always renders active. */}
+					<a href="/docs/" className="text-foreground">
 						Docs
 					</a>
 					<a
@@ -82,21 +85,44 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 		<html lang="en">
 			<head>
 				<HeadContent />
-				{/* Prerender the docs app (a separate worker) on link hover, so the
-				    cross-worker transition feels instant in Chromium. */}
+				{/* Mirror of the marketing shell's rule: prerender the way back to
+				    the marketing worker on link hover, so the cross-worker
+				    transition feels instant in Chromium. */}
 				<script
 					type="speculationrules"
 					// biome-ignore lint/security/noDangerouslySetInnerHtml: static JSON, no user input
 					dangerouslySetInnerHTML={{
 						__html: JSON.stringify({
-							prerender: [{ where: { href_matches: "/docs/*" }, eagerness: "moderate" }],
+							prerender: [{ where: { href_matches: "/" }, eagerness: "moderate" }],
 						}),
 					}}
 				/>
 			</head>
 			<body>
-				<SiteHeader />
-				{children}
+				{/* The default search client posts to /api/search, which would hit
+				    the marketing worker; the site is light-only, so next-themes
+				    stays off. Header sits inside the provider for the search
+				    dialog context. */}
+				<RootProvider search={{ options: { api: "/docs/api/search" } }} theme={{ enabled: false }}>
+					<SiteHeader />
+					{children}
+					{/* Single-bar footer copied from apps/marketing/src/routes/index.tsx.
+					    IMPORTANT: footer changes must be cross-applied between the two
+					    apps by hand. */}
+					<footer className="border-t border-border bg-muted/50">
+						<div className="mx-auto flex h-14 w-full items-center justify-between px-6 text-sm text-muted-foreground md:px-32 lg:px-48">
+							<p>© 2026 Opsy, Inc.</p>
+							<a
+								href="https://github.com/opsyhq/wolli"
+								target="_blank"
+								rel="noreferrer"
+								className="transition-colors hover:text-foreground"
+							>
+								GitHub
+							</a>
+						</div>
+					</footer>
+				</RootProvider>
 				<TanStackDevtools
 					config={{
 						position: "bottom-right",

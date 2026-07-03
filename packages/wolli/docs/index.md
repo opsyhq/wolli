@@ -1,4 +1,4 @@
-# Wolli Documentation
+# Getting Started
 
 Wolli is a persistent, purposeful agent that runs in your terminal. It stays small at the core while being extended through TypeScript extensions, skills, prompt templates, themes, integrations, and plugins.
 
