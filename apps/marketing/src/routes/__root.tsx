@@ -2,6 +2,9 @@ import { TanStackDevtools } from "@tanstack/react-devtools";
 import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 
+import geistMonoWoff2 from "@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2?url";
+import geistWoff2 from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url";
+
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
@@ -19,6 +22,22 @@ export const Route = createRootRoute({
 			},
 		],
 		links: [
+			// Preload the latin subsets used above the fold, so the fonts download
+			// in parallel with the CSS instead of after it (avoids the FOUT swap).
+			{
+				rel: "preload",
+				href: geistWoff2,
+				as: "font",
+				type: "font/woff2",
+				crossOrigin: "anonymous",
+			},
+			{
+				rel: "preload",
+				href: geistMonoWoff2,
+				as: "font",
+				type: "font/woff2",
+				crossOrigin: "anonymous",
+			},
 			{
 				rel: "stylesheet",
 				href: appCss,
@@ -82,14 +101,14 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 		<html lang="en">
 			<head>
 				<HeadContent />
-				{/* Prerender the docs app (a separate worker) on link hover, so the
-				    cross-worker transition feels instant in Chromium. */}
+				{/* Prerender the docs app (a separate worker) as soon as the page
+				    loads, so the cross-worker transition feels instant in Chromium. */}
 				<script
 					type="speculationrules"
 					// biome-ignore lint/security/noDangerouslySetInnerHtml: static JSON, no user input
 					dangerouslySetInnerHTML={{
 						__html: JSON.stringify({
-							prerender: [{ where: { href_matches: "/docs/*" }, eagerness: "moderate" }],
+							prerender: [{ where: { href_matches: "/docs/*" }, eagerness: "eager" }],
 						}),
 					}}
 				/>
