@@ -7,6 +7,11 @@ import geistWoff2 from "@fontsource-variable/geist/files/geist-latin-wght-normal
 
 import appCss from "../styles.css?url";
 
+const SITE_URL = "https://wolli.dev";
+const TITLE = "Wolli - Create agents that grow around a purpose";
+const DESCRIPTION =
+	"Wolli lets you create agents that grow around a purpose. Each agent remembers across sessions, runs on schedules, reacts to events, and extends itself over time.";
+
 export const Route = createRootRoute({
 	head: () => ({
 		meta: [
@@ -18,8 +23,21 @@ export const Route = createRootRoute({
 				content: "width=device-width, initial-scale=1",
 			},
 			{
-				title: "TanStack Start Starter",
+				title: TITLE,
 			},
+			{ name: "description", content: DESCRIPTION },
+			{ name: "theme-color", content: "#ffffff" },
+			{ property: "og:type", content: "website" },
+			{ property: "og:site_name", content: "Wolli" },
+			{ property: "og:title", content: TITLE },
+			{ property: "og:description", content: DESCRIPTION },
+			{ property: "og:url", content: `${SITE_URL}/` },
+			// PLACEHOLDER social card (public/og.png): replace with the real
+			// Wolli brand asset.
+			{ property: "og:image", content: `${SITE_URL}/og.png` },
+			{ property: "og:image:width", content: "1200" },
+			{ property: "og:image:height", content: "630" },
+			{ name: "twitter:card", content: "summary_large_image" },
 		],
 		links: [
 			// Preload the latin subsets used above the fold, so the fonts download
@@ -42,10 +60,32 @@ export const Route = createRootRoute({
 				rel: "stylesheet",
 				href: appCss,
 			},
+			{ rel: "canonical", href: `${SITE_URL}/` },
+			// PLACEHOLDER icons (public/favicon.svg, .ico, apple-touch-icon.png):
+			// replace with the real Wolli mark. The docs app carries copies.
+			{ rel: "icon", href: "/favicon.ico", sizes: "32x32" },
+			{ rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
+			{ rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
 		],
 	}),
+	notFoundComponent: NotFound,
 	shellComponent: RootDocument,
 });
+
+function NotFound() {
+	return (
+		<main className="flex min-h-[70vh] flex-col items-center justify-center gap-3 px-6 text-center">
+			<p className="text-sm font-medium text-muted-foreground">404</p>
+			<h1 className="text-2xl font-bold tracking-tight text-foreground">Page not found</h1>
+			<a
+				href="/"
+				className="text-sm text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
+			>
+				Back to the homepage
+			</a>
+		</main>
+	);
+}
 
 // The GitHub mark, inlined (lucide's brand icons are deprecated).
 function GitHubIcon({ className }: { className?: string }) {
@@ -70,7 +110,7 @@ function SiteHeader() {
 					{/* The docs live on a second worker (wolli-docs) behind /docs/*, so
 					    this is a plain cross-app <a>, prerendered via the speculation
 					    rules in the shell head. */}
-					<a href="/docs/" className="transition-colors hover:text-foreground">
+					<a href="/docs/getting-started/" className="transition-colors hover:text-foreground">
 						Docs
 					</a>
 					<a

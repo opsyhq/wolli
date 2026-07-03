@@ -15,6 +15,13 @@ const config = defineConfig({
 		devtools(),
 		tailwindcss(),
 		tanstackStart({
+			// Built at prerender time from the crawled pages; /robots.txt points
+			// here and at the docs worker's /docs/sitemap.xml.
+			sitemap: { host: "https://wolli.dev" },
+			// The crawler records the header's cross-worker Docs link before the
+			// prerender filter runs; this entry wins the dedup (exact href match)
+			// and keeps it out of the sitemap — it belongs to /docs/sitemap.xml.
+			pages: [{ path: "/docs/getting-started/", sitemap: { exclude: true }, prerender: { enabled: false } }],
 			prerender: {
 				enabled: true,
 				crawlLinks: true,

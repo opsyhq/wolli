@@ -18,9 +18,24 @@ export const Route = createFileRoute("/docs/$")({
 		await clientLoader.preload(data.path);
 		return data;
 	},
-	head: ({ loaderData }) => ({
-		meta: loaderData ? [{ title: loaderData.title }] : [],
-	}),
+	head: ({ loaderData }) => {
+		if (!loaderData) return { meta: [] };
+		const url = `https://wolli.dev${loaderData.url}`;
+		return {
+			meta: [
+				{ title: loaderData.title },
+				...(loaderData.description
+					? [
+							{ name: "description", content: loaderData.description },
+							{ property: "og:description", content: loaderData.description },
+						]
+					: []),
+				{ property: "og:title", content: loaderData.title },
+				{ property: "og:url", content: url },
+			],
+			links: [{ rel: "canonical", href: url }],
+		};
+	},
 });
 
 // collections/server only runs in Node (fumadocs-mdx's server runtime), so
@@ -34,6 +49,8 @@ const serverLoader = createServerFn({ method: "GET" })
 		return {
 			path: page.path,
 			title: page.data.title,
+			description: page.data.description,
+			url: page.url,
 			pageTree: await source.serializePageTree(source.getPageTree()),
 		};
 	});

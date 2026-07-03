@@ -1,3 +1,6 @@
 # https://www.robotstxt.org/robotstxt.html
 User-agent: *
 Disallow:
+
+Sitemap: https://wolli.dev/sitemap.xml
+Sitemap: https://wolli.dev/docs/sitemap.xml

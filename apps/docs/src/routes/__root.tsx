@@ -5,6 +5,8 @@ import { RootProvider } from "fumadocs-ui/provider/tanstack";
 
 import appCss from "../styles.css?url";
 
+const SITE_URL = "https://wolli.dev";
+
 export const Route = createRootRoute({
 	head: () => ({
 		meta: [
@@ -18,16 +20,48 @@ export const Route = createRootRoute({
 			{
 				title: "Wolli Docs",
 			},
+			{ name: "description", content: "Documentation for Wolli, the agent that grows around a purpose." },
+			{ name: "theme-color", content: "#fafafa" },
+			{ property: "og:type", content: "website" },
+			{ property: "og:site_name", content: "Wolli" },
+			// PLACEHOLDER social card (apps/marketing/public/og.png, served at the
+			// site root by the marketing worker): replace with the real brand asset.
+			{ property: "og:image", content: `${SITE_URL}/og.png` },
+			{ property: "og:image:width", content: "1200" },
+			{ property: "og:image:height", content: "630" },
+			{ name: "twitter:card", content: "summary_large_image" },
 		],
 		links: [
 			{
 				rel: "stylesheet",
 				href: appCss,
 			},
+			// PLACEHOLDER icons: replace with the real Wolli mark. In production
+			// the marketing worker serves these root paths; the copies in this
+			// app's public/ only cover local dev.
+			{ rel: "icon", href: "/favicon.ico", sizes: "32x32" },
+			{ rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
+			{ rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
 		],
 	}),
+	notFoundComponent: NotFound,
 	shellComponent: RootDocument,
 });
+
+function NotFound() {
+	return (
+		<main className="flex min-h-[70vh] flex-col items-center justify-center gap-3 px-6 text-center">
+			<p className="text-sm font-medium text-muted-foreground">404</p>
+			<h1 className="text-2xl font-bold tracking-tight text-foreground">Page not found</h1>
+			<a
+				href="/docs/getting-started/"
+				className="text-sm text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
+			>
+				Back to the docs
+			</a>
+		</main>
+	);
+}
 
 // The GitHub mark, inlined (lucide's brand icons are deprecated).
 function GitHubIcon({ className }: { className?: string }) {
@@ -54,7 +88,7 @@ function SiteHeader() {
 				<nav className="ml-6 flex items-center gap-5 text-sm text-muted-foreground md:ml-10 md:gap-8">
 					{/* Everything under this header is the docs section, so the
 					    Docs link always renders active. */}
-					<a href="/docs/" className="text-foreground">
+					<a href="/docs/getting-started/" className="text-foreground">
 						Docs
 					</a>
 					<a
