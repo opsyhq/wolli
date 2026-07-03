@@ -79,6 +79,7 @@ export interface IntegrationConfig {
 	events?: Record<string, TSchema>;
 	actions?: Record<string, IntegrationAction>;
 	/** Long-running producer: opens a connection/loop and calls `ctx.emit`. */
+	// biome-ignore lint/suspicious/noConfusingVoidType: `undefined` would reject run() impls without a return statement
 	run?(ctx: IntegrationRunContext): void | (() => void) | Promise<void | (() => void)>;
 	/**
 	 * Guided first-run setup. Auto-runs on `plugins install` for an unconfigured
