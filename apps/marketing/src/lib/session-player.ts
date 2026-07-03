@@ -475,16 +475,14 @@ export function writtenFiles(blocks: TranscriptBlock[]): string[] {
 	return paths;
 }
 
-// The path of an in-flight or just-completed non-error write — drives FileTree's
-// `currentFile` for the ACTIVE session only.
+// The path of the write that is the transcript's newest block — drives FileTree's
+// `currentFile` for the ACTIVE session only. The highlight turns off the same way it
+// turned on: the moment anything newer lands (or another section takes over), the
+// write is no longer the current activity.
 export function activeWriteFile(blocks: TranscriptBlock[]): string | undefined {
-	for (let i = blocks.length - 1; i >= 0; i--) {
-		const block = blocks[i]!;
-		if (block.kind !== "tool" || block.name !== "write") continue;
-		if (block.result?.isError) continue;
-		return writePath(block);
-	}
-	return undefined;
+	const last = blocks.at(-1);
+	if (last?.kind !== "tool" || last.name !== "write" || last.result?.isError) return undefined;
+	return writePath(last);
 }
 
 // ---------------------------------------------------------------------------

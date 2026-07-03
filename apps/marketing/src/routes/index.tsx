@@ -240,8 +240,8 @@ function Home() {
 	}, [activate]);
 
 	const active = activeIndex >= 0 ? sections[activeIndex] : undefined;
-	// The active section's write stays highlighted for as long as the section is active —
-	// the cue to what it added — and clears only when another section takes over.
+	// A write highlights its file only while it is the transcript's newest block; the
+	// highlight clears the same way it appeared — the session (or section) moving on.
 	const currentFile = active ? activeWriteFile(active.blocks) : undefined;
 
 	// Seed files plus what the sections up to the active one wrote — scrolling back
