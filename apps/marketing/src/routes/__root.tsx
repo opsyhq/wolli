@@ -38,6 +38,8 @@ function GitHubIcon({ className }: { className?: string }) {
 }
 
 // Apple-style site header: thin, sticky, translucent, with generous side padding.
+// IMPORTANT: the docs app carries a copy of this header (apps/docs/src/routes/
+// __root.tsx, with the Docs link active); changes here must be applied there too.
 function SiteHeader() {
 	return (
 		<header className="sticky top-0 z-50 border-b border-black/5 bg-background/80 backdrop-blur-xl backdrop-saturate-150">
@@ -46,13 +48,18 @@ function SiteHeader() {
 					Wolli
 				</a>
 				<nav className="ml-6 flex items-center gap-5 text-sm text-muted-foreground md:ml-10 md:gap-8">
-					<a href="/" className="transition-colors hover:text-foreground">
+					{/* The docs live on a second worker (wolli-docs) behind /docs/*, so
+					    this is a plain cross-app <a>, prerendered via the speculation
+					    rules in the shell head. */}
+					<a href="/docs/" className="transition-colors hover:text-foreground">
 						Docs
 					</a>
-					<a href="/" className="transition-colors hover:text-foreground">
-						Examples
-					</a>
-					<a href="/" className="transition-colors hover:text-foreground">
+					<a
+						href="https://github.com/opsyhq/wolli/tree/main/packages/wolli/built-in/plugins"
+						target="_blank"
+						rel="noreferrer"
+						className="transition-colors hover:text-foreground"
+					>
 						Plugins
 					</a>
 				</nav>
@@ -75,6 +82,17 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 		<html lang="en">
 			<head>
 				<HeadContent />
+				{/* Prerender the docs app (a separate worker) on link hover, so the
+				    cross-worker transition feels instant in Chromium. */}
+				<script
+					type="speculationrules"
+					// biome-ignore lint/security/noDangerouslySetInnerHtml: static JSON, no user input
+					dangerouslySetInnerHTML={{
+						__html: JSON.stringify({
+							prerender: [{ where: { href_matches: "/docs/*" }, eagerness: "moderate" }],
+						}),
+					}}
+				/>
 			</head>
 			<body>
 				<SiteHeader />

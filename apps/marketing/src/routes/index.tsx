@@ -362,12 +362,16 @@ function Home() {
 					Create your own agent today
 				</h2>
 				<div className="mt-10">
-					<a href="/" className={cn(buttonVariants({ size: "lg" }), "h-12 rounded-full px-7 text-base")}>
+					{/* Cross-worker link to the docs app, same as the header's Docs. */}
+					<a href="/docs/" className={cn(buttonVariants({ size: "lg" }), "h-12 rounded-full px-7 text-base")}>
 						Get started
 					</a>
 				</div>
 			</section>
-			{/* Single-bar footer mirroring the header's container dimensions. */}
+			{/* Single-bar footer mirroring the header's container dimensions.
+			    IMPORTANT: the docs app carries a copy of this footer
+			    (apps/docs/src/routes/__root.tsx); changes here must be applied
+			    there too. */}
 			<footer className="border-t border-border bg-muted/50">
 				<div className="mx-auto flex h-14 w-full items-center justify-between px-6 text-sm text-muted-foreground md:px-32 lg:px-48">
 					<p>© 2026 Opsy, Inc.</p>
