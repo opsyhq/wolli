@@ -14,14 +14,14 @@
 // on the Vercel Geist light palette (color tokens live in styles.css @theme);
 // Streamdown styles its own markdown and we don't override it.
 // Deliberately not ported (TUI/interactive-only): ~-shortened paths and file hyperlinks,
-// compact read classification (skill/docs/resource), expand-key hints, result.details
-// truncation notices, and the JSON-args fallback for unknown tools.
+// compact read classification (skill/docs/resource), expand-key hints, and result.details
+// truncation notices.
 
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { memo, type ReactNode, useEffect, useRef, useState } from "react";
 import { codeToHtml } from "shiki";
 import { Streamdown } from "streamdown";
 import type { AssistantMessage } from "@/lib/session";
-import type { ToolBlock, TranscriptBlock } from "@/lib/session-player";
+import { isEventMessage, type ToolBlock, type TranscriptBlock } from "@/lib/session-player";
 import { cn } from "@/lib/utils";
 
 export interface ChatProps {
@@ -223,8 +223,19 @@ function ToolTitle({ name, args }: { name: string; args: Record<string, unknown>
 				</>
 			);
 		}
-		default:
-			return <b>{name}</b>;
+		default: {
+			// Compact JSON args, like the TUI's unknown-tool fallback — tools the agent
+			// invents in future demo sections stay legible without a bespoke case.
+			const json = JSON.stringify(args);
+			return (
+				<>
+					<b>{name}</b>
+					{json && json !== "{}" ? (
+						<span className="text-chat-muted"> {json.length > 64 ? `${json.slice(0, 64)}…` : json}</span>
+					) : null}
+				</>
+			);
+		}
 	}
 }
 
@@ -252,10 +263,12 @@ function OutputText({ text, maxLines, tail = false }: { text: string; maxLines: 
 	);
 }
 
-function WriteBody({ args }: { args: Record<string, unknown> }) {
+function WriteBody({ args, highlight }: { args: Record<string, unknown>; highlight: boolean }) {
 	const content = str(args.content);
 	if (!content) return null;
-	const lang = getLanguageFromPath(str(args.file_path ?? args.path));
+	// Highlight only once the args have finished streaming — Shiki would otherwise
+	// re-tokenize the growing file on every 3-5 character frame.
+	const lang = highlight ? getLanguageFromPath(str(args.file_path ?? args.path)) : undefined;
 	const lines = trimTrailingEmptyLines(content.replace(/\r/g, "").split("\n"));
 	const maxLines = 10;
 	const shown = lines.slice(0, maxLines);
@@ -279,7 +292,7 @@ function ToolBody({ block, state }: { block: ToolBlock; state: string }) {
 	if (block.name === "write") {
 		return (
 			<>
-				<WriteBody args={args} />
+				<WriteBody args={args} highlight={block.argsComplete} />
 				{errorText}
 			</>
 		);
@@ -320,6 +333,15 @@ function ToolBody({ block, state }: { block: ToolBlock; state: string }) {
 // ---------------------------------------------------------------------------
 
 function UserMessage({ text }: { text: string }) {
+	// An integration delivery ("[github] ..."), not something a human typed: inverted
+	// bubble, raw text — event payloads are structured text, not markdown.
+	if (isEventMessage(text)) {
+		return (
+			<div className="rounded-[10px] bg-chat-text px-3 py-2 whitespace-pre-wrap break-words text-chat-bg">
+				{text}
+			</div>
+		);
+	}
 	return (
 		<div className="rounded-[10px] bg-chat-subtle px-3 py-2 text-chat-text">
 			<Markdown>{text}</Markdown>
@@ -389,7 +411,10 @@ function ToolExecution({ block }: { block: ToolBlock }) {
 	);
 }
 
-function Block({ block }: { block: TranscriptBlock }) {
+// Memoized: the player replaces only the streaming block each frame (settled blocks keep
+// their identity), so the rest of the transcript bails out instead of re-rendering at
+// stream rate.
+const Block = memo(function Block({ block }: { block: TranscriptBlock }) {
 	switch (block.kind) {
 		case "user":
 			return <UserMessage text={block.text} />;
@@ -398,7 +423,7 @@ function Block({ block }: { block: TranscriptBlock }) {
 		case "tool":
 			return <ToolExecution block={block} />;
 	}
-}
+});
 
 // ---------------------------------------------------------------------------
 // Working indicator — the TUI Loader (tui/components/loader.ts): braille spinner frames
@@ -466,9 +491,11 @@ export function Chat({ blocks, busy = false, input, hint, className }: ChatProps
 				className,
 			)}
 		>
-			{/* Scrollbar hidden: the demo scrolls itself, so the indicator is just noise. */}
+			{/* Scrollbar hidden: the demo scrolls itself, so the indicator is just noise.
+			    The top mask fades scrolled content out under the header line instead of
+			    slicing a bubble mid-body at the viewport edge. */}
 			<div
-				className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] pt-[18px] pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+				className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] pt-[18px] pb-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_18px)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
 				ref={scrollRef}
 			>
 				{/* The !input guard covers sessions that open with the user typing. */}

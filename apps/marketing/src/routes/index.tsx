@@ -3,15 +3,9 @@ import { Blocks, BookOpen, Check, Copy, GitBranch, type LucideIcon, Plug, Shield
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Chat } from "@/components/chat";
-import { type FileNode, FileTree } from "@/components/file-tree";
+import { FileTree } from "@/components/file-tree";
 import { Button, buttonVariants } from "@/components/ui/button";
-import {
-	activeWriteFile,
-	SessionPlayer,
-	type SessionPlayerStatus,
-	type SessionSnapshot,
-	writtenFiles,
-} from "@/lib/session-player";
+import { activeWriteFile, SessionPlayer, type SessionSnapshot, writtenFiles } from "@/lib/session-player";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({ component: Home });
@@ -23,12 +17,32 @@ const agentName = "scout";
 // so the write visibly creates it.
 const SEED_FILES = ["MEMORY.md", "USER.md"];
 
-// One url per [data-rail-section] block below, in DOM order.
-const SESSION_URLS = [
-	"/sessions/forming.jsonl",
-	"/sessions/placeholder-1.jsonl",
-	"/sessions/placeholder-2.jsonl",
-	"/sessions/placeholder-3.jsonl",
+// One entry per rail section, in scroll order: the session the card plays plus the
+// header copy beside it. `continues` marks a session that extends the previous
+// section's transcript — the shared prefix folds instantly and playback picks up there.
+const RAIL_SECTIONS: Array<{ url: string; continues?: boolean; title: string; copy: string }> = [
+	{
+		url: "/sessions/forming.jsonl",
+		title: "Give each agent a purpose",
+		copy: "A wolli agent is born empty. Tell it what it's for and it writes who it is into its SOUL.md.",
+	},
+	{
+		url: "/sessions/extending.jsonl",
+		continues: true,
+		title: "Watch it extend itself",
+		copy: "Scout needs issues delivered the moment they open, so it writes its own GitHub integration, the workflow that wakes it, and the tool to talk back.",
+	},
+	{
+		url: "/sessions/triggered.jsonl",
+		title: "It wakes up on events",
+		copy: "An issue opens and the workflow wakes scout in a fresh session. It triages, flags what matters, and reports back.",
+	},
+	{
+		url: "/sessions/skill.jsonl",
+		continues: true,
+		title: "Experience becomes skill",
+		copy: "Routines the agent repeats get written down as skills, authored by the agent itself.",
+	},
 ];
 
 const RAIL_HINT = "scroll to watch scout form";
@@ -80,12 +94,6 @@ const FOCUS_FALLOFF = 0.2; // then fade out over this much more viewport
 // useLayoutEffect warns during SSR; the scroll driver only matters in the browser.
 const useBrowserLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
-type PlaylistSection = { status: SessionPlayerStatus } & SessionSnapshot;
-
-function project(player: SessionPlayer): PlaylistSection {
-	return { status: player.status, ...player.snapshot };
-}
-
 function DemoCard({
 	view,
 	hint,
@@ -93,9 +101,9 @@ function DemoCard({
 	currentFile,
 	className,
 }: {
-	view: PlaylistSection | undefined;
+	view: SessionSnapshot | undefined;
 	hint: string;
-	files: FileNode[];
+	files: string[];
 	currentFile?: string;
 	className?: string;
 }) {
@@ -133,54 +141,48 @@ function Home() {
 	const [copied, setCopied] = useState(false);
 	const railRef = useRef<HTMLElement | null>(null);
 
-	// One player per url, created once; activate() enforces the frontier rules on them.
+	// One player per section, created once; activate() drives them from the scroll
+	// position. A continuing section gets its predecessor's player to fold from.
 	const playersRef = useRef<SessionPlayer[] | null>(null);
-	playersRef.current ??= SESSION_URLS.map((url) => new SessionPlayer(url));
+	playersRef.current ??= RAIL_SECTIONS.reduce<SessionPlayer[]>((list, section) => {
+		list.push(new SessionPlayer(section.url, section.continues ? list.at(-1) : undefined));
+		return list;
+	}, []);
 	const players = playersRef.current;
 
-	const [sections, setSections] = useState<PlaylistSection[]>(() => players.map(project));
+	const [sections, setSections] = useState<SessionSnapshot[]>(() => players.map((player) => player.snapshot));
 	const [activeIndex, setActiveIndex] = useState(-1);
-	const frontierRef = useRef(-1);
-	const controllerRef = useRef<AbortController | null>(null);
 
 	// Prefetch every session on mount so folding a skipped section is effectively synchronous.
 	useEffect(() => {
 		for (const player of players) player.load().catch((error) => console.error(error));
 	}, [players]);
 
-	useEffect(() => () => controllerRef.current?.abort(), []);
+	useEffect(
+		() => () => {
+			for (const player of players) player.stop();
+		},
+		[players],
+	);
 
-	// Players mutate in place; re-project them all into fresh section objects so React re-renders.
-	const sync = useCallback(() => setSections(players.map(project)), [players]);
+	// Players emit fresh snapshot objects; re-collecting them is enough for React to see
+	// the change (unchanged players keep their snapshot identity).
+	const sync = useCallback(() => setSections(players.map((player) => player.snapshot)), [players]);
 
 	const activate = useCallback(
-		(index: number) => {
-			const frontier = frontierRef.current;
-			const playing = frontier >= 0 ? players[frontier] : undefined;
-			// Out of view: pause and show the hint again; re-entry resumes the transcript.
-			if (index < 0 || index >= players.length) {
-				playing?.pause();
-				setActiveIndex(-1);
-				return;
-			}
-			// At or behind the frontier: never rewind; the frontier runs only while in view.
-			if (index <= frontier) {
-				if (index === frontier) playing?.resume();
-				else playing?.pause();
-				setActiveIndex(index);
-				return;
-			}
-			controllerRef.current?.abort();
-			// Skipped sections fold: their files must exist before a later section plays.
-			for (let i = Math.max(frontier, 0); i < index; i++) {
-				const player = players[i]!;
-				if (player.status !== "done") void player.fold(sync);
-			}
-			frontierRef.current = index;
+		(index: number, previous: number) => {
+			// Whatever was running stops when its section loses focus; the section taking
+			// focus always (re)plays from its start — walkbacks included.
+			if (previous >= 0) players[previous]?.stop();
 			setActiveIndex(index);
-			const controller = new AbortController();
-			controllerRef.current = controller;
-			void players[index]!.play(sync, controller.signal);
+			if (index < 0) return;
+			// Every section above the active one must be settled — skipped or stopped
+			// mid-run, fold it so its files (and transcript) are whole before this plays.
+			for (let i = 0; i < index; i++) {
+				const predecessor = players[i]!;
+				if (predecessor.status !== "done") void predecessor.fold(sync);
+			}
+			void players[index]!.play(sync);
 		},
 		[players, sync],
 	);
@@ -223,8 +225,8 @@ function Home() {
 				}
 			}
 			if (index !== lastIndex) {
+				activate(index, lastIndex);
 				lastIndex = index;
-				activate(index);
 			}
 		};
 
@@ -244,13 +246,13 @@ function Home() {
 
 	// Seed files plus what the sections up to the active one wrote — scrolling back
 	// out of a section takes its files with it. The in-flight write appears immediately.
-	const files = useMemo<FileNode[]>(() => {
+	const files = useMemo<string[]>(() => {
 		const paths = new Set<string>(SEED_FILES);
 		for (const section of sections.slice(0, activeIndex + 1)) {
 			for (const path of writtenFiles(section.blocks)) paths.add(path);
 		}
 		if (currentFile) paths.add(currentFile);
-		return [...paths].map((path) => ({ path }));
+		return [...paths];
 	}, [sections, activeIndex, currentFile]);
 
 	function copyInstall() {
@@ -298,73 +300,24 @@ function Home() {
 				{/* Tail padding lets the last header travel all the way to the focal line
 				    while the card is still pinned. */}
 				<div className="md:pb-[30svh]">
-					{/* Section 0: forming. Each future section is its own block with
-					    data-rail-section + a SESSION_URLS entry. */}
-					<div data-rail-section className="py-16 md:flex md:min-h-[60svh] md:flex-col md:justify-center md:py-0">
-						<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
-							Give each agent a purpose
-						</h2>
-						<p className="mt-4 max-w-md text-lg text-muted-foreground">
-							A wolli agent is born empty. Tell it what it's for and it writes who it is into its SOUL.md.
-						</p>
-						<div className="mt-8 md:hidden">
-							<DemoCard
-								view={sections[0]!}
-								hint={RAIL_HINT}
-								files={files}
-								currentFile={activeIndex === 0 ? currentFile : undefined}
-							/>
+					{RAIL_SECTIONS.map((section, index) => (
+						<div
+							key={section.url}
+							data-rail-section
+							className="py-16 md:flex md:min-h-[60svh] md:flex-col md:justify-center md:py-0"
+						>
+							<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{section.title}</h2>
+							<p className="mt-4 max-w-md text-lg text-muted-foreground">{section.copy}</p>
+							<div className="mt-8 md:hidden">
+								<DemoCard
+									view={sections[index]!}
+									hint={RAIL_HINT}
+									files={files}
+									currentFile={activeIndex === index ? currentFile : undefined}
+								/>
+							</div>
 						</div>
-					</div>
-					{/* Placeholder sections: lorem ipsum copy over arbitrary demo sessions. */}
-					<div data-rail-section className="py-16 md:flex md:min-h-[60svh] md:flex-col md:justify-center md:py-0">
-						<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
-							Lorem ipsum dolor sit amet
-						</h2>
-						<p className="mt-4 max-w-md text-lg text-muted-foreground">
-							Consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
-						</p>
-						<div className="mt-8 md:hidden">
-							<DemoCard
-								view={sections[1]!}
-								hint={RAIL_HINT}
-								files={files}
-								currentFile={activeIndex === 1 ? currentFile : undefined}
-							/>
-						</div>
-					</div>
-					<div data-rail-section className="py-16 md:flex md:min-h-[60svh] md:flex-col md:justify-center md:py-0">
-						<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
-							Ut enim ad minim veniam
-						</h2>
-						<p className="mt-4 max-w-md text-lg text-muted-foreground">
-							Quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
-						</p>
-						<div className="mt-8 md:hidden">
-							<DemoCard
-								view={sections[2]!}
-								hint={RAIL_HINT}
-								files={files}
-								currentFile={activeIndex === 2 ? currentFile : undefined}
-							/>
-						</div>
-					</div>
-					<div data-rail-section className="py-16 md:flex md:min-h-[60svh] md:flex-col md:justify-center md:py-0">
-						<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
-							Duis aute irure dolor
-						</h2>
-						<p className="mt-4 max-w-md text-lg text-muted-foreground">
-							In reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
-						</p>
-						<div className="mt-8 md:hidden">
-							<DemoCard
-								view={sections[3]!}
-								hint={RAIL_HINT}
-								files={files}
-								currentFile={activeIndex === 3 ? currentFile : undefined}
-							/>
-						</div>
-					</div>
+					))}
 				</div>
 				<div className="hidden md:block">
 					<div className="sticky top-[max(1rem,calc((100svh-36rem)/2))]">
@@ -405,10 +358,7 @@ function Home() {
 					Create your own agent today
 				</h2>
 				<div className="mt-10">
-					<a
-						href="/docs/getting-started"
-						className={cn(buttonVariants({ size: "lg" }), "h-12 rounded-full px-7 text-base")}
-					>
+					<a href="/" className={cn(buttonVariants({ size: "lg" }), "h-12 rounded-full px-7 text-base")}>
 						Get started
 					</a>
 				</div>

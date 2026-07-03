@@ -11,6 +11,9 @@ import { activeWriteFile, SessionPlayer, sessionToBlocks, type ToolBlock, writte
 // after the bubble, filled by its matching toolResult).
 const CURATED = readFileSync(join(process.cwd(), "public/sessions/extend.jsonl"), "utf-8");
 const FORMING = readFileSync(join(process.cwd(), "public/sessions/forming.jsonl"), "utf-8");
+const EXTENDING = readFileSync(join(process.cwd(), "public/sessions/extending.jsonl"), "utf-8");
+const TRIGGERED = readFileSync(join(process.cwd(), "public/sessions/triggered.jsonl"), "utf-8");
+const FORMING_BLOCKS = sessionToBlocks(loadSession(FORMING, "forming.jsonl").messages);
 
 describe("sessionToBlocks (curated demo)", () => {
 	const blocks = sessionToBlocks(loadSession(CURATED, "extend.jsonl").messages);
@@ -52,18 +55,10 @@ describe("sessionToBlocks (curated demo)", () => {
 });
 
 describe("sessionToBlocks (forming demo)", () => {
-	const blocks = sessionToBlocks(loadSession(FORMING, "forming.jsonl").messages);
+	const blocks = FORMING_BLOCKS;
 
 	it("produces the expected block sequence", () => {
-		expect(blocks.map((b) => b.kind)).toEqual([
-			"assistant",
-			"user",
-			"assistant",
-			"user",
-			"assistant",
-			"tool",
-			"assistant",
-		]);
+		expect(blocks.map((b) => b.kind)).toEqual(["assistant", "user", "assistant", "tool", "assistant"]);
 	});
 
 	// Doubles as the leading-assistant regression check: a session may open with a seeded
@@ -76,17 +71,54 @@ describe("sessionToBlocks (forming demo)", () => {
 	});
 
 	it("renders the SOUL.md write as a settled, successful tool block", () => {
-		const write = blocks[5];
+		const write = blocks[3];
 		expect(write.kind === "tool" && write.name).toBe("write");
 		expect(write.kind === "tool" && write.isPartial).toBe(false);
 		expect(write.kind === "tool" && (write.args as { path?: string }).path).toBe("SOUL.md");
 		expect(write.kind === "tool" && write.result?.isError).toBe(false);
-		expect(write.kind === "tool" && write.result?.content[0]?.text).toBe("Successfully wrote 298 bytes to SOUL.md");
+		expect(write.kind === "tool" && write.result?.content[0]?.text).toMatch(
+			/^Successfully wrote \d+ bytes to SOUL\.md$/,
+		);
+	});
+});
+
+describe("sessionToBlocks (extending demo, continues forming)", () => {
+	const formingBlocks = FORMING_BLOCKS;
+	const extendingBlocks = sessionToBlocks(loadSession(EXTENDING, "extending.jsonl").messages);
+
+	it("starts with forming's exact blocks, then continues the same session", () => {
+		expect(extendingBlocks.length).toBeGreaterThan(formingBlocks.length);
+		expect(extendingBlocks.slice(0, formingBlocks.length)).toEqual(formingBlocks);
+	});
+
+	it("adds the integration, workflow, and tool writes", () => {
+		expect(writtenFiles(extendingBlocks)).toEqual([
+			"SOUL.md",
+			"integrations/github.ts",
+			"workflows/on-issue-opened.ts",
+			"tools/github.ts",
+		]);
+	});
+});
+
+describe("sessionToBlocks (triggered demo)", () => {
+	const blocks = sessionToBlocks(loadSession(TRIGGERED, "triggered.jsonl").messages);
+
+	it("opens with the delivered github event as a user block", () => {
+		const first = blocks[0];
+		expect(first.kind).toBe("user");
+		expect(first.kind === "user" && first.text.startsWith("[github]")).toBe(true);
+	});
+
+	it("flags the issue through the github tool", () => {
+		const flag = blocks.find((b) => b.kind === "tool" && b.name === "github");
+		expect(flag?.kind === "tool" && (flag.args as { action?: string }).action).toBe("addLabels");
+		expect(flag?.kind === "tool" && flag.result?.isError).toBe(false);
 	});
 });
 
 describe("writtenFiles / activeWriteFile", () => {
-	const formingBlocks = sessionToBlocks(loadSession(FORMING, "forming.jsonl").messages);
+	const formingBlocks = FORMING_BLOCKS;
 	const extendBlocks = sessionToBlocks(loadSession(CURATED, "extend.jsonl").messages);
 
 	function toolBlock(overrides: Partial<ToolBlock>): ToolBlock {
@@ -130,10 +162,13 @@ describe("SessionPlayer", () => {
 		vi.unstubAllGlobals();
 	});
 
-	function stubFetch() {
+	function stubFetch(source: string | Record<string, string> = FORMING) {
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => ({ ok: true, text: async () => FORMING })),
+			vi.fn(async (url: string) => ({
+				ok: true,
+				text: async () => (typeof source === "string" ? source : (source[url] ?? "")),
+			})),
 		);
 	}
 
@@ -144,32 +179,85 @@ describe("SessionPlayer", () => {
 		const player = new SessionPlayer("/sessions/forming.jsonl");
 		await player.fold(() => {});
 		expect(player.status).toBe("done");
-		expect(player.snapshot.blocks).toHaveLength(
-			sessionToBlocks(loadSession(FORMING, "forming.jsonl").messages).length,
-		);
+		expect(player.snapshot.blocks).toHaveLength(FORMING_BLOCKS.length);
 	});
 
-	it("pause freezes the driver between frames; resume continues where it froze", async () => {
+	it("a continuing player pre-folds its predecessor's transcript before any timed frame", async () => {
+		stubFetch({ "/sessions/forming.jsonl": FORMING, "/sessions/extending.jsonl": EXTENDING });
+		const formingBlocks = FORMING_BLOCKS;
+		const forming = new SessionPlayer("/sessions/forming.jsonl");
+		const player = new SessionPlayer("/sessions/extending.jsonl", forming);
+		const snapshots: Array<{ blocks: unknown[]; input: string }> = [];
+		const run = player.play((snapshot) => snapshots.push(snapshot));
+
+		await wait(50);
+		player.stop();
+		await run;
+
+		// The very first emit is the folded forming transcript, composer still empty.
+		expect(snapshots[0]?.blocks).toHaveLength(formingBlocks.length);
+		expect(snapshots[0]?.input).toBe("");
+	});
+
+	it("event deliveries land without composer typing", async () => {
+		stubFetch(TRIGGERED);
+		const player = new SessionPlayer("/sessions/triggered.jsonl");
+		const snapshots: Array<{ blocks: Array<{ kind: string }>; input: string }> = [];
+		const run = player.play((snapshot) => snapshots.push(snapshot));
+
+		// agent_start + the submit beat precede the event landing (~420ms in).
+		await wait(700);
+		player.stop();
+		await run;
+
+		const landed = snapshots.find((snapshot) => snapshot.blocks.length > 0);
+		expect(landed?.blocks[0]?.kind).toBe("user");
+		expect(snapshots.every((snapshot) => snapshot.input === "")).toBe(true);
+	});
+
+	it("stop() ends the run and freezes the transcript where it was", async () => {
 		stubFetch();
 		const player = new SessionPlayer("/sessions/forming.jsonl");
-		const controller = new AbortController();
-		const run = player.play(() => {}, controller.signal);
+		const run = player.play(() => {});
 
-		// Let a few frames land, pause, then let the in-flight frame's sleep drain
-		// (longest eventCost is 600ms) — after that the loop is parked before emit.
 		await wait(300);
-		player.pause();
-		await wait(800);
-		const frozen = player.snapshot;
-		await wait(500);
-		expect(player.snapshot).toBe(frozen); // no frames emitted while paused
-		expect(player.status).toBe("playing"); // paused, not done
-
-		player.resume();
-		await wait(400);
-		expect(player.snapshot).not.toBe(frozen); // frames flow again
-
-		controller.abort();
+		player.stop();
 		await run;
+		const frozen = player.snapshot;
+		await wait(300);
+		expect(player.snapshot).toBe(frozen); // no frames after stop
+	});
+
+	it("a repeat play() replays a finished section from the top", async () => {
+		stubFetch();
+		const player = new SessionPlayer("/sessions/forming.jsonl");
+		await player.fold(() => {});
+		const full = player.snapshot.blocks.length;
+
+		const snapshots: Array<{ blocks: unknown[] }> = [];
+		const run = player.play((snapshot) => snapshots.push(snapshot));
+		await wait(100);
+		player.stop();
+		await run;
+
+		// The first emitted frame starts the transcript over, not on the done state.
+		expect(player.status).toBe("playing");
+		expect(snapshots[0]?.blocks.length).toBeLessThan(full);
+	});
+
+	it("a second play() aborts the first run and streams from the top", async () => {
+		stubFetch();
+		const player = new SessionPlayer("/sessions/forming.jsonl");
+		const first = player.play(() => {});
+		await wait(300);
+
+		const snapshots: Array<{ blocks: unknown[] }> = [];
+		const second = player.play((snapshot) => snapshots.push(snapshot));
+		await first; // the first run exits on its aborted signal
+		await wait(100);
+		expect(snapshots.length).toBeGreaterThan(0); // the replay streams
+
+		player.stop();
+		await second;
 	});
 });

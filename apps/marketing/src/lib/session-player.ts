@@ -7,13 +7,16 @@
 //     — `input` (the composer text growing) then `submit` — so the demo types the user's
 //     message into the input box and "sends" it. Like the real loop, each submitted prompt
 //     opens a run (agent_start) that ends (agent_end) when the assistant's final message
-//     completes — so `busy` is false while the user types.
+//     completes — so `busy` is false while the user types. Event-delivered user messages
+//     (`isEventMessage`: a "[github] ..."-style integration delivery, nobody at the
+//     keyboard) skip the composer frames and just land.
 //   - `applyEvent` mirrors InteractiveMode.handleEvent (interactive-mode.ts): a streaming
 //     assistant block, a pendingTools map keyed by tool-call id, a busy flag, and the
 //     composer `input` text.
 //   - `SessionPlayer` (bottom) owns one session's lifecycle — load (fetched + cached),
-//     play (the self-timed driver), fold (instant full transcript) — and is the sole
-//     owner of its idle/playing/done status.
+//     play (the self-timed driver; each call restarts from the top, so replaying a
+//     finished section is just calling it again), fold (instant full transcript) — and
+//     is the sole owner of its idle/playing/done status and its abort controller.
 //
 // Playback is self-timed: each frame is applied, then the driver waits that frame's own
 // delay before the next, so a user's typing or an assistant's stream runs to its end before
@@ -87,6 +90,15 @@ function getUserMessageText(content: string | Array<{ type: string; text?: strin
 
 function isAssistantMessage(message: AgentMessage): message is AssistantMessage {
 	return message.role === "assistant";
+}
+
+// A user message delivered by an integration/workflow ("[github] Issue #912 opened...")
+// rather than typed by the human. Replay lands it without composer frames; the chat
+// renders it as an event bubble. The convention is the bracket tag the delivery prompt
+// starts with — tag then a space, so a typed message opening with a markdown link
+// ("[docs](...)") is not mistaken for one.
+export function isEventMessage(text: string): boolean {
+	return /^\[[\w-]+\] /.test(text);
 }
 
 // Replace the block with `key`, returning a new blocks array. Mirrors the way the TUI
@@ -289,36 +301,70 @@ function finalizeAssistantMessage(
 // Replay: AgentMessage[] -> frame stream (canonical order)
 // ---------------------------------------------------------------------------
 
-// Split text into small tokens (word + trailing whitespace) so text streams in naturally.
-function streamTokens(text: string): string[] {
-	return text.match(/\s*\S+|\s+/g) ?? [];
+// The successive cumulative states of a streaming string, growing 3-5 characters per
+// step, so text streams like model tokens rather than typed words.
+function streamText(text: string): string[] {
+	const steps: string[] = [];
+	let end = 0;
+	while (end < text.length) {
+		end += 3 + (steps.length % 3); // 3, 4, 5, 3, 4, 5...
+		steps.push(text.slice(0, end));
+	}
+	return steps;
+}
+
+// The long string argument a tool call streams chunk by chunk so the block visibly
+// builds up — only for tools whose renderer shows that arg in full (write's body,
+// bash's title). Other tools render args as truncated JSON, where streaming would
+// spend frames on changes nobody can see; their args land whole instead.
+const STREAMED_ARGS: Record<string, string> = { write: "content", bash: "command" };
+
+function streamedArgEntry(name: string, args: unknown): [string, string] | undefined {
+	const key = STREAMED_ARGS[name];
+	if (!key || typeof args !== "object" || args === null) return undefined;
+	const value = (args as Record<string, unknown>)[key];
+	return typeof value === "string" && value ? [key, value] : undefined;
 }
 
 // Yield cumulative AssistantMessages that grow text/thinking blocks and reveal toolCall
-// blocks in order. message_update.message is the cumulative growing message.
+// blocks in order, growing each toolCall's long string arg the same way. message_update's
+// message is the cumulative growing message. Elements of `revealed` are only ever
+// replaced, never mutated, so a shallow copy per yield is enough — and settled blocks
+// keep their identity across frames, which lets React bail out on them.
 function* streamAssistant(message: AssistantMessage): Generator<AssistantMessage> {
 	const revealed: Array<TextContent | ThinkingContent | ToolCall> = [];
 	for (const block of message.content) {
 		if (block.type === "text" || block.type === "thinking") {
 			const key = block.type === "text" ? "text" : "thinking";
 			const full = block.type === "text" ? block.text : block.thinking;
-			let acc = "";
-			const tokens = streamTokens(full);
-			if (tokens.length === 0) {
+			const steps = streamText(full);
+			if (steps.length === 0) {
 				revealed.push(block);
 				continue;
 			}
 			const index = revealed.length;
-			revealed.push({ ...block, [key]: "" } as TextContent | ThinkingContent);
-			for (const token of tokens) {
-				acc += token;
-				revealed[index] = { ...block, [key]: acc } as TextContent | ThinkingContent;
-				yield { ...message, content: revealed.map((c) => ({ ...c })) };
+			for (const partial of steps) {
+				revealed[index] = { ...block, [key]: partial } as TextContent | ThinkingContent;
+				yield { ...message, content: [...revealed] };
 			}
 			revealed[index] = block;
 		} else {
-			revealed.push(block);
-			yield { ...message, content: revealed.map((c) => ({ ...c })) };
+			const streamed = streamedArgEntry(block.name, block.arguments);
+			if (!streamed) {
+				revealed.push(block);
+				yield { ...message, content: [...revealed] };
+				continue;
+			}
+			// Reveal the call with its short args (the write's path, the tool title) at
+			// once, then grow the long arg; the last step completes it.
+			const [key, full] = streamed;
+			const args = block.arguments as Record<string, unknown>;
+			const index = revealed.length;
+			for (const partial of ["", ...streamText(full)]) {
+				revealed[index] = { ...block, arguments: { ...args, [key]: partial } };
+				yield { ...message, content: [...revealed] };
+			}
+			revealed[index] = block;
 		}
 	}
 }
@@ -336,11 +382,13 @@ function* replay(messages: AgentMessage[]): Generator<Frame> {
 			// message "sends". agent_start comes BEFORE submit so the transcript is
 			// never in the fully-idle state (empty blocks, empty input, not busy)
 			// between the composer clearing and the user bubble landing — the chat
-			// would flash its hint there.
-			let acc = "";
-			for (const token of streamTokens(getUserMessageText(message.content))) {
-				acc += token;
-				yield { type: "input", text: acc };
+			// would flash its hint there. An event delivery was never typed by anyone,
+			// so it lands without the composer frames.
+			const text = getUserMessageText(message.content);
+			if (!isEventMessage(text)) {
+				for (const partial of streamText(text)) {
+					yield { type: "input", text: partial };
+				}
 			}
 			yield { type: "agent_start" };
 			yield { type: "submit" };
@@ -390,12 +438,17 @@ function* replay(messages: AgentMessage[]): Generator<Frame> {
 	if (running) yield { type: "agent_end", messages };
 }
 
+// Fold the whole replay in one pass — the state after every frame has been applied.
+function foldState(messages: AgentMessage[]): TranscriptState {
+	let state = initialState();
+	for (const frame of replay(messages)) state = applyEvent(state, frame);
+	return state;
+}
+
 // Fully-fold the replay: the completely revealed transcript (used to fold skipped/done
 // sections to their complete transcript without playing them).
 export function sessionToBlocks(messages: AgentMessage[]): TranscriptBlock[] {
-	let state = initialState();
-	for (const event of replay(messages)) state = applyEvent(state, event);
-	return state.blocks;
+	return foldState(messages).blocks;
 }
 
 // ---------------------------------------------------------------------------
@@ -441,17 +494,17 @@ export function activeWriteFile(blocks: TranscriptBlock[]): string | undefined {
 // The pause (ms) after a frame is applied. Playback is self-timed: the driver applies a
 // frame, waits this long, then applies the next — so each unit (the user typing, an
 // assistant stream, a tool run) plays to its own end before the next thing starts, instead
-// of sharing one global budget. User typing dwells longer so it is readable; the assistant
-// streams faster. The small jitter keeps both from feeling mechanical. Tuned for the rail's
-// short "mini preview" sessions: a deliberate, watchable pace rather than a quick skim.
+// of sharing one global budget. Frames are 3-5 char chunks (streamText): the user types
+// them slowly, the assistant streams them fast; boundary beats (submit, tool start/end)
+// give the eye time to land. The jitter keeps it from feeling mechanical.
 function eventCost(event: Frame): number {
 	switch (event.type) {
 		case "input":
-			return 75 + Math.random() * 55; // ~75-130ms per token: visible, human typing
+			return 45 + Math.random() * 35; // ~45-80ms per chunk: visible, human typing
 		case "submit":
 			return 420; // beat while the message "sends"
 		case "message_update":
-			return 26 + Math.random() * 18; // assistant streams faster than the user types
+			return 12 + Math.random() * 12; // assistant streams much faster than the user types
 		case "message_start":
 			return event.message.role === "user" ? 40 : 240;
 		case "message_end":
@@ -498,21 +551,29 @@ export interface SessionSnapshot {
 
 const IDLE_SNAPSHOT: SessionSnapshot = { blocks: [], busy: false, input: "" };
 
-// One player per session url; the sole owner of its status. `play` is the self-timed
-// driver, `fold` reveals the complete transcript instantly, `pause`/`resume` freeze the
-// driver between frames. Knows nothing about other sessions, scroll, or React.
+// One player per session url; the sole owner of its status and abort controller. `play`
+// is the self-timed driver (a repeat call replays from the top), `fold` reveals the
+// complete transcript instantly, `stop` aborts the run. Knows nothing about other
+// sessions, scroll, or React.
 export class SessionPlayer {
 	status: SessionPlayerStatus = "idle";
 	/** Last emitted state — what the chat renders for this session. */
 	snapshot: SessionSnapshot = IDLE_SNAPSHOT;
 
 	private readonly url: string;
+	/**
+	 * The previous section's player when this session CONTINUES its transcript (the same
+	 * session later in time): everything the predecessor already showed folds instantly
+	 * and playback picks up from there. The continued file must extend the predecessor's
+	 * messages verbatim — the demo generator produces both from one shared prefix.
+	 */
+	private readonly continues?: SessionPlayer;
 	private messages: Promise<AgentMessage[]> | null = null;
-	private paused = false;
-	private resumeResolvers: Array<() => void> = [];
+	private controller: AbortController | null = null;
 
-	constructor(url: string) {
+	constructor(url: string, continues?: SessionPlayer) {
 		this.url = url;
+		this.continues = continues;
 	}
 
 	// Fetch + reconstruct, cached on the instance. Evicts on rejection so a transient
@@ -535,16 +596,23 @@ export class SessionPlayer {
 	}
 
 	// Self-timed driver: apply a frame, wait its own delay (eventCost), apply the next.
-	// A pause holds the loop between frames until resume; an abort returns without
-	// writes — the aborting caller folds the player itself.
-	async play(onChange: (snapshot: SessionSnapshot) => void, signal: AbortSignal): Promise<void> {
+	// Each call restarts from the top and aborts the player's previous run — a section
+	// taking focus always plays from its start.
+	async play(onChange: (snapshot: SessionSnapshot) => void): Promise<void> {
+		this.stop();
+		const controller = new AbortController();
+		this.controller = controller;
+		const signal = controller.signal;
 		this.status = "playing";
 		try {
 			const messages = await this.load();
+			// A continuing session folds everything its predecessor already showed —
+			// however many messages that is — and picks up from there.
+			const startAfter = this.continues ? (await this.continues.load()).length : 0;
 			if (signal.aborted) return;
-			let working = initialState();
-			for (const frame of replay(messages)) {
-				await this.waitWhilePaused(signal);
+			let working = foldState(messages.slice(0, startAfter));
+			this.emit({ blocks: working.blocks, busy: working.busy, input: working.input }, onChange);
+			for (const frame of replay(messages.slice(startAfter))) {
 				if (signal.aborted) return;
 				working = applyEvent(working, frame);
 				this.emit({ blocks: working.blocks, busy: working.busy, input: working.input }, onChange);
@@ -558,28 +626,14 @@ export class SessionPlayer {
 		}
 	}
 
-	/** Freeze the driver between frames (the section scrolled out of view). No-op unless playing. */
-	pause(): void {
-		if (this.status === "playing") this.paused = true;
+	/** Abort the in-flight run, if any. The player keeps its last snapshot and status. */
+	stop(): void {
+		this.controller?.abort();
 	}
 
-	/** Let a paused driver continue from exactly where it froze. */
-	resume(): void {
-		this.paused = false;
-		for (const resolve of this.resumeResolvers.splice(0)) resolve();
-	}
-
-	// Resolves immediately when not paused; otherwise on resume() or abort.
-	private waitWhilePaused(signal: AbortSignal): Promise<void> {
-		if (!this.paused || signal.aborted) return Promise.resolve();
-		return new Promise((resolve) => {
-			this.resumeResolvers.push(resolve);
-			signal.addEventListener("abort", () => resolve(), { once: true });
-		});
-	}
-
-	// Fold to the complete transcript without playing.
+	// Fold to the complete transcript without playing, aborting any in-flight run.
 	async fold(onChange: (snapshot: SessionSnapshot) => void): Promise<void> {
+		this.stop();
 		this.status = "done";
 		try {
 			const messages = await this.load();

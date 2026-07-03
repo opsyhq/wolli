@@ -1,8 +1,16 @@
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
+import { Menu, X } from "lucide-react";
+import { useState } from "react";
 
 import appCss from "../styles.css?url";
+
+const NAV_LINKS = [
+	{ href: "/", label: "Docs" },
+	{ href: "/", label: "Examples" },
+	{ href: "/", label: "Plugins" },
+];
 
 export const Route = createRootRoute({
 	head: () => ({
@@ -38,35 +46,64 @@ function GitHubIcon({ className }: { className?: string }) {
 }
 
 // Apple-style site header: thin, sticky, translucent, with generous side padding.
+// On phones the text links collapse behind a hamburger that opens a full-screen
+// panel (eve.dev-style): the page disappears behind big full-width rows.
 function SiteHeader() {
+	const [menuOpen, setMenuOpen] = useState(false);
+
 	return (
-		<header className="sticky top-0 z-50 border-b border-black/5 bg-background/80 backdrop-blur-xl backdrop-saturate-150">
-			<div className="mx-auto flex h-14 w-full items-center px-6 md:px-32 lg:px-48">
-				<a href="/" className="text-lg font-bold tracking-tight text-foreground">
-					Wolli
-				</a>
-				<nav className="ml-6 flex items-center gap-5 text-sm text-muted-foreground md:ml-10 md:gap-8">
-					<a href="/" className="transition-colors hover:text-foreground">
-						Docs
+		<>
+			<header className="sticky top-0 z-50 border-b border-black/5 bg-background/80 backdrop-blur-xl backdrop-saturate-150">
+				<div className="mx-auto flex h-14 w-full items-center px-6 md:px-32 lg:px-48">
+					<a href="/" className="text-lg font-bold tracking-tight text-foreground">
+						Wolli
 					</a>
-					<a href="/" className="transition-colors hover:text-foreground">
-						Examples
+					<nav className="ml-10 hidden items-center gap-8 text-sm text-muted-foreground md:flex">
+						{NAV_LINKS.map((link) => (
+							<a key={link.label} href={link.href} className="transition-colors hover:text-foreground">
+								{link.label}
+							</a>
+						))}
+					</nav>
+					<a
+						href="https://github.com/opsyhq/wolli"
+						target="_blank"
+						rel="noreferrer"
+						aria-label="Wolli on GitHub"
+						className="ml-auto flex size-8 items-center justify-center rounded-full text-foreground transition-colors hover:bg-black/5"
+					>
+						<GitHubIcon className="size-5" />
 					</a>
-					<a href="/" className="transition-colors hover:text-foreground">
-						Plugins
-					</a>
+					<button
+						type="button"
+						aria-label={menuOpen ? "Close menu" : "Open menu"}
+						aria-expanded={menuOpen}
+						onClick={() => setMenuOpen((open) => !open)}
+						className="ml-1 flex size-8 items-center justify-center rounded-full text-foreground transition-colors hover:bg-black/5 md:hidden"
+					>
+						{menuOpen ? <X className="size-5" /> : <Menu className="size-5" />}
+					</button>
+				</div>
+			</header>
+			{/* Outside the header: its backdrop-filter would otherwise become the fixed
+			    panel's containing block and collapse it to the header's height. */}
+			{menuOpen ? (
+				<nav className="fixed inset-x-0 top-14 bottom-0 z-50 overflow-y-auto overscroll-contain bg-background md:hidden">
+					<div className="flex flex-col px-6 py-2">
+						{NAV_LINKS.map((link) => (
+							<a
+								key={link.label}
+								href={link.href}
+								onClick={() => setMenuOpen(false)}
+								className="py-4 text-base text-foreground"
+							>
+								{link.label}
+							</a>
+						))}
+					</div>
 				</nav>
-				<a
-					href="https://github.com/opsyhq/wolli"
-					target="_blank"
-					rel="noreferrer"
-					aria-label="Wolli on GitHub"
-					className="ml-auto flex size-8 items-center justify-center rounded-full text-foreground transition-colors hover:bg-black/5"
-				>
-					<GitHubIcon className="size-5" />
-				</a>
-			</div>
-		</header>
+			) : null}
+		</>
 	);
 }
 
