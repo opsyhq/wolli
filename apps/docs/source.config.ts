@@ -53,11 +53,12 @@ function rewriteLink(url: string): string {
 	if (url.startsWith("../")) {
 		return `${GITHUB_BLOB}/${url.slice("../".length)}`;
 	}
-	// `extensions.md#anchor` / `./extensions.md` → site routes under /docs.
+	// `extensions.md#anchor` / `./extensions.md` → site routes under /docs;
+	// index.md is published as getting-started.
 	const match = url.match(/^(?:\.\/)?([\w-]+)\.md(#.*)?$/);
 	if (!match) return url;
 	const [, name, anchor = ""] = match;
-	return name === "index" ? `/docs${anchor}` : `/docs/${name}${anchor}`;
+	return `/docs/${name === "index" ? "getting-started" : name}${anchor}`;
 }
 
 export default defineConfig({

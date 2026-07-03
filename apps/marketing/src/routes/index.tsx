@@ -363,7 +363,10 @@ function Home() {
 				</h2>
 				<div className="mt-10">
 					{/* Cross-worker link to the docs app, same as the header's Docs. */}
-					<a href="/docs/" className={cn(buttonVariants({ size: "lg" }), "h-12 rounded-full px-7 text-base")}>
+					<a
+						href="/docs/getting-started/"
+						className={cn(buttonVariants({ size: "lg" }), "h-12 rounded-full px-7 text-base")}
+					>
 						Get started
 					</a>
 				</div>

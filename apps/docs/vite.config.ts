@@ -19,8 +19,14 @@ const config = defineConfig({
 		mdx(),
 		tailwindcss(),
 		tanstackStart({
-			prerender: { enabled: true, crawlLinks: true },
-			pages: [{ path: "/docs" }],
+			prerender: {
+				enabled: true,
+				crawlLinks: true,
+				// Never emit docs/index.html — a static file there would shadow
+				// the /docs 308 (the crawler follows redirects and bakes the target).
+				filter: (page) => page.path !== "/docs" && page.path !== "/docs/",
+			},
+			pages: [{ path: "/docs/getting-started" }],
 			// Server functions must live under /docs/* too, or the zone route
 			// would send their requests to the marketing worker.
 			serverFns: { base: "/docs/_serverFn" },
