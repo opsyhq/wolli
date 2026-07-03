@@ -201,10 +201,11 @@ body {
 /* Header focus: routes/index.tsx writes `--focus` per section (1 = within
    FOCUS_HOLD of the focal line, falling all the way to 0 over FOCUS_FALLOFF).
    Raw scroll-driven, no transition. Desktop only — on mobile the demo card
-   lives inside the section and must stay readable. Unset without JS
-   (prerender), falling back to full opacity. */
-@media (min-width: 48rem) {
+   lives inside the section and must stay readable. Fallback 0 so the
+   pre-hydration paint matches what JS computes at scroll 0 (no flash);
+   scripting-gated so no-JS visitors keep full opacity. */
+@media (min-width: 48rem) and (scripting: enabled) {
   [data-rail-section] {
-    opacity: var(--focus, 1);
+    opacity: var(--focus, 0);
   }
 }
