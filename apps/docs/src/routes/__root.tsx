@@ -86,14 +86,14 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 			<head>
 				<HeadContent />
 				{/* Mirror of the marketing shell's rule: prerender the way back to
-				    the marketing worker on link hover, so the cross-worker
-				    transition feels instant in Chromium. */}
+				    the marketing worker as soon as the page loads, so the
+				    cross-worker transition feels instant in Chromium. */}
 				<script
 					type="speculationrules"
 					// biome-ignore lint/security/noDangerouslySetInnerHtml: static JSON, no user input
 					dangerouslySetInnerHTML={{
 						__html: JSON.stringify({
-							prerender: [{ where: { href_matches: "/" }, eagerness: "moderate" }],
+							prerender: [{ where: { href_matches: "/" }, eagerness: "eager" }],
 						}),
 					}}
 				/>
