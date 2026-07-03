@@ -403,7 +403,9 @@ function ToolExecution({ block }: { block: ToolBlock }) {
 			className="rounded-[10px] border border-chat-border bg-chat-surface px-3 py-2 data-[state=error]:border-[rgba(229,72,77,0.3)] data-[state=success]:border-[rgba(0,199,88,0.25)] data-[state=error]:bg-chat-tool-error data-[state=success]:bg-chat-tool-success"
 			data-state={state}
 		>
-			<div className="text-chat-text [&_b]:font-semibold">
+			{/* break-all: JSON args and long paths are single unbreakable tokens; without
+			    it they widen the block past the card on narrow screens. */}
+			<div className="break-all text-chat-text [&_b]:font-semibold">
 				<ToolTitle name={block.name} args={args} />
 			</div>
 			<ToolBody block={block} state={state} />
@@ -495,7 +497,7 @@ export function Chat({ blocks, busy = false, input, hint, className }: ChatProps
 			    The top mask fades scrolled content out under the header line instead of
 			    slicing a bubble mid-body at the viewport edge. */}
 			<div
-				className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] pt-[18px] pb-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_18px)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+				className="flex min-h-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto px-[18px] pt-[18px] pb-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_18px)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
 				ref={scrollRef}
 			>
 				{/* The !input guard covers sessions that open with the user typing. */}
