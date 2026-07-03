@@ -101,14 +101,14 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 		<html lang="en">
 			<head>
 				<HeadContent />
-				{/* Prerender the docs app (a separate worker) on link hover, so the
-				    cross-worker transition feels instant in Chromium. */}
+				{/* Prerender the docs app (a separate worker) as soon as the page
+				    loads, so the cross-worker transition feels instant in Chromium. */}
 				<script
 					type="speculationrules"
 					// biome-ignore lint/security/noDangerouslySetInnerHtml: static JSON, no user input
 					dangerouslySetInnerHTML={{
 						__html: JSON.stringify({
-							prerender: [{ where: { href_matches: "/docs/*" }, eagerness: "moderate" }],
+							prerender: [{ where: { href_matches: "/docs/*" }, eagerness: "eager" }],
 						}),
 					}}
 				/>
