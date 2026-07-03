@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "marketing",
+      "runtimeExecutable": "zsh",
+      "runtimeArgs": ["-lic", "pnpm --filter marketing dev"],
+      "port": 3000
+    },
+    {
+      "name": "docs",
+      "runtimeExecutable": "zsh",
+      "runtimeArgs": ["-lic", "pnpm --filter docs dev"],
+      "port": 3001
+    }
+  ]
+}
