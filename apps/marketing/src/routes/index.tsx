@@ -240,9 +240,13 @@ function Home() {
 	}, [activate]);
 
 	const active = activeIndex >= 0 ? sections[activeIndex] : undefined;
-	// A write highlights its file only while it is the transcript's newest block; the
-	// highlight clears the same way it appeared — the session (or section) moving on.
-	const currentFile = active ? activeWriteFile(active.blocks) : undefined;
+	// The active section's last write stays highlighted while the section is active (the
+	// cue to what it added) and clears when another section takes over. A continuing
+	// section's transcript starts with its predecessor's blocks; writes in that shared
+	// prefix belong to the previous section, so the scan skips them.
+	const prefixBlocks =
+		activeIndex >= 0 && RAIL_SECTIONS[activeIndex]?.continues ? (sections[activeIndex - 1]?.blocks.length ?? 0) : 0;
+	const currentFile = active ? activeWriteFile(active.blocks.slice(prefixBlocks)) : undefined;
 
 	// Seed files plus what the sections up to the active one wrote — scrolling back
 	// out of a section takes its files with it. The in-flight write appears immediately.
