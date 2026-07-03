@@ -7,7 +7,7 @@ Wolli is a persistent, purposeful agent that runs in your terminal. It stays sma
 Install Wolli with npm:
 
 ```bash
-npm install -g @opsyhq/wolli
+npm install -g wolli
 ```
 
 Then create a new agent and start its first conversation:
