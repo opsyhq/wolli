@@ -20,6 +20,7 @@ Every agent lives under `~/.wolli/agents/<name>/`:
 ├── workflows/
 │   ├── telegram-inbound.ts
 │   └── telegram-reply.ts
+├── hooks/
 ├── tools/
 ├── providers/
 ├── skills/
@@ -34,6 +35,7 @@ You can read most of an agent from that tree:
 - `agent.json` holds runtime configuration.
 - [integrations/](./integrations.md) connect external services (Telegram, a scheduler); transport only.
 - [workflows/](./workflows.md) route events into sessions and automate everything else.
+- [hooks/](./hooks.md) intercept engine events: block tool calls, rewrite input.
 - [tools/](./tools.md) hold typed functions loaded into session tooling.
 - [providers/](./providers.md) add model providers.
 - [skills/](./skills.md) hold procedures the model loads when they apply.
