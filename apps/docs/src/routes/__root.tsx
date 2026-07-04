@@ -54,7 +54,7 @@ function NotFound() {
 			<p className="text-sm font-medium text-muted-foreground">404</p>
 			<h1 className="text-2xl font-bold tracking-tight text-foreground">Page not found</h1>
 			<a
-				href="/docs/getting-started/"
+				href="/docs/introduction/"
 				className="text-sm text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
 			>
 				Back to the docs
@@ -88,7 +88,7 @@ function SiteHeader() {
 				<nav className="ml-6 flex items-center gap-5 text-sm text-muted-foreground md:ml-10 md:gap-8">
 					{/* Everything under this header is the docs section, so the
 					    Docs link always renders active. */}
-					<a href="/docs/getting-started/" className="text-foreground">
+					<a href="/docs/introduction/" className="text-foreground">
 						Docs
 					</a>
 					<a

@@ -26,7 +26,7 @@ const config = defineConfig({
 				// the /docs 308 (the crawler follows redirects and bakes the target).
 				filter: (page) => page.path !== "/docs" && page.path !== "/docs/",
 			},
-			pages: [{ path: "/docs/getting-started" }],
+			pages: [{ path: "/docs/introduction" }],
 			// Server functions must live under /docs/* too, or the zone route
 			// would send their requests to the marketing worker.
 			serverFns: { base: "/docs/_serverFn" },

@@ -1,10 +1,10 @@
 # Plugins
 
-A plugin is an npm-style package whose `package.json` carries a `"wolli"` manifest declaring the resources it contributes — extensions, integrations, skills, prompt templates, and/or themes. One install adds all of them to an agent at once, resolved in place from the single package. Plugins are how you share a [dual-half integration](./integrations.md#the-dual-half-package) (a transport plus its mapping extension), a bundle of [extensions](./extensions.md), or any mix of resource types between agents and across machines.
+A plugin is an npm-style package whose `package.json` carries a `"wolli"` manifest declaring the resources it contributes: integrations, workflows, tools, providers, skills, prompt templates, and/or themes. One install adds all of them to an agent at once, resolved in place from the single package. Plugins are how you share a channel (an [integration](./integrations.md) plus the [workflows](./workflows.md) that route it), a set of [tools](./tools.md), or any mix of resource types between agents and across machines.
 
 > **Per-agent, not global.** Wolli has no project scope. A plugin is installed for one agent and lands in that agent's own home (`~/.wolli/agents/<name>/`). The agent name precedes every verb: `wolli <agent> plugins install <source>`.
 
-> **Security:** Plugins run with full host access. Extensions and integrations execute arbitrary code inside the agent process, and skills can instruct the model to take any action. Review a plugin's source before installing a third-party package.
+> **Security:** Plugins run with full host access. Integrations, workflows, tools, and providers execute arbitrary code inside the agent process, and skills can instruct the model to take any action. Review a plugin's source before installing a third-party package.
 
 ## Table of Contents
 
@@ -23,13 +23,15 @@ A plugin is an npm-style package whose `package.json` carries a `"wolli"` manife
 
 A plugin is a directory (or published package) with a `package.json` whose `"wolli"` field names the contribution files. Each listed path is a normal source module loaded by the agent's resource loader at launch:
 
-- **integrations** — transport modules registered via `wolli.registerIntegration` (see [integrations.md](./integrations.md)).
-- **extensions** — agent-owned behavior modules (see [extensions.md](./extensions.md)).
+- **integrations** — transport modules default-exporting `defineIntegration` (see [integrations.md](./integrations.md)).
+- **workflows** — routing and automation modules default-exporting `defineWorkflow` (see [workflows.md](./workflows.md)).
+- **tools** — tool modules default-exporting `defineTool` (see [tools.md](./tools.md)).
+- **providers** — model provider modules default-exporting `defineProvider` (see [providers.md](./providers.md)).
 - **skills** — `SKILL.md` (or top-level `.md`) instruction files (see [skills.md](./skills.md)).
 - **prompts** — `.md` prompt templates (see [prompt-templates.md](./prompt-templates.md)).
 - **themes** — `.json` theme files (see [themes.md](./themes.md)).
 
-A plugin may declare any subset. The common case is a single plugin that bundles both halves of an integration — a transport under `"integrations"` and its mapping extension under `"extensions"` — so they install and version as one unit; for a single agent you can instead place the two files directly in its `integrations/`/`extensions/` folders without a plugin (see [integrations.md](./integrations.md#integration-locations)). In a plugin, both resolve from the one install — the extension is **not** copied anywhere; it is loaded in place from the package (see [How Resolution Works](#how-resolution-works)).
+A plugin may declare any subset. The common case is a channel plugin that bundles a transport under `"integrations"` with its routing files under `"workflows"`, so they install and version as one unit; for a single agent you can instead place the files directly in its `integrations/` and `workflows/` folders without a plugin. In a plugin, everything resolves from the one install — nothing is copied into the agent's folders; the files load in place from the package (see [How Resolution Works](#how-resolution-works)).
 
 ## Where Plugins Install
 
@@ -50,7 +52,7 @@ A plugin may declare any subset. The common case is a single plugin that bundles
 - `git:` sources are cloned to `<store>/git/<host>/<user>/<repo>`; if the clone has a `package.json`, dependencies are installed there.
 - Local sources are copied (not symlinked) to `<store>/local/<basename-slug>-<sha256-prefix>`, so the install travels even if the origin moves; dependencies install in the copy.
 
-The agent's discovery dirs (`~/.wolli/agents/<name>/extensions/`, `integrations/`, `skills/`, etc.) are for hand-placed local resources. Installed plugins are **not** unpacked into those dirs — they stay in `.plugins/` and are resolved from there.
+The agent's discovery dirs (`~/.wolli/agents/<name>/integrations/`, `workflows/`, `tools/`, etc.) are for hand-placed local resources. Installed plugins are **not** unpacked into those dirs — they stay in `.plugins/` and are resolved from there.
 
 ## The package.json `wolli` Manifest
 
@@ -59,7 +61,9 @@ The plugin manager reads `package.json` and parses exactly the `"wolli"` object.
 | Key            | Loaded as       | File pattern                  |
 |----------------|-----------------|-------------------------------|
 | `integrations` | integration modules | `.ts` / `.js`             |
-| `extensions`   | extension modules   | `.ts` / `.js`             |
+| `workflows`    | workflow modules    | `.ts` / `.js`             |
+| `tools`        | tool modules        | `.ts` / `.js`             |
+| `providers`    | provider modules    | `.ts` / `.js`             |
 | `skills`       | skills              | `SKILL.md` / `.md`        |
 | `prompts`      | prompt templates    | `.md`                     |
 | `themes`       | themes              | `.json`                   |
@@ -74,14 +78,14 @@ Example manifest (modeled on the shipped Telegram plugin; see the [worked exampl
   "type": "module",
   "wolli": {
     "integrations": ["./index.ts"],
-    "extensions": ["./telegram-chat.ts"]
+    "workflows": ["./telegram-inbound.ts", "./telegram-reply.ts"]
   },
   "dependencies": {
     "grammy": "1.44.0",
     "@grammyjs/runner": "2.0.3"
   },
   "peerDependencies": {
-    "@opsyhq/wolli": "*"
+    "wolli": "*"
   }
 }
 ```
@@ -92,7 +96,7 @@ The simplest manifest lists one plain single-file path per key — a flat packag
 {
   "wolli": {
     "integrations": ["./index.ts"],
-    "extensions": ["./x.ts"]
+    "workflows": ["./x.ts"]
   }
 }
 ```
@@ -102,39 +106,40 @@ Plain single-file path entries are **first-class**; globs and override prefixes 
 **Notes:**
 
 - Paths are relative to the package root and resolved against it. An entry is one of three things:
-  - a **plain path** — a single file (`./index.ts`) loaded as-is, or a **directory**, which is then collected for that resource type. Directories collect by the type's file pattern (`.md` for skills/prompts, `.json` for themes); for `integrations`/`extensions` the directory is collected with the same package-style discovery as a convention dir (an `index.ts`/`index.js` or nested `package.json` manifest per subdir, **not** a flat sweep of every `.ts`).
-  - a **glob** (contains `*` or `?`, e.g. `extensions/*.ts`) — expanded against the package root, then each match collected as above.
+  - a **plain path** — a single file (`./index.ts`) loaded as-is, or a **directory**, which is then collected for that resource type. Directories collect by the type's file pattern (`.md` for skills/prompts, `.json` for themes); for the module types (`integrations`, `workflows`, `tools`, `providers`) the directory is collected with the same package-style discovery as a convention dir (an `index.ts`/`index.js` or nested `package.json` manifest per subdir, **not** a flat sweep of every `.ts`).
+  - a **glob** (contains `*` or `?`, e.g. `workflows/*.ts`) — expanded against the package root, then each match collected as above.
   - an **override prefix** (`!exclude`, `+force-include`, `-force-exclude`) — not a source itself; it layers on top of the paths the plain/glob entries already produced. `!` removes matches, `+` adds an exact path back even if excluded, `-` removes an exact path even if force-included.
   When an entry resolves to a directory (or a glob matches one), only files matching the resource type's pattern are picked up; a plain entry pointing straight at a single file is taken as-is, so list each file under its correct key.
-- If no `"wolli"` manifest is present, the manager falls back to convention directories — `extensions/`, `integrations/`, `skills/`, `prompts/`, `themes/` — and auto-discovers files there. A bare file or a manifest-less directory with no convention dirs is treated as a single extension.
-- Third-party runtime deps (here `grammy`; `croner` in the scheduler plugin) go in `dependencies` and are installed automatically when the plugin is fetched. `"dependencies"` is **optional** and may be omitted entirely when the transport relies only on Node globals — a transport that talks to a plain HTTP endpoint can call `fetch` directly with no bundled client (see [integrations.md › Available Imports](./integrations.md#available-imports), which states a plain-HTTP transport can use `fetch` directly and needs no bundled client). Bundling a client library is only needed for richer protocols.
+- If no `"wolli"` manifest is present, the manager falls back to convention directories — `integrations/`, `workflows/`, `tools/`, `providers/`, `skills/`, `prompts/`, `themes/` — and auto-discovers files there.
+- Third-party runtime deps (here `grammy`; `croner` in the scheduler plugin) go in `dependencies` and are installed automatically when the plugin is fetched. `"dependencies"` is **optional** and may be omitted entirely when the transport relies only on Node globals — a transport that talks to a plain HTTP endpoint can call `fetch` directly with no bundled client. Bundling a client library is only needed for richer protocols.
 
-### Why peerDependencies on `@opsyhq/wolli`
+### Why peerDependencies on `wolli`
 
-Contribution modules import host types and APIs from `@opsyhq/wolli` (`IntegrationsAPI`, `ExtensionFactory`, etc.). The host process *provides* that package at runtime, so the plugin must not bundle its own copy. Declare it as a peer with a `"*"` range:
+Contribution modules import the host's definer helpers from `wolli` (`defineIntegration`, `defineWorkflow`, `defineTool`, `defineProvider`). The host process *provides* that package at runtime, so the plugin must not bundle its own copy. Declare it as a peer with a `"*"` range:
 
 ```json
-{ "peerDependencies": { "@opsyhq/wolli": "*" } }
+{ "peerDependencies": { "wolli": "*" } }
 ```
 
 Managed installs are run with peer resolution disabled (`--legacy-peer-deps` and equivalents), so the package manager does not try to install or solve this host-provided peer. The agent resolves it from the host at load time instead.
 
 ## Authoring a Plugin
 
-Lay the package out as a normal npm package. A dual-half integration plugin looks like:
+Lay the package out as a normal npm package. A channel plugin looks like:
 
 ```
 my-plugin/
 ├── package.json        # name, type: "module", "wolli" manifest, deps, peerDependencies
 ├── index.ts            # the integration transport (listed under "integrations")
-├── my-chat.ts          # the mapping extension (listed under "extensions")
+├── my-inbound.ts       # routing workflow (listed under "workflows")
+├── my-reply.ts         # reply workflow (listed under "workflows")
 └── README.md
 ```
 
-1. **Write the contribution files.** Author the transport half per [integrations.md](./integrations.md) and the mapping/behavior half per [extensions.md](./extensions.md). This doc does not duplicate their authoring guidance; it only packages them.
+1. **Write the contribution files.** Author the transport per [integrations.md](./integrations.md) and the routing per [workflows.md](./workflows.md). This doc does not duplicate their authoring guidance; it only packages them.
 2. **Declare them in the manifest.** List each file under the matching `"wolli"` key (above).
 3. **Set `"type": "module"`** so `.ts`/`.js` modules load as ESM.
-4. **Put runtime deps in `dependencies`** and **`@opsyhq/wolli` in `peerDependencies`** with `"*"`.
+4. **Put runtime deps in `dependencies`** and **`wolli` in `peerDependencies`** with `"*"`.
 
 That is the whole contract. There is no build step or registration call beyond the manifest — the agent's resource loader imports the listed files at launch.
 
@@ -227,7 +232,7 @@ A plugin entry in settings can be a bare string (load everything) or an object t
     "npm:wolli-integration-scheduler",
     {
       "source": "git:github.com/user/repo",
-      "extensions": ["*.ts", "!legacy.ts"],
+      "workflows": ["*.ts", "!legacy.ts"],
       "skills": []
     }
   ]
@@ -242,13 +247,13 @@ At each launch the resource loader calls the plugin manager's `resolve()`, which
 
 1. reads the agent's `"plugins"[]` from settings,
 2. for each source, self-heals a missing install (re-fetches if the store entry is gone but the origin still exists),
-3. resolves the contributions **in place** from the install — manifest paths first, then convention dirs, then the single-extension fallback,
+3. resolves the contributions **in place** from the install — manifest paths first, then convention dirs,
 4. applies any per-entry filter and name-collision precedence,
-5. hands the enabled paths to the integration loader and extension loader.
+5. hands the enabled paths to the per-type resource loaders.
 
-Crucially, a dual-half package's integration and its paired extension both resolve from the *same* install directory in `.plugins/`. The extension is never copied into `<agent>/extensions/`. The integration arm loads first so the producer runner exists before the extension wires `getIntegration(...)`.
+Crucially, a channel package's integration and its workflows all resolve from the *same* install directory in `.plugins/`. Nothing is copied into the agent's folders. The integration arm loads first so its event descriptors exist before workflows bind them.
 
-Because `install`/`remove`/`update` go through the daemon (the single writer), the running agent reloads itself after the change — installed contributions become active without a manual restart. Onboarding-gated mapping extensions activate once their account is configured.
+Because `install`/`remove`/`update` go through the daemon (the single writer), the running agent reloads itself after the change — installed contributions become active without a manual restart. Onboarding-gated services activate once their account is configured.
 
 ## Worked Example: Packaging the Telegram Integration
 
@@ -256,14 +261,14 @@ The shipped Telegram plugin (`packages/wolli/plugins/telegram/`) is the canonica
 
 ```
 telegram/
-├── package.json        # "wolli": { integrations: ["./index.ts"], extensions: ["./telegram-chat.ts"] }
-├── index.ts            # transport: long-polls grammY, holds the bot token, emits a `message` event,
-│                       #   exposes sendMessage / sendChatAction / setCommands, declares onboard
-└── telegram-chat.ts    # mapping extension: routes each message into a per-chat Wolli session,
-                        #   ships the reply back through the transport
+├── package.json          # "wolli": { integrations: ["./index.ts"], workflows: ["./telegram-inbound.ts", "./telegram-reply.ts"] }
+├── index.ts              # transport: long-polls grammY, holds the bot token, emits a `message` event,
+│                         #   exposes sendMessage / startTyping / stopTyping, declares onboard
+├── telegram-inbound.ts   # workflow: routes each message into a per-chat session by tag
+└── telegram-reply.ts     # workflow: on agent_end, ships the reply back through the transport
 ```
 
-Its manifest (verbatim):
+Its manifest:
 
 ```json
 {
@@ -273,14 +278,14 @@ Its manifest (verbatim):
   "type": "module",
   "wolli": {
     "integrations": ["./index.ts"],
-    "extensions": ["./telegram-chat.ts"]
+    "workflows": ["./telegram-inbound.ts", "./telegram-reply.ts"]
   },
   "dependencies": {
     "grammy": "1.44.0",
     "@grammyjs/runner": "2.0.3"
   },
   "peerDependencies": {
-    "@opsyhq/wolli": "*"
+    "wolli": "*"
   }
 }
 ```
@@ -294,6 +299,6 @@ wolli my-agent plugins install ./packages/wolli/plugins/telegram
 # -> runs onboard: prompts for the bot token, writes the account to integrations.json
 ```
 
-Both `index.ts` and `telegram-chat.ts` resolve from that one copy. The transport starts; once the account is configured, the mapping extension activates and bidirectional chat is live. To package it for others, publish the same directory to npm (`wolli-integration-telegram`) or a git repo and have them install with `npm:` / `git:` instead of the local path.
+The transport and both workflows resolve from that one copy. The transport starts; once the account is configured, the workflows bind its events and bidirectional chat is live. To package it for others, publish the same directory to npm (`wolli-integration-telegram`) or a git repo and have them install with `npm:` / `git:` instead of the local path.
 
-The shipped scheduler plugin (`packages/wolli/plugins/scheduler/`) has the identical shape — `"integrations": ["./index.ts"]`, `"extensions": ["./scheduler-chat.ts"]`, one runtime dep (`croner`), and the same `@opsyhq/wolli` peer — confirming the dual-half pattern is the convention, not Telegram-specific. The only manifest differences are the package name, the dependency, and the extension filename.
+The shipped scheduler plugin has the identical shape — a transport under `"integrations"`, its routing under `"workflows"`, one runtime dep (`croner`), and the same `wolli` peer — confirming the channel pattern is the convention, not Telegram-specific. The only manifest differences are the package name, the dependency, and the workflow filenames.

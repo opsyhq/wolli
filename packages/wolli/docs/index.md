@@ -1,6 +1,6 @@
 # Getting Started
 
-Wolli is a persistent, purposeful agent that runs in your terminal. It stays small at the core while being extended through TypeScript extensions, skills, prompt templates, themes, integrations, and plugins.
+Wolli is a persistent, purposeful agent that runs in your terminal. It stays small at the core while growing through integrations, workflows, tools, providers, skills, prompt templates, themes, and plugins. Start with the [Introduction](introduction.md) for how those fit together.
 
 ## Quick start
 
@@ -24,12 +24,14 @@ For the full first-run flow, CLI reference, sessions, and the agent-home layout,
 
 ## Customization
 
-- [Extensions](extensions.md) - TypeScript modules for tools, commands, events, and custom UI.
+- [Integrations](integrations.md) - transports that connect external services and message channels to the agent.
+- [Workflows](workflows.md) - route events into sessions and automate the agent.
+- [Tools](tools.md) - typed actions the model calls during a turn.
+- [Providers](providers.md) - model providers beyond the built-in catalog.
 - [Skills](skills.md) - Agent Skills for reusable on-demand capabilities.
 - [Prompt templates](prompt-templates.md) - reusable prompts that expand from slash commands.
 - [Themes](themes.md) - built-in and custom terminal themes.
-- [Integrations](integrations.md) - connect external services and message channels to the agent.
-- [Plugins](plugins.md) - bundle, publish, and install extensions, integrations, skills, prompts, and themes.
+- [Plugins](plugins.md) - bundle, publish, and install any mix of those resources.
 
 ## Programmatic usage
 

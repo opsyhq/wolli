@@ -285,7 +285,7 @@ Helpers for assembling resources yourself:
 import { loadSkills, BUILTIN_SLASH_COMMANDS, discoverAndLoadExtensions } from "@opsyhq/wolli";
 ```
 
-Over the daemon client, inspect the resolved set with [`listSkills()` / `listContexts()` / `getCommands()` / `listTools()` / `listIntegrations()`](#sessionhandle). See [extensions.md](extensions.md), [skills.md](skills.md), and [integrations.md](integrations.md).
+Over the daemon client, inspect the resolved set with [`listSkills()` / `listContexts()` / `getCommands()` / `listTools()` / `listIntegrations()`](#sessionhandle). See [skills.md](skills.md) and [integrations.md](integrations.md).
 
 ### Session Management
 

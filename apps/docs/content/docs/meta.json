@@ -1,3 +1,16 @@
 {
-	"pages": ["getting-started", "extensions", "skills", "prompt-templates", "themes", "integrations", "plugins", "sdk", "..."]
+	"pages": [
+		"introduction",
+		"getting-started",
+		"workflows",
+		"integrations",
+		"tools",
+		"providers",
+		"skills",
+		"prompt-templates",
+		"themes",
+		"plugins",
+		"sdk",
+		"..."
+	]
 }

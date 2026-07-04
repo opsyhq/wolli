@@ -4,6 +4,6 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 // from the prerender output (vite.config.ts) so the redirect actually runs.
 export const Route = createFileRoute("/docs/")({
 	beforeLoad: () => {
-		throw redirect({ href: "/docs/getting-started", statusCode: 308 });
+		throw redirect({ href: "/docs/introduction", statusCode: 308 });
 	},
 });
