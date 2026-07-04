@@ -19,6 +19,7 @@ import type { Static, TSchema } from "typebox";
 import type {
 	AgentEndEvent,
 	AgentStartEvent,
+	ExtensionError,
 	MessageEndEvent,
 	MessageStartEvent,
 	MessageUpdateEvent,
@@ -222,6 +223,24 @@ export function getWorkflowKind(def: WorkflowDefinition): WorkflowKind {
 }
 
 // ============================================================================
+// Loaded workflows and the error sink
+// ============================================================================
+
+/** A loaded workflow module — mirror of `Extension`/`Integration`: the definition plus its file identity. */
+export interface Workflow {
+	/** Workflow name — the file basename. */
+	name: string;
+	/** Source path, for error reporting. */
+	path: string;
+	definition: WorkflowDefinition;
+}
+
+/** Workflow errors reuse the extension error shape so they ride the existing error sink unchanged. */
+export type WorkflowError = ExtensionError;
+
+export type WorkflowErrorListener = (error: WorkflowError) => void;
+
+// ============================================================================
 // Runs and steps (the record shape is the durability groundwork)
 // ============================================================================
 
@@ -231,7 +250,7 @@ export function getWorkflowKind(def: WorkflowDefinition): WorkflowKind {
  * step results only.
  */
 export type RunTrigger =
-	| { kind: "integration"; service: string; event: string; payload: unknown }
+	| { kind: "integration"; service: string; account: string; event: string; payload: unknown }
 	| { kind: "lifecycle"; event: keyof AgentEventMap; payload: unknown }
 	| { kind: "callable"; input: unknown };
 

@@ -5,6 +5,7 @@
  */
 
 export { RunJournal, type RunJournalOptions, type StepOptions } from "./journal.ts";
+export { type WorkflowAgentBackend, WorkflowRunner, type WorkflowRunnerOptions } from "./runner.ts";
 export type {
 	AgentEventMap,
 	CallableWorkflowDefinition,
@@ -24,9 +25,12 @@ export type {
 	StepEndRecord,
 	StepKind,
 	StepStartRecord,
+	Workflow,
 	WorkflowAgent,
 	WorkflowContext,
 	WorkflowDefinition,
+	WorkflowError,
+	WorkflowErrorListener,
 	WorkflowKind,
 	WorkflowSession,
 } from "./types.ts";
