@@ -612,6 +612,27 @@ export default { before: "input", run() {} };
 		expect(result.hooks.map((h) => h.name)).toEqual(["second", "first", "third"]);
 		expect(result.hooks.map((h) => h.definition.before)).toEqual(["tool_result", "tool_call", "input"]);
 	});
+
+	it("rejects an unknown before: event: a silently dead interception hook is a load error", async () => {
+		const dir = await writeHooksDir({
+			// A stale event name (user_bash is gone) and a typo — both would index under keys
+			// nothing dispatches, so the loader refuses them instead of loading dead guards.
+			"stale.ts": `
+export default { before: "user_bash", run() {} };
+`,
+			"typo.ts": `
+export default { before: "tool_calls", run() {} };
+`,
+		});
+
+		const result = await loadHooks([join(dir, "stale.ts"), join(dir, "typo.ts")], dir);
+
+		expect(result.hooks).toEqual([]);
+		expect(result.errors).toEqual([
+			{ path: join(dir, "stale.ts"), error: expect.stringContaining("unknown before: event 'user_bash'") },
+			{ path: join(dir, "typo.ts"), error: expect.stringContaining("unknown before: event 'tool_calls'") },
+		]);
+	});
 });
 
 // ============================================================================
@@ -816,5 +837,104 @@ export default function toolCallExtension(pi) {
 			),
 		).toBe(true);
 		await runtime.cleanup();
+	});
+});
+
+// ============================================================================
+// Doc conformance (docs/hooks.md)
+// ============================================================================
+//
+// Each substantive code example in docs/hooks.md, loaded verbatim through the real loader and
+// exercised against the real HookRunner. Keep the fixtures and the doc in lockstep: if a test
+// forces a fixture change, change the doc block too.
+
+describe("doc examples (docs/hooks.md)", () => {
+	const docFixtures: Record<string, string> = {
+		"guard-bash.ts": `
+import { defineHook, isToolCallEventType } from "wolli";
+
+export default defineHook({
+  before: "tool_call",
+  run(event) {
+    if (isToolCallEventType("bash", event) && event.input.command.includes("rm -rf")) {
+      return { block: true, reason: "destructive command blocked" };
+    }
+  },
+});
+`,
+		"redact-input.ts": `
+import { defineHook } from "wolli";
+
+export default defineHook({
+  before: "input",
+  run(event) {
+    const redacted = event.text.replace(/sk-[a-z0-9]+/gi, "[redacted]");
+    if (redacted === event.text) return;
+    return { action: "transform", text: redacted };
+  },
+});
+`,
+		"confirm-compact.ts": `
+import { defineHook } from "wolli";
+
+export default defineHook({
+  before: "compact",
+  async run(event, ctx) {
+    const ok = await ctx.ui.confirm("Compact now?", "Older messages will be summarized.");
+    if (!ok) return { cancel: true };
+  },
+});
+`,
+	};
+
+	async function loadDocHook(name: string): Promise<HookRunner> {
+		const dir = await writeHooksDir({ [name]: docFixtures[name] });
+		const result = await loadHooks([join(dir, name)], dir);
+		expect(result.errors).toEqual([]);
+		return new HookRunner(result.hooks);
+	}
+
+	it("guard-bash blocks a destructive bash call and passes everything else", async () => {
+		const runner = await loadDocHook("guard-bash.ts");
+		const { session, ui } = stubProducingSession();
+
+		const blocked = await runner.dispatchToolCall(
+			{ type: "tool_call", toolCallId: "t1", toolName: "bash", input: { command: "rm -rf /" } },
+			session,
+			ui,
+		);
+		expect(blocked).toEqual({ block: true, reason: "destructive command blocked" });
+
+		const passed = await runner.dispatchToolCall(
+			{ type: "tool_call", toolCallId: "t2", toolName: "bash", input: { command: "ls" } },
+			session,
+			ui,
+		);
+		expect(passed).toBeUndefined();
+	});
+
+	it("redact-input rewrites a secret in the input text and leaves clean text alone", async () => {
+		const runner = await loadDocHook("redact-input.ts");
+		const { session, ui } = stubProducingSession();
+
+		expect(await runner.dispatchInput("token sk-abc123", undefined, "interactive", undefined, session, ui)).toEqual({
+			action: "transform",
+			text: "token [redacted]",
+			images: undefined,
+		});
+		expect(await runner.dispatchInput("hello", undefined, "interactive", undefined, session, ui)).toEqual({
+			action: "continue",
+		});
+	});
+
+	it("confirm-compact cancels when the user declines and proceeds when they accept", async () => {
+		const runner = await loadDocHook("confirm-compact.ts");
+		const base = stubProducingSession();
+
+		const declineUi: DialogUI = { ...base.ui, confirm: async () => false };
+		expect(await runner.dispatchCompact(compactEvent(), base.session, declineUi)).toEqual({ cancel: true });
+
+		const acceptUi: DialogUI = { ...base.ui, confirm: async () => true };
+		expect(await runner.dispatchCompact(compactEvent(), base.session, acceptUi)).toBeUndefined();
 	});
 });

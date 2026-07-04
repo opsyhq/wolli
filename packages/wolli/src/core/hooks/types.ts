@@ -53,6 +53,25 @@ export interface HookEventMap {
 	message_end: MessageEndEvent;
 }
 
+/**
+ * Runtime mirror of `keyof HookEventMap`, for the loader's `before:` check. Hook files are
+ * jiti-loaded scripts, so the type-level event set cannot reject a typo'd or stale literal —
+ * and an interception hook that silently never fires is the worst failure mode. The
+ * `satisfies` record keeps the set complete and member-checked against the map.
+ */
+export const HOOK_EVENTS: ReadonlySet<string> = new Set(
+	Object.keys({
+		tool_call: true,
+		tool_result: true,
+		input: true,
+		context: true,
+		provider_request: true,
+		agent_start: true,
+		compact: true,
+		message_end: true,
+	} satisfies Record<keyof HookEventMap, true>),
+);
+
 /** What a handler may return per event to intercept it — today's extension result shapes, unchanged. */
 export interface HookResultMap {
 	tool_call: ToolCallEventResult;

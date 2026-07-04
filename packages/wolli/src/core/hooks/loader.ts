@@ -10,7 +10,7 @@ import { createJiti } from "jiti/static";
 import { isBunBinary, isBundled } from "../../config.ts";
 import { canonicalizePath, resolvePath } from "../../utils/paths.ts";
 import { getAliases, VIRTUAL_MODULES } from "../extensions/loader.ts";
-import type { Hook, HookDefinition, HookEventMap } from "./types.ts";
+import { HOOK_EVENTS, type Hook, type HookDefinition, type HookEventMap } from "./types.ts";
 
 export async function loadHooks(
 	paths: string[],
@@ -40,6 +40,16 @@ export async function loadHooks(
 				errors.push({
 					path: hookPath,
 					error: `Hook does not export a valid defineHook definition as default: ${hookPath}`,
+				});
+				continue;
+			}
+			// A typo'd or stale event would bucket the hook under a key nothing dispatches — a
+			// silently dead interception hook — so an unknown `before:` is a load error.
+			const before = (definition as { before: string }).before;
+			if (!HOOK_EVENTS.has(before)) {
+				errors.push({
+					path: hookPath,
+					error: `Hook binds unknown before: event '${before}': ${hookPath}`,
 				});
 				continue;
 			}

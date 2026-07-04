@@ -449,8 +449,9 @@ export class AgentRuntime {
 		return this._workflowRunner;
 	}
 
-	/** The hook runner for the current load generation, or undefined before `start()`. */
-	get hookRunner(): HookRunner | undefined {
+	/** The live hook runner for the current load generation. Throws if accessed before `start()`. */
+	get hookRunner(): HookRunner {
+		if (!this._hookRunner) throw new Error("AgentRuntime not started.");
 		return this._hookRunner;
 	}
 
@@ -1458,37 +1459,35 @@ export class AgentSession {
 		let currentText = text;
 		let currentImages = options?.images;
 		const hookRunner = this.runtime.hookRunner;
-		if (runner.hasHandlers("input") || hookRunner?.hasHooks("input")) {
-			const source = options?.source ?? "interactive";
-			const streamingBehavior = !harness.isIdle ? options?.streamingBehavior : undefined;
-			if (hookRunner?.hasHooks("input")) {
-				const hookResult = await hookRunner.dispatchInput(
-					currentText,
-					currentImages,
-					source,
-					streamingBehavior,
-					this.workflowSession,
-					this.ui,
-				);
-				if (hookResult.action === "handled") {
-					preflight?.(true);
-					return;
-				}
-				if (hookResult.action === "transform") {
-					currentText = hookResult.text;
-					currentImages = hookResult.images ?? currentImages;
-				}
+		const source = options?.source ?? "interactive";
+		const streamingBehavior = !harness.isIdle ? options?.streamingBehavior : undefined;
+		if (hookRunner.hasHooks("input")) {
+			const hookResult = await hookRunner.dispatchInput(
+				currentText,
+				currentImages,
+				source,
+				streamingBehavior,
+				this.workflowSession,
+				this.ui,
+			);
+			if (hookResult.action === "handled") {
+				preflight?.(true);
+				return;
 			}
-			if (runner.hasHandlers("input")) {
-				const result = await runner.emitInput(currentText, currentImages, source, streamingBehavior, this);
-				if (result.action === "handled") {
-					preflight?.(true);
-					return;
-				}
-				if (result.action === "transform") {
-					currentText = result.text;
-					currentImages = result.images ?? currentImages;
-				}
+			if (hookResult.action === "transform") {
+				currentText = hookResult.text;
+				currentImages = hookResult.images ?? currentImages;
+			}
+		}
+		if (runner.hasHandlers("input")) {
+			const result = await runner.emitInput(currentText, currentImages, source, streamingBehavior, this);
+			if (result.action === "handled") {
+				preflight?.(true);
+				return;
+			}
+			if (result.action === "transform") {
+				currentText = result.text;
+				currentImages = result.images ?? currentImages;
 			}
 		}
 
@@ -2034,13 +2033,13 @@ export class AgentSession {
 				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
 				const hasExtension = runner.hasHandlers("tool_call");
-				const hasHooks = hookRunner?.hasHooks("tool_call") ?? false;
+				const hasHooks = hookRunner.hasHooks("tool_call");
 				if (!hasExtension && !hasHooks) return undefined;
 				// Hooks see the raw event first (so a hook's behavior is unchanged when the extension emit
 				// is removed); a block short-circuits before any extension runs. Event identity is
 				// preserved so in-place input mutations propagate back to the caller.
 				const hookResult = hasHooks
-					? await hookRunner!.dispatchToolCall(event as unknown as ToolCallEvent, this.workflowSession, this.ui)
+					? await hookRunner.dispatchToolCall(event as unknown as ToolCallEvent, this.workflowSession, this.ui)
 					: undefined;
 				if (hookResult?.block) return hookResult;
 				const extensionResult = hasExtension
@@ -2054,28 +2053,19 @@ export class AgentSession {
 				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
 				const hasExtension = runner.hasHandlers("tool_result");
-				const hasHooks = hookRunner?.hasHooks("tool_result") ?? false;
+				const hasHooks = hookRunner.hasHooks("tool_result");
 				if (!hasExtension && !hasHooks) return undefined;
 				// Hooks first; their patch feeds the extension chain. Both runners copy the event
-				// internally, so the extension sees a shallow copy carrying the hook patches. The two
-				// results merge field-wise with the extension winning; undefined only when neither patched.
+				// internally, so the extension sees a shallow copy carrying the hook patches — an
+				// extension result therefore already folds the hook patches in and wins outright.
 				const hookResult = hasHooks
-					? await hookRunner!.dispatchToolResult(
-							event as unknown as ToolResultEvent,
-							this.workflowSession,
-							this.ui,
-						)
+					? await hookRunner.dispatchToolResult(event as unknown as ToolResultEvent, this.workflowSession, this.ui)
 					: undefined;
 				const extensionEvent = hookResult
 					? { ...(event as unknown as ToolResultEvent), ...hookResult }
 					: (event as unknown as ToolResultEvent);
 				const extensionResult = hasExtension ? await runner.emitToolResult(extensionEvent, this) : undefined;
-				if (!hookResult && !extensionResult) return undefined;
-				return {
-					content: extensionResult?.content !== undefined ? extensionResult.content : hookResult?.content,
-					details: extensionResult?.details !== undefined ? extensionResult.details : hookResult?.details,
-					isError: extensionResult?.isError !== undefined ? extensionResult.isError : hookResult?.isError,
-				};
+				return extensionResult ?? hookResult;
 			}),
 		);
 		unsubscribe.push(
@@ -2083,13 +2073,13 @@ export class AgentSession {
 				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
 				const hasExtension = runner.hasHandlers("context");
-				const hasHooks = hookRunner?.hasHooks("context") ?? false;
+				const hasHooks = hookRunner.hasHooks("context");
 				if (!hasExtension && !hasHooks) return undefined;
 				// Hooks first, then extensions see the hook-adjusted messages. dispatchContext returns
 				// its input untouched when nothing is bound, so the hasHooks guard keeps the clone off
 				// the hot path.
 				const hooked = hasHooks
-					? await hookRunner!.dispatchContext(event.messages, this.workflowSession, this.ui)
+					? await hookRunner.dispatchContext(event.messages, this.workflowSession, this.ui)
 					: event.messages;
 				const messages = hasExtension ? await runner.emitContext(hooked, this) : hooked;
 				return { messages };
@@ -2101,11 +2091,11 @@ export class AgentSession {
 				const hookRunner = runtime.hookRunner;
 				// Maps to the extension `before_provider_request` event / the `provider_request` hook.
 				const hasExtension = runner.hasHandlers("before_provider_request");
-				const hasHooks = hookRunner?.hasHooks("provider_request") ?? false;
+				const hasHooks = hookRunner.hasHooks("provider_request");
 				if (!hasExtension && !hasHooks) return undefined;
 				// Hooks first, then the extension chain threads the hook-adjusted payload.
 				const hooked = hasHooks
-					? await hookRunner!.dispatchProviderRequest(event.payload, this.workflowSession, this.ui)
+					? await hookRunner.dispatchProviderRequest(event.payload, this.workflowSession, this.ui)
 					: event.payload;
 				const payload = hasExtension ? await runner.emitBeforeProviderRequest(hooked, this) : hooked;
 				return { payload };
@@ -2116,13 +2106,13 @@ export class AgentSession {
 				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
 				const hasExtension = runner.hasHandlers("before_agent_start");
-				const hasHooks = hookRunner?.hasHooks("agent_start") ?? false;
+				const hasHooks = hookRunner.hasHooks("agent_start");
 				if (!hasExtension && !hasHooks) return undefined;
 				// Hooks first: they get systemPromptOptions explicitly (the workflow session facade does not
 				// expose it the way the extension ctx.session does), and their systemPrompt threads into the
 				// extension chain. Hook messages precede extension messages in the returned array.
 				const hookResult = hasHooks
-					? await hookRunner!.dispatchAgentStart(
+					? await hookRunner.dispatchAgentStart(
 							event.prompt,
 							event.images,
 							event.systemPrompt,
@@ -2152,7 +2142,7 @@ export class AgentSession {
 				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
 				const hasExtension = runner.hasHandlers("session_before_compact");
-				const hasHooks = hookRunner?.hasHooks("compact") ?? false;
+				const hasHooks = hookRunner.hasHooks("compact");
 				if (!hasExtension && !hasHooks) return undefined;
 				const compactEvent: SessionBeforeCompactEvent = {
 					type: "session_before_compact",
@@ -2164,7 +2154,7 @@ export class AgentSession {
 				// Hooks first; a `{ cancel }` returns immediately. Otherwise extensions run after and win by
 				// last-writer semantics — a non-cancel hook result is superseded by any extension result.
 				const hookResult = hasHooks
-					? await hookRunner!.dispatchCompact(compactEvent, this.workflowSession, this.ui)
+					? await hookRunner.dispatchCompact(compactEvent, this.workflowSession, this.ui)
 					: undefined;
 				if (hookResult?.cancel) return hookResult;
 				const extensionResult = hasExtension ? await runner.emit(compactEvent, this) : undefined;
@@ -2183,14 +2173,14 @@ export class AgentSession {
 				const workflowRunner = runtime.workflowRunner;
 				if (
 					!runner.hasHandlers("message_end") &&
-					!hookRunner?.hasHooks("message_end") &&
+					!hookRunner.hasHooks("message_end") &&
 					!workflowRunner?.hasTriggers("message_end")
 				)
 					return;
 				const lifecycleEvent: AgentEventMap["message_end"] = { type: "message_end", message };
 				// Hooks first: a same-role hook replacement applies in place BEFORE the extension chain, so
 				// extensions see the hook-replaced message. Workflows observe the final message last.
-				if (hookRunner?.hasHooks("message_end")) {
+				if (hookRunner.hasHooks("message_end")) {
 					const replacement = await hookRunner.dispatchMessageEnd(lifecycleEvent, this.workflowSession, this.ui);
 					if (replacement && replacement !== message) {
 						replaceMessageInPlace(message, replacement);
