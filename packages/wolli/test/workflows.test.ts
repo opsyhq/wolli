@@ -453,6 +453,7 @@ describe("WorkflowRunner", () => {
 
 		const runner = new WorkflowRunner(
 			[{ name: "heartbeat-inbound", path: "<heartbeat-inbound>", definition: inbound }],
+			[],
 			{ backend, integrations, generation: 1 },
 		);
 
@@ -518,6 +519,7 @@ describe("WorkflowRunner", () => {
 				{ name: "excerpt", path: "<excerpt>", definition: excerpt },
 				{ name: "shout", path: "<shout>", definition: shout },
 			],
+			[],
 			{ backend, integrations: await heartbeatIntegrationRunner(), generation: 1 },
 		);
 
@@ -547,7 +549,7 @@ describe("WorkflowRunner", () => {
 				throw new Error("boom");
 			},
 		});
-		const runner = new WorkflowRunner([{ name: "failing", path: "<failing>", definition: failing }], {
+		const runner = new WorkflowRunner([{ name: "failing", path: "<failing>", definition: failing }], [], {
 			backend,
 			integrations: await heartbeatIntegrationRunner(),
 			generation: 1,
@@ -590,7 +592,7 @@ describe("WorkflowRunner", () => {
 				);
 			},
 		});
-		const runner = new WorkflowRunner([{ name: "hanging", path: "<hanging>", definition: hanging }], {
+		const runner = new WorkflowRunner([{ name: "hanging", path: "<hanging>", definition: hanging }], [], {
 			backend,
 			integrations: await heartbeatIntegrationRunner(),
 			generation: 1,
@@ -623,7 +625,7 @@ describe("WorkflowRunner lifecycle dispatch", () => {
 				await ctx.integration(heartbeat).ping({});
 			},
 		});
-		const runner = new WorkflowRunner([{ name: "reply", path: "<reply>", definition: reply }], {
+		const runner = new WorkflowRunner([{ name: "reply", path: "<reply>", definition: reply }], [], {
 			backend,
 			integrations: await heartbeatIntegrationRunner(),
 			generation: 1,
@@ -653,7 +655,7 @@ describe("WorkflowRunner lifecycle dispatch", () => {
 	it("reports lifecycle trigger presence via hasTriggers", async () => {
 		const { backend } = memoryBackend();
 		const reply = defineWorkflow({ on: "agent_end", run() {} });
-		const runner = new WorkflowRunner([{ name: "reply", path: "<reply>", definition: reply }], {
+		const runner = new WorkflowRunner([{ name: "reply", path: "<reply>", definition: reply }], [], {
 			backend,
 			integrations: await heartbeatIntegrationRunner(),
 			generation: 1,
@@ -666,7 +668,7 @@ describe("WorkflowRunner lifecycle dispatch", () => {
 	it("is a no-op for a lifecycle event nothing binds", async () => {
 		const { backend } = memoryBackend();
 		const reply = defineWorkflow({ on: "agent_end", run() {} });
-		const runner = new WorkflowRunner([{ name: "reply", path: "<reply>", definition: reply }], {
+		const runner = new WorkflowRunner([{ name: "reply", path: "<reply>", definition: reply }], [], {
 			backend,
 			integrations: await heartbeatIntegrationRunner(),
 			generation: 1,
@@ -686,7 +688,7 @@ describe("WorkflowRunner lifecycle dispatch", () => {
 				throw new Error("kaput");
 			},
 		});
-		const runner = new WorkflowRunner([{ name: "failing", path: "<failing>", definition: failing }], {
+		const runner = new WorkflowRunner([{ name: "failing", path: "<failing>", definition: failing }], [], {
 			backend,
 			integrations: await heartbeatIntegrationRunner(),
 			generation: 1,
@@ -724,7 +726,7 @@ describe("WorkflowRunner lifecycle dispatch", () => {
 				sawUi = "ui" in ctx;
 			},
 		});
-		const runner = new WorkflowRunner([{ name: "inbound", path: "<inbound>", definition: inbound }], {
+		const runner = new WorkflowRunner([{ name: "inbound", path: "<inbound>", definition: inbound }], [], {
 			backend,
 			integrations: await heartbeatIntegrationRunner(),
 			generation: 1,
@@ -989,7 +991,7 @@ export default defineWorkflow({
 	it("telegram-inbound routes a message into a fresh session, recording the docs' run tree", async () => {
 		const workflow = await loadDocWorkflow("telegram-inbound.ts");
 		const { backend, deliveries } = memoryBackend();
-		const runner = new WorkflowRunner([workflow], {
+		const runner = new WorkflowRunner([workflow], [], {
 			backend,
 			integrations: await telegramIntegrationRunner([]),
 			generation: 1,
@@ -1013,7 +1015,7 @@ export default defineWorkflow({
 		const workflow = await loadDocWorkflow("greet-new-session.ts");
 		const sent: Array<{ chatId: number; text: string }> = [];
 		const { backend } = memoryBackend();
-		const runner = new WorkflowRunner([workflow], {
+		const runner = new WorkflowRunner([workflow], [], {
 			backend,
 			integrations: await telegramIntegrationRunner(sent),
 			generation: 1,
@@ -1038,7 +1040,7 @@ export default defineWorkflow({
 	it("turn-metrics observes a turn_end event and completes cleanly", async () => {
 		const workflow = await loadDocWorkflow("turn-metrics.ts");
 		const { backend } = memoryBackend();
-		const runner = new WorkflowRunner([workflow], {
+		const runner = new WorkflowRunner([workflow], [], {
 			backend,
 			integrations: await telegramIntegrationRunner([]),
 			generation: 1,

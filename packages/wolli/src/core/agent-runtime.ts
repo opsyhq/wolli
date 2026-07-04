@@ -1080,7 +1080,7 @@ export class AgentRuntime {
 		this._workflowRunner?.stop();
 		const workflowsResult = await loadWorkflows(loader.getWorkflowPaths(), agentDir);
 		this._workflowLoadErrors = workflowsResult.errors;
-		this._workflowRunner = new WorkflowRunner(workflowsResult.workflows, {
+		this._workflowRunner = new WorkflowRunner(workflowsResult.workflows, [], {
 			backend: {
 				cwd: agentDir,
 				findSessions: (filter) => this.findSessions(filter),
