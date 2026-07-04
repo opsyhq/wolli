@@ -19,7 +19,6 @@ import type { Static, TSchema } from "typebox";
 import type {
 	AgentEndEvent,
 	AgentStartEvent,
-	ExtensionUIContext,
 	MessageEndEvent,
 	MessageStartEvent,
 	MessageUpdateEvent,
@@ -35,6 +34,7 @@ import type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "../extensions/types.ts";
+import type { IntegrationOnboardUI } from "../integrations/types.ts";
 import type { SessionInfo } from "../session.ts";
 
 // ============================================================================
@@ -89,7 +89,7 @@ export interface AgentEventMap {
  * loader-stamped `service` name. `defineIntegration` definitions satisfy it; the phantom
  * `_actions` record (action name to call signature) types the returned handle.
  */
-export interface IntegrationKey<TActions = Record<string, never>> {
+export interface IntegrationKey<TActions> {
 	readonly service: string;
 	/** Phantom action-signature carrier; never present at runtime. */
 	readonly _actions?: TActions;
@@ -117,10 +117,10 @@ export interface WorkflowSession extends Pick<Session, "prompt" | "sendUserMessa
 }
 
 /**
- * The four serializable dialog primitives — the one dialog-UI shape, identical to
- * integration onboarding's. Present on a workflow ctx only when `ctx.session` exists.
+ * The four serializable dialog primitives — the one dialog-UI shape, shared with
+ * integration onboarding. Present on a workflow ctx only when `ctx.session` exists.
  */
-export type DialogUI = Pick<ExtensionUIContext, "select" | "confirm" | "input" | "notify">;
+export type DialogUI = IntegrationOnboardUI;
 
 /** The this-agent surface on `ctx.agent`. Every call is recorded as a step of the run. */
 export interface WorkflowAgent {
@@ -220,3 +220,93 @@ export function getWorkflowKind(def: WorkflowDefinition): WorkflowKind {
 	if ("on" in def) return typeof def.on === "string" ? "lifecycle" : "integration";
 	return "callable";
 }
+
+// ============================================================================
+// Runs and steps (the record shape is the durability groundwork)
+// ============================================================================
+
+/**
+ * What fired a run. The payload is serialized in full on run_start — a future engine
+ * must be able to re-drive the handler from this record; identity summaries apply to
+ * step results only.
+ */
+export type RunTrigger =
+	| { kind: "integration"; service: string; event: string; payload: unknown }
+	| { kind: "lifecycle"; event: keyof AgentEventMap; payload: unknown }
+	| { kind: "callable"; input: unknown };
+
+/** Terminal statuses for runs and steps. */
+export type RunStatus = "ok" | "error" | "cancelled";
+
+/**
+ * Auto steps are recorded by the engine (ctx.agent.* calls, session deliveries,
+ * integration actions, nested tool executions); user steps come from ctx.step.
+ */
+export type StepKind = "auto" | "user";
+
+/** Serialized error shape on step_end/run_end records. */
+export interface RecordedError {
+	name: string;
+	message: string;
+	stack?: string;
+}
+
+/** Opens a run: one per trigger firing. */
+export interface RunStartRecord {
+	type: "run_start";
+	/** UUIDv7 — time-sortable, and doubles as the runs/ debug-log filename. */
+	runId: string;
+	/** Workflow name (the file basename). */
+	workflow: string;
+	trigger: RunTrigger;
+	/** Load-generation stamp: which generation of loaded code produced this run. */
+	generation: number;
+	/** Present when another run's step provoked this run (workflow-triggers-workflow chains). */
+	parentRunId?: string;
+	causeStepId?: number;
+	ts: number;
+}
+
+/**
+ * Opens a step. `stepId` is sequential within the run and exists for ordering and
+ * parentage; `checkpointKey` is the future replay key.
+ */
+export interface StepStartRecord {
+	type: "step_start";
+	stepId: number;
+	/** Set on nested child steps (e.g. tool executions under a delivery step). */
+	parentStepId?: number;
+	/**
+	 * Step name plus per-name occurrence counter ("name", "name#2", ...). Top-level steps
+	 * only: children are observational, never checkpoint candidates, and do not feed the
+	 * counters (a skipped parent must not shift sibling keys).
+	 */
+	checkpointKey?: string;
+	name: string;
+	kind: StepKind;
+	args?: unknown;
+	ts: number;
+}
+
+/** Closes a step. Only ok results are checkpoint material for a future engine. */
+export interface StepEndRecord {
+	type: "step_end";
+	stepId: number;
+	status: RunStatus;
+	result?: unknown;
+	error?: RecordedError;
+	/** Reserved for a future retrying engine; constant 1 in v1. */
+	attempt: number;
+	ts: number;
+}
+
+/** Closes the run. */
+export interface RunEndRecord {
+	type: "run_end";
+	status: RunStatus;
+	error?: RecordedError;
+	ts: number;
+}
+
+/** One line of a run's record stream. Append-only; records are never rewritten. */
+export type RunRecord = RunStartRecord | StepStartRecord | StepEndRecord | RunEndRecord;

@@ -4,6 +4,7 @@
  * recorded run.
  */
 
+export { RunJournal, type RunJournalOptions, type StepOptions } from "./journal.ts";
 export type {
 	AgentEventMap,
 	CallableWorkflowDefinition,
@@ -14,6 +15,15 @@ export type {
 	IntegrationWorkflowDefinition,
 	LifecycleWorkflowContext,
 	LifecycleWorkflowDefinition,
+	RecordedError,
+	RunEndRecord,
+	RunRecord,
+	RunStartRecord,
+	RunStatus,
+	RunTrigger,
+	StepEndRecord,
+	StepKind,
+	StepStartRecord,
 	WorkflowAgent,
 	WorkflowContext,
 	WorkflowDefinition,

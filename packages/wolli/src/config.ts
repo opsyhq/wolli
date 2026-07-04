@@ -252,6 +252,11 @@ export function getWorkspaceDir(name: string): string {
 	return join(getAgentDir(name), "workspace");
 }
 
+/** Path to an agent's per-run workflow debug logs, e.g. ~/.wolli/agents/<name>/runs */
+export function getAgentRunsDir(name: string): string {
+	return join(getAgentDir(name), "runs");
+}
+
 // =============================================================================
 // Daemon runtime (host/token/logs)
 // =============================================================================
