@@ -37,6 +37,7 @@ import type {
 } from "../extensions/types.ts";
 import type { IntegrationOnboardUI } from "../integrations/types.ts";
 import type { SessionInfo } from "../session.ts";
+import type { HookEventMap } from "./hooks.ts";
 
 // ============================================================================
 // Triggers
@@ -258,6 +259,7 @@ export type WorkflowErrorListener = (error: WorkflowError) => void;
 export type RunTrigger =
 	| { kind: "integration"; service: string; account: string; event: string; payload: unknown }
 	| { kind: "lifecycle"; event: keyof AgentEventMap; payload: unknown }
+	| { kind: "hook"; event: keyof HookEventMap; payload: unknown }
 	| { kind: "callable"; input: unknown };
 
 /** Terminal statuses for runs and steps. */
