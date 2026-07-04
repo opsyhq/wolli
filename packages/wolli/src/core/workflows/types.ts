@@ -265,7 +265,7 @@ export type RunStatus = "ok" | "error" | "cancelled";
 
 /**
  * Auto steps are recorded by the engine (ctx.agent.* calls, session deliveries,
- * integration actions, nested tool executions); user steps come from ctx.step.
+ * integration actions); user steps come from ctx.step.
  */
 export type StepKind = "auto" | "user";
 
@@ -299,7 +299,7 @@ export interface RunStartRecord {
 export interface StepStartRecord {
 	type: "step_start";
 	stepId: number;
-	/** Set on nested child steps (e.g. tool executions under a delivery step). */
+	/** Reserved for nested child steps; nothing records children in v1. */
 	parentStepId?: number;
 	/**
 	 * Step name plus per-name occurrence counter ("name", "name#2", ...). Top-level steps
