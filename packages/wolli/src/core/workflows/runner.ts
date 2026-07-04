@@ -51,7 +51,6 @@ import type {
 	IntegrationHandleOf,
 	IntegrationKey,
 	IntegrationWorkflowDefinition,
-	LifecycleWorkflowContext,
 	LifecycleWorkflowDefinition,
 	RunStatus,
 	RunTrigger,
@@ -217,7 +216,11 @@ export class WorkflowRunner {
 		const trigger: RunTrigger = { kind: "lifecycle", event: event.type, payload: event };
 		for (const { workflow, definition } of bindings) {
 			await this.dispatchRun(workflow, trigger, event.type, (journal, signal) =>
-				definition.run(event, this.createLifecycleContext(journal, signal, session, ui)),
+				definition.run(event, {
+					...this.createContext(journal, signal),
+					session: this.createRecordedSession(journal, session),
+					ui,
+				}),
 			);
 		}
 	}
@@ -548,7 +551,11 @@ export class WorkflowRunner {
 	): Promise<HookResultMap[TEvent] | undefined> {
 		const trigger: RunTrigger = { kind: "hook", event, payload: eventObject };
 		const outcome = await this.executeRun(hook.name, trigger, (journal, signal) =>
-			hook.definition.run(eventObject, this.createLifecycleContext(journal, signal, session, ui)),
+			hook.definition.run(eventObject, {
+				...this.createContext(journal, signal),
+				session: this.createRecordedSession(journal, session),
+				ui,
+			}),
 		);
 		if (outcome.status === "error") {
 			const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
@@ -625,19 +632,6 @@ export class WorkflowRunner {
 			step: (name, fn) => journal.step(name, fn, { kind: "user" }),
 			signal,
 		};
-	}
-
-	/**
-	 * Build the gated ctx for a session-scoped run (lifecycle workflows and every hook): the
-	 * base ctx plus the producing session (deliveries recorded as steps) and its dialog UI.
-	 */
-	private createLifecycleContext(
-		journal: RunJournal,
-		signal: AbortSignal,
-		session: WorkflowSession,
-		ui: DialogUI,
-	): LifecycleWorkflowContext {
-		return { ...this.createContext(journal, signal), session: this.createRecordedSession(journal, session), ui };
 	}
 
 	/** Wrap a session so its deliveries record as steps of this run; tag reads/writes pass straight through. */

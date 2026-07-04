@@ -95,9 +95,3 @@ export interface Hook {
 	path: string;
 	definition: HookDefinition<keyof HookEventMap>;
 }
-
-/** Mirror of `LoadWorkflowsResult` for the `hooks/` folder. */
-export interface LoadHooksResult {
-	hooks: Hook[];
-	errors: Array<{ path: string; error: string }>;
-}
