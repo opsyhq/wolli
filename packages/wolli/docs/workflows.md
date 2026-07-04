@@ -117,15 +117,13 @@ export default defineWorkflow({
 
 ## Runs and steps
 
-Each trigger firing creates a run named after the workflow, and every call through `ctx` lands in it as a step: `ctx.agent.*` calls, integration actions, `ctx.step` blocks, and session deliveries. `session.prompt` and `session.sendUserMessage` record one step each, and the turn's tool calls nest under it as child steps. A routed chat message and its reply record like this:
+Each trigger firing creates a run named after the workflow, and every call through `ctx` lands in it as a step: `ctx.agent.*` calls, integration actions, `ctx.step` blocks, and session deliveries. `session.prompt` and `session.sendUserMessage` record one step each; what the prompted agent does inside the turn lives in that session's own history, not in the run. A routed chat message and its reply record like this:
 
 ```
 run: telegram-inbound (telegram:message)
   step: agent.findSessions        (auto)
   step: agent.createSession       (auto)
   step: session.prompt            (auto)
-    step: tool bash               (auto, nested)
-    step: tool read               (auto, nested)
 run: telegram-reply (agent_end)
   step: integration.call sendMessage (auto)
 ```

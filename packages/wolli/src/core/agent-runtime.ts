@@ -53,6 +53,7 @@ import {
 	getAgentApprovalsPath,
 	getAgentDir,
 	getAgentIntegrationsPath,
+	getAgentRunsDir,
 	getSessionsDir,
 } from "../config.ts";
 import type { AuthSelectorProvider, DaemonSessionInfo } from "../types.ts";
@@ -120,6 +121,9 @@ import {
 } from "./tools/index.ts";
 import { createMemoryTool } from "./tools/memory.ts";
 import { wrapToolDefinition } from "./tools/tool-definition-wrapper.ts";
+import { loadWorkflows } from "./workflows/loader.ts";
+import { WorkflowRunner } from "./workflows/runner.ts";
+import type { AgentEventMap, WorkflowSession } from "./workflows/types.ts";
 
 /**
  * Placeholder model handed to the engine when the agent has none configured yet (fresh agent / logged
@@ -315,6 +319,10 @@ export class AgentRuntime {
 	private _extensionRunner?: ExtensionRunner;
 	/** Integration producer runner. Built once; stopped before the new one starts on reload. */
 	private _integrationRunner?: IntegrationRunner;
+	/** Workflow runner for the current load generation. The outgoing one is stopped before the new one is built. */
+	private _workflowRunner?: WorkflowRunner;
+	/** Load-generation stamp on workflow run records; increments on every shared-resources build. */
+	private _workflowGeneration = 0;
 	/** The agent-wide approval policy store — shared across every session's gate (survives reload). */
 	private _approvals?: ApprovalStore;
 	/**
@@ -333,6 +341,8 @@ export class AgentRuntime {
 	private _loadErrors: { path: string; error: string }[] = [];
 	/** Integration load + account-store parse failures from the last build, surfaced in the resource summary. */
 	private _integrationLoadErrors: { path: string; error: string }[] = [];
+	/** Workflow load failures from the last build, surfaced in the resource summary. */
+	private _workflowLoadErrors: { path: string; error: string }[] = [];
 	/** Skill name collisions from the last build, surfaced in the resource summary. */
 	private _skillDiagnostics: ResourceDiagnostic[] = [];
 	/** Graceful-shutdown handler installed by the host mode (default no-op). */
@@ -346,6 +356,8 @@ export class AgentRuntime {
 	private _extensionErrorUnsubscriber?: () => void;
 	/** Teardown for the integration runner's error listener, dropped before re-binding. */
 	private _integrationErrorUnsubscriber?: () => void;
+	/** Teardown for the workflow runner's error listener, dropped before re-binding. */
+	private _workflowErrorUnsubscriber?: () => void;
 	/** Build the per-session UI rail bound to a session id; default inert until the host binds. */
 	private _createSessionUI: (sessionId: string) => ExtensionUIContext = () => noOpUIContext;
 	/** Build the per-session login callbacks bound to a session id + signal; default inert until bound. */
@@ -422,6 +434,11 @@ export class AgentRuntime {
 	get extensionRunner(): ExtensionRunner {
 		if (!this._extensionRunner) throw new Error("AgentRuntime not started.");
 		return this._extensionRunner;
+	}
+
+	/** The workflow runner for the current load generation, or undefined before `start()`. */
+	get workflowRunner(): WorkflowRunner | undefined {
+		return this._workflowRunner;
 	}
 
 	// Durable state the live sessions read off their runtime. configuredModel is agent.json's
@@ -501,6 +518,9 @@ export class AgentRuntime {
 		this._integrationErrorUnsubscriber = bindings.onError
 			? this._integrationRunner?.onError(bindings.onError)
 			: undefined;
+
+		this._workflowErrorUnsubscriber?.();
+		this._workflowErrorUnsubscriber = bindings.onError ? this._workflowRunner?.onError(bindings.onError) : undefined;
 	}
 
 	/** Run the host-provided new-session handler backing `session.newSession()`. */
@@ -559,6 +579,9 @@ export class AgentRuntime {
 		const diagnostics: ResourceDiagnostic[] = [
 			...this._loadErrors.map(({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path })),
 			...this._integrationLoadErrors.map(
+				({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path }),
+			),
+			...this._workflowLoadErrors.map(
 				({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path }),
 			),
 			...this._skillDiagnostics,
@@ -647,9 +670,12 @@ export class AgentRuntime {
 		const previousRunner = this.extensionRunner;
 
 		// Shut the outgoing runner down (per resident session) while its ctx is still valid, so
-		// extensions can clean up before the new runner takes over.
+		// extensions can clean up before the new runner takes over. The outgoing workflow
+		// generation observes the same shutdown before buildSharedResources swaps it.
+		const shutdownEvent: AgentEventMap["session_shutdown"] = { type: "session_shutdown", reason: "reload" };
 		for (const session of this._sessions.values()) {
-			await emitSessionShutdownEvent(previousRunner, { type: "session_shutdown", reason: "reload" }, session);
+			await emitSessionShutdownEvent(previousRunner, shutdownEvent, session);
+			await this._workflowRunner?.dispatchLifecycle(shutdownEvent, session.workflowSession, session.ui);
 		}
 
 		await this.buildSharedResources();
@@ -681,9 +707,11 @@ export class AgentRuntime {
 
 		previousRunner.invalidate();
 
-		if (runner.hasHandlers("session_start")) {
+		if (runner.hasHandlers("session_start") || this._workflowRunner?.hasTriggers("session_start")) {
+			const event: AgentEventMap["session_start"] = { type: "session_start", reason: "reload" };
 			for (const session of this._sessions.values()) {
-				await runner.emit({ type: "session_start", reason: "reload" }, session);
+				if (runner.hasHandlers("session_start")) await runner.emit(event, session);
+				await this._workflowRunner?.dispatchLifecycle(event, session.workflowSession, session.ui);
 			}
 		}
 	}
@@ -836,8 +864,11 @@ export class AgentRuntime {
 		});
 
 		const runner = this.extensionRunner;
-		if (runner.hasHandlers("session_start"))
-			await runner.emit({ type: "session_start", reason: "new" }, agentSession);
+		if (runner.hasHandlers("session_start") || this._workflowRunner?.hasTriggers("session_start")) {
+			const event: AgentEventMap["session_start"] = { type: "session_start", reason: "new" };
+			if (runner.hasHandlers("session_start")) await runner.emit(event, agentSession);
+			await this._workflowRunner?.dispatchLifecycle(event, agentSession.workflowSession, agentSession.ui);
+		}
 
 		// Re-seed model scope from the merged `enabledModels` (agent override over shared default).
 		const enabledModelIds = this._settingsManager.getEnabledModels();
@@ -896,8 +927,10 @@ export class AgentRuntime {
 		});
 
 		const runner = this.extensionRunner;
-		if (runner.hasHandlers("session_start")) {
-			await runner.emit({ type: "session_start", reason: id ? "resume" : "startup" }, agentSession);
+		if (runner.hasHandlers("session_start") || this._workflowRunner?.hasTriggers("session_start")) {
+			const event: AgentEventMap["session_start"] = { type: "session_start", reason: id ? "resume" : "startup" };
+			if (runner.hasHandlers("session_start")) await runner.emit(event, agentSession);
+			await this._workflowRunner?.dispatchLifecycle(event, agentSession.workflowSession, agentSession.ui);
 		}
 
 		const enabledModelIds = this._settingsManager.getEnabledModels();
@@ -1040,6 +1073,25 @@ export class AgentRuntime {
 				.drainErrors()
 				.map((error) => ({ path: getAgentIntegrationsPath(name), error: error.message })),
 		];
+
+		// One workflow runner per load generation: stop the outgoing one (its in-flight runs
+		// abort via ctx.signal), then load the discovered workflow files and index the new
+		// generation against this build's integration runner.
+		this._workflowRunner?.stop();
+		const workflowsResult = await loadWorkflows(loader.getWorkflowPaths(), agentDir);
+		this._workflowLoadErrors = workflowsResult.errors;
+		this._workflowRunner = new WorkflowRunner(workflowsResult.workflows, {
+			backend: {
+				cwd: agentDir,
+				findSessions: (filter) => this.findSessions(filter),
+				listSessions: () => this.listSessions(),
+				openSession: async (sessionId) => (await this.openSession(sessionId)).workflowSession,
+				createSession: async (opts) => (await this.createSession(opts)).workflowSession,
+			},
+			integrations: integrationRunner,
+			generation: ++this._workflowGeneration,
+			runsDir: getAgentRunsDir(name),
+		});
 
 		// This runtime owns the approval policy (store + gate). The shared run-target map's gate routes
 		// host-escalation dialogs raised through `wolli.environments` to a live session's UI (best-
@@ -1233,6 +1285,8 @@ export class AgentRuntime {
 	async cleanup(): Promise<void> {
 		// Stop live integration producers at process exit — they hold real connections.
 		await this._integrationRunner?.stop();
+		// Abort in-flight workflow runs so signal-respecting handlers stop acting on sessions.
+		this._workflowRunner?.stop();
 		for (const session of this._sessions.values()) {
 			await session.cleanup();
 		}
@@ -1267,6 +1321,8 @@ export class AgentSession {
 	readonly mode: ExtensionMode;
 	/** The session facade handed to extensions as `ctx.session` / returned from `wolli.getSession`. */
 	readonly facade: SessionApi;
+	/** The facade narrowed to the workflow-session surface — `ctx.session` on this session's lifecycle runs. */
+	readonly workflowSession: WorkflowSession;
 	/** The live harness — attached just after construction (so tools can capture this session). */
 	private _harness?: AgentHarness;
 	/** The frozen system prompt, backing `ctx.getSystemPrompt()`. Refreshed (ctx copy only) on reload. */
@@ -1296,6 +1352,14 @@ export class AgentSession {
 		this.mode = init.mode;
 		this.systemPromptOptions = { cwd: runtime.getCwd() };
 		this.facade = this.buildFacade();
+		// The facade's methods are closures over this session, so detaching them is safe.
+		this.workflowSession = {
+			id: this.getSessionId(),
+			prompt: this.facade.prompt,
+			sendUserMessage: this.facade.sendUserMessage,
+			getTags: this.facade.getTags,
+			setTags: this.facade.setTags,
+		};
 	}
 
 	/** The live harness. Throws if read before `attachHarness` (only the runtime can hit that window). */
@@ -1751,59 +1815,78 @@ export class AgentSession {
 		unsubscribe.push(
 			harness.subscribe(async (event, signal) => {
 				const runner = runtime.extensionRunner;
+				// Workflows consume the same translated lifecycle events as extensions — one event
+				// object per emit, two consumers. The extension emit stays gated on hasHandlers;
+				// the workflow dispatch no-ops per event type when nothing is bound.
+				const workflowRunner = runtime.workflowRunner;
 				switch (event.type) {
 					case "agent_start": {
 						// The run's abort signal rides every dispatch — capture it for ctx.signal.
 						this._currentSignal = signal;
 						this._turnIndex = 0;
-						if (runner.hasHandlers("agent_start")) await runner.emit({ type: "agent_start" }, this);
+						if (runner.hasHandlers("agent_start") || workflowRunner?.hasTriggers("agent_start")) {
+							const lifecycleEvent: AgentEventMap["agent_start"] = { type: "agent_start" };
+							if (runner.hasHandlers("agent_start")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+						}
 						return;
 					}
 					case "agent_end": {
 						this._currentSignal = undefined;
-						if (runner.hasHandlers("agent_end")) {
-							await runner.emit({ type: "agent_end", messages: event.messages }, this);
+						if (runner.hasHandlers("agent_end") || workflowRunner?.hasTriggers("agent_end")) {
+							const lifecycleEvent: AgentEventMap["agent_end"] = { type: "agent_end", messages: event.messages };
+							if (runner.hasHandlers("agent_end")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "turn_start": {
 						// The engine's turn_start carries no index/timestamp — synthesize both.
-						if (runner.hasHandlers("turn_start")) {
-							await runner.emit({ type: "turn_start", turnIndex: this._turnIndex, timestamp: Date.now() }, this);
+						if (runner.hasHandlers("turn_start") || workflowRunner?.hasTriggers("turn_start")) {
+							const lifecycleEvent: AgentEventMap["turn_start"] = {
+								type: "turn_start",
+								turnIndex: this._turnIndex,
+								timestamp: Date.now(),
+							};
+							if (runner.hasHandlers("turn_start")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "turn_end": {
-						if (runner.hasHandlers("turn_end")) {
-							await runner.emit(
-								{
-									type: "turn_end",
-									turnIndex: this._turnIndex,
-									message: event.message,
-									toolResults: event.toolResults,
-								},
-								this,
-							);
+						if (runner.hasHandlers("turn_end") || workflowRunner?.hasTriggers("turn_end")) {
+							const lifecycleEvent: AgentEventMap["turn_end"] = {
+								type: "turn_end",
+								turnIndex: this._turnIndex,
+								message: event.message,
+								toolResults: event.toolResults,
+							};
+							if (runner.hasHandlers("turn_end")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						this._turnIndex++;
 						return;
 					}
 					case "message_start": {
-						if (runner.hasHandlers("message_start")) {
-							await runner.emit({ type: "message_start", message: event.message }, this);
+						if (runner.hasHandlers("message_start") || workflowRunner?.hasTriggers("message_start")) {
+							const lifecycleEvent: AgentEventMap["message_start"] = {
+								type: "message_start",
+								message: event.message,
+							};
+							if (runner.hasHandlers("message_start")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "message_update": {
-						if (runner.hasHandlers("message_update")) {
-							await runner.emit(
-								{
-									type: "message_update",
-									message: event.message,
-									assistantMessageEvent: event.assistantMessageEvent,
-								},
-								this,
-							);
+						if (runner.hasHandlers("message_update") || workflowRunner?.hasTriggers("message_update")) {
+							const lifecycleEvent: AgentEventMap["message_update"] = {
+								type: "message_update",
+								message: event.message,
+								assistantMessageEvent: event.assistantMessageEvent,
+							};
+							if (runner.hasHandlers("message_update")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
@@ -1811,46 +1894,49 @@ export class AgentSession {
 						// Handled on the onMessageEnd() interceptor (c) so mutations persist.
 						return;
 					case "tool_execution_start": {
-						if (runner.hasHandlers("tool_execution_start")) {
-							await runner.emit(
-								{
-									type: "tool_execution_start",
-									toolCallId: event.toolCallId,
-									toolName: event.toolName,
-									args: event.args,
-								},
-								this,
-							);
+						if (
+							runner.hasHandlers("tool_execution_start") ||
+							workflowRunner?.hasTriggers("tool_execution_start")
+						) {
+							const lifecycleEvent: AgentEventMap["tool_execution_start"] = {
+								type: "tool_execution_start",
+								toolCallId: event.toolCallId,
+								toolName: event.toolName,
+								args: event.args,
+							};
+							if (runner.hasHandlers("tool_execution_start")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "tool_execution_update": {
-						if (runner.hasHandlers("tool_execution_update")) {
-							await runner.emit(
-								{
-									type: "tool_execution_update",
-									toolCallId: event.toolCallId,
-									toolName: event.toolName,
-									args: event.args,
-									partialResult: event.partialResult,
-								},
-								this,
-							);
+						if (
+							runner.hasHandlers("tool_execution_update") ||
+							workflowRunner?.hasTriggers("tool_execution_update")
+						) {
+							const lifecycleEvent: AgentEventMap["tool_execution_update"] = {
+								type: "tool_execution_update",
+								toolCallId: event.toolCallId,
+								toolName: event.toolName,
+								args: event.args,
+								partialResult: event.partialResult,
+							};
+							if (runner.hasHandlers("tool_execution_update")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "tool_execution_end": {
-						if (runner.hasHandlers("tool_execution_end")) {
-							await runner.emit(
-								{
-									type: "tool_execution_end",
-									toolCallId: event.toolCallId,
-									toolName: event.toolName,
-									result: event.result,
-									isError: event.isError,
-								},
-								this,
-							);
+						if (runner.hasHandlers("tool_execution_end") || workflowRunner?.hasTriggers("tool_execution_end")) {
+							const lifecycleEvent: AgentEventMap["tool_execution_end"] = {
+								type: "tool_execution_end",
+								toolCallId: event.toolCallId,
+								toolName: event.toolName,
+								result: event.result,
+								isError: event.isError,
+							};
+							if (runner.hasHandlers("tool_execution_end")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
@@ -1860,25 +1946,30 @@ export class AgentSession {
 						return;
 					}
 					case "model_update": {
-						if (runner.hasHandlers("model_select")) {
-							await runner.emit(
-								{
-									type: "model_select",
-									model: event.model,
-									previousModel: event.previousModel,
-									source: event.source,
-								},
-								this,
-							);
+						if (runner.hasHandlers("model_select") || workflowRunner?.hasTriggers("model_select")) {
+							const lifecycleEvent: AgentEventMap["model_select"] = {
+								type: "model_select",
+								model: event.model,
+								previousModel: event.previousModel,
+								source: event.source,
+							};
+							if (runner.hasHandlers("model_select")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "thinking_level_update": {
-						if (runner.hasHandlers("thinking_level_select")) {
-							await runner.emit(
-								{ type: "thinking_level_select", level: event.level, previousLevel: event.previousLevel },
-								this,
-							);
+						if (
+							runner.hasHandlers("thinking_level_select") ||
+							workflowRunner?.hasTriggers("thinking_level_select")
+						) {
+							const lifecycleEvent: AgentEventMap["thinking_level_select"] = {
+								type: "thinking_level_select",
+								level: event.level,
+								previousLevel: event.previousLevel,
+							};
+							if (runner.hasHandlers("thinking_level_select")) await runner.emit(lifecycleEvent, this);
+							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
@@ -1956,15 +2047,21 @@ export class AgentSession {
 
 		// (c) message_end interceptor. The engine runs this before persisting the finalized message; an
 		// extension may return a same-role replacement, which we apply in place so agent state + the
-		// persisted copy stay one object.
+		// persisted copy stay one object. Workflows observe the finalized (possibly replaced) message
+		// here too — mutation stays extension-only.
 		unsubscribe.push(
 			harness.onMessageEnd(async (message) => {
 				const runner = runtime.extensionRunner;
-				if (!runner.hasHandlers("message_end")) return;
-				const replacement = await runner.emitMessageEnd({ type: "message_end", message }, this);
-				if (replacement && replacement !== message) {
-					replaceMessageInPlace(message, replacement);
+				const workflowRunner = runtime.workflowRunner;
+				if (!runner.hasHandlers("message_end") && !workflowRunner?.hasTriggers("message_end")) return;
+				const lifecycleEvent: AgentEventMap["message_end"] = { type: "message_end", message };
+				if (runner.hasHandlers("message_end")) {
+					const replacement = await runner.emitMessageEnd(lifecycleEvent, this);
+					if (replacement && replacement !== message) {
+						replaceMessageInPlace(message, replacement);
+					}
 				}
+				await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 			}),
 		);
 
