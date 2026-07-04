@@ -17,10 +17,13 @@ import type { IntegrationRunner } from "../integrations/runner.ts";
 import type { SessionInfo } from "../session.ts";
 import { RunJournal } from "./journal.ts";
 import type {
+	AgentEventMap,
 	CallableWorkflowDefinition,
+	DialogUI,
 	IntegrationHandleOf,
 	IntegrationKey,
 	IntegrationWorkflowDefinition,
+	LifecycleWorkflowDefinition,
 	RunStatus,
 	RunTrigger,
 	Workflow,
@@ -61,6 +64,11 @@ interface IntegrationBinding {
 	definition: IntegrationWorkflowDefinition<unknown>;
 }
 
+interface LifecycleBinding {
+	workflow: Workflow;
+	definition: LifecycleWorkflowDefinition<keyof AgentEventMap>;
+}
+
 interface CallableEntry {
 	workflow: Workflow;
 	definition: CallableWorkflowDefinition<TSchema, TSchema>;
@@ -83,6 +91,8 @@ export class WorkflowRunner {
 
 	/** `service event` → workflows bound to that integration event. */
 	private readonly integrationTriggers = new Map<string, IntegrationBinding[]>();
+	/** Lifecycle event literal → workflows bound to it. */
+	private readonly lifecycleTriggers = new Map<string, LifecycleBinding[]>();
 	/** Workflow name → callable with its precompiled schema validators. */
 	private readonly callables = new Map<string, CallableEntry>();
 
@@ -97,8 +107,6 @@ export class WorkflowRunner {
 		this.generation = options.generation;
 		this.runsDir = options.runsDir;
 
-		// Index triggers. Lifecycle workflows (`on` as an event literal) are accepted but not
-		// yet indexed: their dispatch, and the session-bearing ctx it needs, land next.
 		for (const workflow of workflows) {
 			const definition = workflow.definition;
 			if (!("on" in definition)) {
@@ -109,7 +117,11 @@ export class WorkflowRunner {
 					inputValidator: Compile(definition.input),
 					outputValidator: Compile(definition.output),
 				});
-			} else if (typeof definition.on !== "string") {
+			} else if (typeof definition.on === "string") {
+				const bindings = this.lifecycleTriggers.get(definition.on);
+				if (bindings) bindings.push({ workflow, definition });
+				else this.lifecycleTriggers.set(definition.on, [{ workflow, definition }]);
+			} else {
 				const key = this.triggerKey(definition.on.service, definition.on.event);
 				const bindings = this.integrationTriggers.get(key);
 				if (bindings) bindings.push({ workflow, definition });
@@ -139,17 +151,52 @@ export class WorkflowRunner {
 		if (!bindings) return;
 		const trigger: RunTrigger = { kind: "integration", service, account, event, payload };
 		for (const { workflow, definition } of bindings) {
-			const outcome = await this.executeRun(workflow, trigger, (ctx) => definition.run(payload, ctx));
-			if (outcome.status === "error") {
-				const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
-				this.emitError({
-					path: workflow.path,
-					event: `${service}.${event}`,
-					error: `workflow '${workflow.name}' failed: ${message}`,
-					stack: outcome.error instanceof Error ? outcome.error.stack : undefined,
-				});
-			}
+			await this.dispatchRun(workflow, trigger, `${service}.${event}`, (journal, signal) =>
+				definition.run(payload, this.createContext(journal, signal)),
+			);
 		}
+	}
+
+	/**
+	 * Fire every workflow bound to the lifecycle event `event.type`, with the gated
+	 * lifecycle ctx: the base ctx plus `ctx.session` (the producing session, deliveries
+	 * recorded as steps) and `ctx.ui` (its dialog primitives, routed to that session's
+	 * clients). Runs execute inline and sequentially; a failed run surfaces on the error
+	 * sink and never throws back into the emitting event path.
+	 */
+	async dispatchLifecycle(
+		event: AgentEventMap[keyof AgentEventMap],
+		session: WorkflowSession,
+		ui: DialogUI,
+	): Promise<void> {
+		const bindings = this.lifecycleTriggers.get(event.type);
+		if (!bindings) return;
+		const trigger: RunTrigger = { kind: "lifecycle", event: event.type, payload: event };
+		for (const { workflow, definition } of bindings) {
+			await this.dispatchRun(workflow, trigger, event.type, (journal, signal) =>
+				definition.run(event, {
+					...this.createContext(journal, signal),
+					session: {
+						id: session.id,
+						prompt: (text, options) =>
+							journal.step("session.prompt", () => session.prompt(text, options), { kind: "auto", args: text }),
+						sendUserMessage: (content, options) =>
+							journal.step("session.sendUserMessage", () => session.sendUserMessage(content, options), {
+								kind: "auto",
+								args: content,
+							}),
+						getTags: () => session.getTags(),
+						setTags: (tags) => session.setTags(tags),
+					},
+					ui,
+				}),
+			);
+		}
+	}
+
+	/** Whether any workflow is bound to this lifecycle event — lets the runtime skip binding work. */
+	hasTriggers(type: string): boolean {
+		return this.lifecycleTriggers.has(type);
 	}
 
 	/**
@@ -169,8 +216,8 @@ export class WorkflowRunner {
 				.join("; ");
 			throw new Error(`invalid input for workflow '${name}'${detail ? `: ${detail}` : ""}`);
 		}
-		const outcome = await this.executeRun(entry.workflow, { kind: "callable", input }, async (ctx) => {
-			const output = await entry.definition.run(input, ctx);
+		const outcome = await this.executeRun(entry.workflow, { kind: "callable", input }, async (journal, signal) => {
+			const output = await entry.definition.run(input, this.createContext(journal, signal));
 			if (!entry.outputValidator.Check(output)) {
 				const detail = entry.outputValidator
 					.Errors(output)
@@ -191,11 +238,34 @@ export class WorkflowRunner {
 		}
 	}
 
-	/** Open a journal and run the handler under a fresh AbortController. Never throws. */
+	/** Execute one event-dispatched run; a failed outcome surfaces on the error sink under `event`. */
+	private async dispatchRun(
+		workflow: Workflow,
+		trigger: RunTrigger,
+		event: string,
+		handler: (journal: RunJournal, signal: AbortSignal) => unknown,
+	): Promise<void> {
+		const outcome = await this.executeRun(workflow, trigger, handler);
+		if (outcome.status !== "error") return;
+		const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+		this.emitError({
+			path: workflow.path,
+			event,
+			error: `workflow '${workflow.name}' failed: ${message}`,
+			stack: outcome.error instanceof Error ? outcome.error.stack : undefined,
+		});
+	}
+
+	/**
+	 * Open a journal and run the handler under a fresh AbortController. Never throws. The
+	 * handler receives the raw journal/signal pair and builds its own ctx: the lifecycle
+	 * dispatch needs the journal to wrap its binding's session, so ctx construction lives
+	 * at the dispatch sites.
+	 */
 	private async executeRun(
 		workflow: Workflow,
 		trigger: RunTrigger,
-		handler: (ctx: WorkflowContext) => unknown,
+		handler: (journal: RunJournal, signal: AbortSignal) => unknown,
 	): Promise<RunOutcome> {
 		const journal = new RunJournal({
 			workflow: workflow.name,
@@ -207,7 +277,7 @@ export class WorkflowRunner {
 		const controller = new AbortController();
 		this.activeRuns.add(controller);
 		try {
-			const result = await handler(this.createContext(journal, controller.signal));
+			const result = await handler(journal, controller.signal);
 			journal.endRun("ok");
 			return { status: "ok", result };
 		} catch (error) {

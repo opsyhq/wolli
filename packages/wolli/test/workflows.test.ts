@@ -13,11 +13,16 @@
  * The WorkflowRunner suite is the integrations suite's stance one level up: an in-memory
  * agent backend, a real IntegrationRunner over an inline heartbeat integration, and
  * inline defineWorkflow definitions — dispatch in, recorded run tree out.
+ *
+ * The lifecycle-dispatch suite drives dispatchLifecycle against a stub producing session
+ * (scripted session + typed no-op dialog UI): typed events in, the gated
+ * ctx.session/ctx.ui, and recorded deliveries out.
  */
 
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentMessage } from "@opsyhq/agent";
 import { Type } from "typebox";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
@@ -29,6 +34,7 @@ import {
 	loadIntegrationFromFactory,
 } from "../src/core/integrations/index.ts";
 import {
+	type DialogUI,
 	defineWorkflow,
 	getWorkflowKind,
 	type IntegrationEventDescriptor,
@@ -133,6 +139,38 @@ function memoryBackend() {
 		},
 	};
 	return { backend, deliveries };
+}
+
+/**
+ * A producing session for lifecycle dispatch: a scripted session stub plus a DialogUI
+ * stub in the IntegrationOnboardUI idiom — typed no-ops except notify, which records so
+ * a test can assert ctx.ui reached it.
+ */
+function stubProducingSession(id = "live", tags: Record<string, string> = {}) {
+	const deliveries: string[] = [];
+	const notifications: string[] = [];
+	const session: WorkflowSession = {
+		id,
+		prompt: async (text) => {
+			deliveries.push(text);
+		},
+		sendUserMessage: async (content) => {
+			deliveries.push(String(content));
+		},
+		getTags: () => ({ ...tags }),
+		setTags: (next) => {
+			Object.assign(tags, next);
+		},
+	};
+	const ui: DialogUI = {
+		select: async () => undefined,
+		confirm: async () => false,
+		input: async () => undefined,
+		notify: (message) => {
+			notifications.push(message);
+		},
+	};
+	return { session, ui, deliveries, notifications };
 }
 
 describe("defineWorkflow", () => {
@@ -505,5 +543,135 @@ describe("WorkflowRunner", () => {
 
 		expect(runner.runs[0].records.at(-1)).toMatchObject({ type: "run_end", status: "cancelled" });
 		expect(errors).toHaveLength(0);
+	});
+});
+
+describe("WorkflowRunner lifecycle dispatch", () => {
+	it("fires a bound workflow with the typed event, ctx.session, and ctx.ui", async () => {
+		const { backend } = memoryBackend();
+		const seenTags: Record<string, string>[] = [];
+		// The docs' telegram-reply shape: read the producing session's tags, deliver, act.
+		const reply = defineWorkflow({
+			on: "agent_end",
+			async run(evt, ctx) {
+				expectTypeOf(evt.messages).toEqualTypeOf<AgentMessage[]>();
+				expectTypeOf(ctx).toEqualTypeOf<LifecycleWorkflowContext>();
+				seenTags.push(ctx.session.getTags());
+				ctx.ui.notify(`replying to ${ctx.session.id}`);
+				await ctx.session.sendUserMessage("digest sent");
+				await ctx.integration(heartbeat).ping({});
+			},
+		});
+		const runner = new WorkflowRunner([{ name: "reply", path: "<reply>", definition: reply }], {
+			backend,
+			integrations: await heartbeatIntegrationRunner(),
+			generation: 1,
+		});
+		const { session, ui, deliveries, notifications } = stubProducingSession("live", { "telegram:chat": "7" });
+
+		await runner.dispatchLifecycle({ type: "agent_end", messages: [] }, session, ui);
+
+		expect(seenTags).toEqual([{ "telegram:chat": "7" }]);
+		expect(notifications).toEqual(["replying to live"]);
+		expect(deliveries).toEqual(["digest sent"]);
+		expect(runner.runs).toHaveLength(1);
+		const journal = runner.runs[0];
+		expect(journal.records[0]).toMatchObject({
+			type: "run_start",
+			workflow: "reply",
+			trigger: { kind: "lifecycle", event: "agent_end", payload: { type: "agent_end", messages: [] } },
+			generation: 1,
+		});
+		// The producing-session delivery records as a step alongside the integration action.
+		const steps = journal.records.filter((r): r is StepStartRecord => r.type === "step_start");
+		expect(steps.map((s) => s.name)).toEqual(["session.sendUserMessage", "integration.call ping"]);
+		expect(steps.every((s) => s.kind === "auto")).toBe(true);
+		expect(journal.records.at(-1)).toMatchObject({ type: "run_end", status: "ok" });
+	});
+
+	it("reports lifecycle trigger presence via hasTriggers", async () => {
+		const { backend } = memoryBackend();
+		const reply = defineWorkflow({ on: "agent_end", run() {} });
+		const runner = new WorkflowRunner([{ name: "reply", path: "<reply>", definition: reply }], {
+			backend,
+			integrations: await heartbeatIntegrationRunner(),
+			generation: 1,
+		});
+
+		expect(runner.hasTriggers("agent_end")).toBe(true);
+		expect(runner.hasTriggers("message_update")).toBe(false);
+	});
+
+	it("is a no-op for a lifecycle event nothing binds", async () => {
+		const { backend } = memoryBackend();
+		const reply = defineWorkflow({ on: "agent_end", run() {} });
+		const runner = new WorkflowRunner([{ name: "reply", path: "<reply>", definition: reply }], {
+			backend,
+			integrations: await heartbeatIntegrationRunner(),
+			generation: 1,
+		});
+
+		const { session, ui } = stubProducingSession();
+		await runner.dispatchLifecycle({ type: "session_start", reason: "new" }, session, ui);
+
+		expect(runner.runs).toHaveLength(0);
+	});
+
+	it("records a thrown lifecycle handler as a failed run and surfaces it on the sink", async () => {
+		const { backend } = memoryBackend();
+		const failing = defineWorkflow({
+			on: "session_start",
+			async run() {
+				throw new Error("kaput");
+			},
+		});
+		const runner = new WorkflowRunner([{ name: "failing", path: "<failing>", definition: failing }], {
+			backend,
+			integrations: await heartbeatIntegrationRunner(),
+			generation: 1,
+		});
+		const errors: WorkflowError[] = [];
+		runner.onError((error) => errors.push(error));
+
+		// Dispatch resolves; the failure lands on the sink and in the record, not on the emitter.
+		const { session, ui } = stubProducingSession();
+		await runner.dispatchLifecycle({ type: "session_start", reason: "new" }, session, ui);
+
+		expect(errors).toEqual([
+			{
+				path: "<failing>",
+				event: "session_start",
+				error: "workflow 'failing' failed: kaput",
+				stack: expect.stringContaining("kaput"),
+			},
+		]);
+		expect(runner.runs[0].records.at(-1)).toMatchObject({
+			type: "run_end",
+			status: "error",
+			error: { name: "Error", message: "kaput" },
+		});
+	});
+
+	it("keeps integration-event runs headless: no session or ui on ctx", async () => {
+		const { backend } = memoryBackend();
+		let sawSession: boolean | undefined;
+		let sawUi: boolean | undefined;
+		const inbound = defineWorkflow({
+			on: tick,
+			run(_msg, ctx) {
+				sawSession = "session" in ctx;
+				sawUi = "ui" in ctx;
+			},
+		});
+		const runner = new WorkflowRunner([{ name: "inbound", path: "<inbound>", definition: inbound }], {
+			backend,
+			integrations: await heartbeatIntegrationRunner(),
+			generation: 1,
+		});
+
+		await runner.dispatchIntegrationEvent("heartbeat", "default", "tick", { seq: 1, at: 1 });
+
+		expect(sawSession).toBe(false);
+		expect(sawUi).toBe(false);
 	});
 });
