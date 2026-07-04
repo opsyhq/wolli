@@ -148,6 +148,19 @@ export {
 } from "./core/extensions/index.ts";
 export type { ToolRenderContext } from "./core/extensions/types.ts";
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
+// Hook system: the documented authoring surface plus the `HookRunner`/`loadHooks` seams.
+export {
+	defineHook,
+	type Hook,
+	type HookContext,
+	type HookDefinition,
+	type HookError,
+	type HookErrorListener,
+	type HookEventMap,
+	type HookResultMap,
+	HookRunner,
+	loadHooks,
+} from "./core/hooks/index.ts";
 export { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 export {
 	type IntegrationAccountRecord,
@@ -290,7 +303,6 @@ export {
 	type AgentEventMap,
 	type CallableWorkflowDefinition,
 	type DialogUI,
-	defineHook,
 	defineWorkflow,
 	type IntegrationEventDescriptor,
 	type IntegrationHandleOf,

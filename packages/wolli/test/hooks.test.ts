@@ -3,9 +3,9 @@
  *
  * `defineHook` is identity at runtime, so the value is (a) that identity, and (b)
  * compile-time assertions that the `before:` literal narrows the handler's event and
- * result shapes and that ctx is the lifecycle workflow ctx (every hook event is
- * session-scoped) — `pnpm typecheck` includes test files, so the
- * `expectTypeOf`/`@ts-expect-error` lines are gated.
+ * result shapes and that ctx is the hook context (every hook event is session-scoped) —
+ * `pnpm typecheck` includes test files, so the `expectTypeOf`/`@ts-expect-error` lines are
+ * gated.
  *
  * The documented-surface suite pins the `before:` set at exactly the eight documented
  * literals, mirroring the AgentEventMap pin in workflows.test.ts.
@@ -15,7 +15,6 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@opsyhq/agent";
-import { Type } from "typebox";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type {
 	CustomToolCallEvent,
@@ -23,30 +22,18 @@ import type {
 	MessageEndEvent,
 	SessionBeforeCompactEvent,
 } from "../src/core/extensions/types.ts";
-import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
-import { IntegrationStore } from "../src/core/integration-store.ts";
 import {
-	createIntegrationRuntime,
-	IntegrationRunner,
-	type IntegrationsAPI,
-	loadIntegrationFromFactory,
-} from "../src/core/integrations/index.ts";
-import {
-	type DialogUI,
 	defineHook,
 	type Hook,
+	type HookContext,
 	type HookDefinition,
+	type HookError,
 	type HookEventMap,
 	type HookResultMap,
-	type LifecycleWorkflowContext,
+	HookRunner,
 	loadHooks,
-	type RunStartRecord,
-	type StepStartRecord,
-	type WorkflowAgentBackend,
-	type WorkflowError,
-	WorkflowRunner,
-	type WorkflowSession,
-} from "../src/core/workflows/index.ts";
+} from "../src/core/hooks/index.ts";
+import type { DialogUI, WorkflowSession } from "../src/core/workflows/index.ts";
 
 describe("defineHook", () => {
 	it("is identity at runtime", () => {
@@ -63,7 +50,7 @@ describe("defineHook", () => {
 			async run(evt, ctx) {
 				expectTypeOf(evt.type).toEqualTypeOf<"tool_call">();
 				expectTypeOf(evt.toolName).toEqualTypeOf<string>();
-				expectTypeOf(ctx).toEqualTypeOf<LifecycleWorkflowContext>();
+				expectTypeOf(ctx).toEqualTypeOf<HookContext>();
 				expectTypeOf(ctx.session).toEqualTypeOf<WorkflowSession>();
 				if (evt.toolName === "bash" && JSON.stringify(evt.input).includes("rm -rf")) {
 					return { block: true, reason: "not allowed" };
@@ -127,45 +114,7 @@ describe("documented surface", () => {
 // Hook chain dispatch (the runner's interception seam)
 // ============================================================================
 
-/** A real IntegrationRunner over an inline heartbeat integration — the runner constructor requires one. */
-async function heartbeatIntegrationRunner(): Promise<IntegrationRunner> {
-	const factory = (wolli: IntegrationsAPI) => {
-		wolli.registerIntegration({
-			name: "heartbeat",
-			events: { tick: Type.Object({ seq: Type.Number() }) },
-			actions: {},
-		});
-	};
-	const runtime = createIntegrationRuntime();
-	const integration = await loadIntegrationFromFactory(factory, process.cwd(), runtime, "<heartbeat>");
-	const runner = new IntegrationRunner(
-		[integration],
-		runtime,
-		process.cwd(),
-		IntegrationAccountStorage.inMemory({ heartbeat: { default: {} } }),
-		IntegrationStore.inMemory(),
-	);
-	runner.bindCore();
-	return runner;
-}
-
-/** A runner over hooks alone; ctx.agent is inert here — every hook event carries its own session. */
-async function hookRunner(hooks: Hook[]): Promise<WorkflowRunner> {
-	const backend: WorkflowAgentBackend = {
-		cwd: "/agent-home",
-		findSessions: async () => [],
-		listSessions: async () => [],
-		openSession: async (id) => {
-			throw new Error(`no session '${id}'`);
-		},
-		createSession: async () => {
-			throw new Error("no createSession");
-		},
-	};
-	return new WorkflowRunner([], hooks, { backend, integrations: await heartbeatIntegrationRunner(), generation: 1 });
-}
-
-/** The producing session + dialog UI a hook run is scoped to: deliveries and notifications recorded. */
+/** The producing session + dialog UI a hook is scoped to: deliveries and notifications captured. */
 function stubProducingSession(id = "live", tags: Record<string, string> = {}) {
 	const deliveries: string[] = [];
 	const notifications: string[] = [];
@@ -246,10 +195,10 @@ function compactEvent(): SessionBeforeCompactEvent {
 	};
 }
 
-describe("WorkflowRunner hook dispatch", () => {
+describe("HookRunner dispatch", () => {
 	it("runs tool_call hooks in array order over the same event: in-place input mutation reaches the caller", async () => {
 		const seen: string[] = [];
-		const runner = await hookRunner([
+		const runner = new HookRunner([
 			hook("first", {
 				before: "tool_call",
 				run(evt) {
@@ -277,7 +226,7 @@ describe("WorkflowRunner hook dispatch", () => {
 	});
 
 	it("preserves event identity: the mutated input lands on the caller's own event object", async () => {
-		const runner = await hookRunner([
+		const runner = new HookRunner([
 			hook("patch", {
 				before: "tool_call",
 				run(evt) {
@@ -295,7 +244,7 @@ describe("WorkflowRunner hook dispatch", () => {
 
 	it("short-circuits tool_call on a block result: the later hook never runs", async () => {
 		let secondRan = false;
-		const runner = await hookRunner([
+		const runner = new HookRunner([
 			hook("guard", {
 				before: "tool_call",
 				run() {
@@ -318,7 +267,7 @@ describe("WorkflowRunner hook dispatch", () => {
 	});
 
 	it("patches tool_result across the chain and combines; an untouched chain returns undefined", async () => {
-		const runner = await hookRunner([
+		const runner = new HookRunner([
 			hook("mark-error", {
 				before: "tool_result",
 				run() {
@@ -339,14 +288,14 @@ describe("WorkflowRunner hook dispatch", () => {
 		const result = await runner.dispatchToolResult(toolResultEvent(), session, ui);
 		expect(result).toEqual({ content: [{ type: "text", text: "patched" }], details: undefined, isError: true });
 
-		const quiet = await hookRunner([hook("noop", { before: "tool_result", run() {} })]);
+		const quiet = new HookRunner([hook("noop", { before: "tool_result", run() {} })]);
 		expect(await quiet.dispatchToolResult(toolResultEvent(), session, ui)).toBeUndefined();
 	});
 
 	it("threads input transforms, short-circuits on handled, and continues an untouched chain", async () => {
 		const { session, ui } = stubProducingSession();
 
-		const transform = await hookRunner([
+		const transform = new HookRunner([
 			hook("upper", {
 				before: "input",
 				run: (evt) => ({ action: "transform" as const, text: `${evt.text}-a` }),
@@ -364,7 +313,7 @@ describe("WorkflowRunner hook dispatch", () => {
 		});
 
 		let secondRan = false;
-		const handled = await hookRunner([
+		const handled = new HookRunner([
 			hook("swallow", { before: "input", run: () => ({ action: "handled" as const }) }),
 			hook("never", {
 				before: "input",
@@ -378,14 +327,14 @@ describe("WorkflowRunner hook dispatch", () => {
 		});
 		expect(secondRan).toBe(false);
 
-		const quiet = await hookRunner([hook("noop", { before: "input", run() {} })]);
+		const quiet = new HookRunner([hook("noop", { before: "input", run() {} })]);
 		expect(await quiet.dispatchInput("hi", undefined, "interactive", undefined, session, ui)).toEqual({
 			action: "continue",
 		});
 	});
 
 	it("replaces context messages across the chain without mutating the caller's array", async () => {
-		const runner = await hookRunner([
+		const runner = new HookRunner([
 			hook("append-b", {
 				before: "context",
 				run: (evt) => ({ messages: [...evt.messages, userMessage("b")] }),
@@ -406,7 +355,7 @@ describe("WorkflowRunner hook dispatch", () => {
 	});
 
 	it("threads the provider_request payload: each non-undefined return replaces it", async () => {
-		const runner = await hookRunner([
+		const runner = new HookRunner([
 			hook("stamp-1", { before: "provider_request", run: (evt) => `${String(evt.payload)}-1` }),
 			hook("stamp-2", { before: "provider_request", run: (evt) => `${String(evt.payload)}-2` }),
 		]);
@@ -419,7 +368,7 @@ describe("WorkflowRunner hook dispatch", () => {
 
 	it("accumulates agent_start messages and lets the last systemPrompt win; no contribution returns undefined", async () => {
 		let secondSawSystemPrompt: string | undefined;
-		const runner = await hookRunner([
+		const runner = new HookRunner([
 			hook("inject-1", {
 				before: "agent_start",
 				run() {
@@ -441,13 +390,13 @@ describe("WorkflowRunner hook dispatch", () => {
 		expect(result?.systemPrompt).toBe("sp2");
 		expect(result?.messages?.map((m) => m.content)).toEqual(["one", "two"]);
 
-		const quiet = await hookRunner([hook("noop", { before: "agent_start", run() {} })]);
+		const quiet = new HookRunner([hook("noop", { before: "agent_start", run() {} })]);
 		expect(await quiet.dispatchAgentStart("hi", undefined, "sp0", {}, session, ui)).toBeUndefined();
 	});
 
 	it("short-circuits the compact chain on a cancel result", async () => {
 		let secondRan = false;
-		const runner = await hookRunner([
+		const runner = new HookRunner([
 			hook("cancel", { before: "compact", run: () => ({ cancel: true }) }),
 			hook("after", {
 				before: "compact",
@@ -465,7 +414,7 @@ describe("WorkflowRunner hook dispatch", () => {
 	});
 
 	it("chains same-role message_end replacements and skips a role change with an error, continuing the chain", async () => {
-		const runner = await hookRunner([
+		const runner = new HookRunner([
 			hook("rewrite-1", { before: "message_end", run: () => ({ message: userMessage("v1") }) }),
 			hook("role-change", { before: "message_end", run: () => ({ message: customMessage("nope") }) }),
 			hook("rewrite-2", {
@@ -477,7 +426,7 @@ describe("WorkflowRunner hook dispatch", () => {
 				},
 			}),
 		]);
-		const errors: WorkflowError[] = [];
+		const errors: HookError[] = [];
 		runner.onError((error) => errors.push(error));
 		const { session, ui } = stubProducingSession();
 		const event: MessageEndEvent = { type: "message_end", message: userMessage("orig") };
@@ -494,8 +443,8 @@ describe("WorkflowRunner hook dispatch", () => {
 		]);
 	});
 
-	it("fails open when a tool_call hook throws: its run records error, the sink fires, the chain continues", async () => {
-		const runner = await hookRunner([
+	it("fails open when a tool_call hook throws: the sink fires and the chain continues", async () => {
+		const runner = new HookRunner([
 			hook("boom", {
 				before: "tool_call",
 				run() {
@@ -509,24 +458,18 @@ describe("WorkflowRunner hook dispatch", () => {
 				},
 			}),
 		]);
-		const errors: WorkflowError[] = [];
+		const errors: HookError[] = [];
 		runner.onError((error) => errors.push(error));
 		const { session, ui } = stubProducingSession();
 		const event = toolCallEvent("raw");
 
 		await runner.dispatchToolCall(event, session, ui);
 
-		// The throwing hook's run is recorded as error (the normalization: today's emitToolCall has no try/catch).
-		expect(runner.runs[0].records.at(-1)).toMatchObject({
-			type: "run_end",
-			status: "error",
-			error: { name: "Error", message: "kaboom" },
-		});
 		expect(errors).toEqual([
 			{
 				path: "<boom>",
 				event: "tool_call",
-				error: "hook 'boom' failed: kaboom",
+				error: "kaboom",
 				stack: expect.stringContaining("kaboom"),
 			},
 		]);
@@ -534,8 +477,8 @@ describe("WorkflowRunner hook dispatch", () => {
 		expect(event.input.command).toBe("recovered");
 	});
 
-	it("records every hook firing as a run with the hook trigger, its ctx.session, and the passed ctx.ui", async () => {
-		const runner = await hookRunner([
+	it("passes the producing session and ui straight through as ctx: deliveries and notifications land", async () => {
+		const runner = new HookRunner([
 			hook("greeter", {
 				before: "input",
 				async run(_evt, ctx) {
@@ -549,22 +492,14 @@ describe("WorkflowRunner hook dispatch", () => {
 
 		await runner.dispatchInput("hi", undefined, "interactive", undefined, session, ui);
 
-		// One recorded run per hook firing.
-		expect(runner.runs).toHaveLength(2);
-		expect(runner.runs.map((r) => (r.records[0] as RunStartRecord).workflow)).toEqual(["greeter", "quiet"]);
-		for (const journal of runner.runs) {
-			expect((journal.records[0] as RunStartRecord).trigger).toMatchObject({ kind: "hook", event: "input" });
-		}
-		// ctx.session.prompt recorded a delivery step in the greeter's own journal.
-		const greeterSteps = runner.runs[0].records.filter((r): r is StepStartRecord => r.type === "step_start");
-		expect(greeterSteps.map((s) => s.name)).toEqual(["session.prompt"]);
+		// ctx.session IS the session passed to dispatch: prompt reaches its deliveries directly.
 		expect(deliveries).toEqual(["from hook"]);
-		// ctx.ui is the UI passed into dispatch.
+		// ctx.ui is the UI passed into dispatch: notifications land, carrying the session id.
 		expect(notifications).toEqual(["hooked live"]);
 	});
 
 	it("reports hook presence via hasHooks", async () => {
-		const runner = await hookRunner([hook("guard", { before: "tool_call", run() {} })]);
+		const runner = new HookRunner([hook("guard", { before: "tool_call", run() {} })]);
 
 		expect(runner.hasHooks("tool_call")).toBe(true);
 		expect(runner.hasHooks("input")).toBe(false);

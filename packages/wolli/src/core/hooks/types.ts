@@ -7,9 +7,9 @@
  * handlers observe, `before:` hooks decide — block a tool call, rewrite input, replace a
  * provider payload.
  *
- * Hooks run on the workflow engine underneath: each firing is a recorded run with the
- * lifecycle workflow ctx (every hook event is session-scoped, so `ctx.session` is always
- * present). Hooks cannot bind `on:`, are not callable, and have no input/output schemas.
+ * Hooks run inline in a live turn: fast, never durable, never recorded. The workflow engine
+ * is for automation; hooks are its interception sibling. Hooks cannot bind `on:`, are not
+ * callable, and have no input/output schemas.
  */
 
 // Type-only imports: the hook event/result interfaces still live in the extension system
@@ -22,6 +22,7 @@ import type {
 	BeforeProviderRequestEventResult,
 	ContextEvent,
 	ContextEventResult,
+	ExtensionError,
 	InputEvent,
 	InputEventResult,
 	MessageEndEvent,
@@ -33,7 +34,7 @@ import type {
 	ToolResultEvent,
 	ToolResultEventResult,
 } from "../extensions/types.ts";
-import type { LifecycleWorkflowContext } from "./types.ts";
+import type { DialogUI, WorkflowSession } from "../workflows/types.ts";
 
 /**
  * The events a hook binds with `before:` — the interception counterpart to the observe-only
@@ -65,6 +66,17 @@ export interface HookResultMap {
 }
 
 /**
+ * The context handed to a hook: the producing session's delivery/tag surface plus its dialog
+ * primitives. Every hook event is session-scoped, so `ctx.session` is always present.
+ */
+export interface HookContext {
+	/** The producing session. */
+	readonly session: WorkflowSession;
+	/** Dialog primitives routed to the producing session's clients. */
+	readonly ui: DialogUI;
+}
+
+/**
  * A hook: one `before:` event plus a handler that may intercept it. Returning nothing
  * means no interception.
  */
@@ -72,7 +84,7 @@ export interface HookDefinition<TEvent extends keyof HookEventMap> {
 	before: TEvent;
 	run(
 		event: HookEventMap[TEvent],
-		ctx: LifecycleWorkflowContext,
+		ctx: HookContext,
 		// biome-ignore lint/suspicious/noConfusingVoidType: `undefined` would reject run() impls without a return statement
 	): HookResultMap[TEvent] | void | Promise<HookResultMap[TEvent] | void>;
 }
@@ -95,3 +107,8 @@ export interface Hook {
 	path: string;
 	definition: HookDefinition<keyof HookEventMap>;
 }
+
+/** Hook errors reuse the extension error shape so they ride the existing error sink unchanged. */
+export type HookError = ExtensionError;
+
+export type HookErrorListener = (error: HookError) => void;

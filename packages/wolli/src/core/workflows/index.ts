@@ -1,13 +1,11 @@
 /**
  * Workflow subsystem: first-class, observable routing and automation. One defineWorkflow
  * file per workflow in the agent home's `workflows/` folder; every trigger firing is a
- * recorded run. Hooks — the interception surface, one defineHook file per hook in the
- * `hooks/` folder — run on the same engine.
+ * recorded run.
  */
 
-export { defineHook, type Hook, type HookDefinition, type HookEventMap, type HookResultMap } from "./hooks.ts";
 export { RunJournal, type RunJournalOptions, type StepOptions } from "./journal.ts";
-export { loadHooks, loadWorkflows } from "./loader.ts";
+export { loadWorkflows } from "./loader.ts";
 export { type WorkflowAgentBackend, WorkflowRunner, type WorkflowRunnerOptions } from "./runner.ts";
 export type {
 	AgentEventMap,
