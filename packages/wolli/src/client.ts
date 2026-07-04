@@ -28,8 +28,6 @@ import type {
 	MessageRenderer,
 	SlashCommandInfo,
 	ToolInfo,
-	UserBashEvent,
-	UserBashEventResult,
 } from "./core/extensions/index.ts";
 import type { KeyId } from "./core/keybindings.ts";
 import { readMemoryFile } from "./core/memory.ts";
@@ -799,10 +797,6 @@ export class SessionHandle {
 
 	getMessageRenderer(): MessageRenderer | undefined {
 		return undefined;
-	}
-
-	emitUserBash(_event: UserBashEvent): Promise<UserBashEventResult | undefined> {
-		return Promise.resolve(undefined);
 	}
 
 	/** Unreachable (`getShortcuts()` is always empty); fails loud rather than fabricating a context. */

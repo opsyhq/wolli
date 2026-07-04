@@ -1739,38 +1739,9 @@ export class ChatView extends Container implements AppView {
 	/**
 	 * Run a user-typed shell command (`!cmd` / `!!cmd`).
 	 *
-	 * Extensions may intercept via the `user_bash` event: returning a `result` short-circuits
-	 * execution, and returning `environment` swaps the backend the command runs in. The result is
-	 * recorded into the agent's context unless `!!` was used (`excludeFromContext`).
+	 * The result is recorded into the agent's context unless `!!` was used (`excludeFromContext`).
 	 */
 	private async handleBashCommand(command: string, excludeFromContext = false): Promise<void> {
-		const eventResult = await this.session.emitUserBash({
-			type: "user_bash",
-			command,
-			excludeFromContext,
-			cwd: this.session.getCwd(),
-		});
-
-		// An extension handled execution itself — display and record its result directly.
-		if (eventResult?.result) {
-			const result = eventResult.result;
-			this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
-			this.chatContainer.addChild(this.bashComponent);
-			if (result.output) {
-				this.bashComponent.appendOutput(result.output);
-			}
-			this.bashComponent.setComplete(
-				result.exitCode,
-				result.cancelled,
-				result.truncated ? ({ truncated: true, content: result.output } as TruncationResult) : undefined,
-				result.fullOutputPath,
-			);
-			await this.session.appendMessage(createBashExecutionMessage(command, result, { excludeFromContext }));
-			this.bashComponent = undefined;
-			this.ui.requestRender();
-			return;
-		}
-
 		this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
 		this.chatContainer.addChild(this.bashComponent);
 		this.ui.requestRender();
@@ -1780,7 +1751,7 @@ export class ChatView extends Container implements AppView {
 			const result = await executeBash(
 				command,
 				this.session.getCwd(),
-				eventResult?.environment ?? createHostEnvironment(this.session.getCwd()),
+				createHostEnvironment(this.session.getCwd()),
 				{
 					onChunk: (chunk) => {
 						if (this.bashComponent) {

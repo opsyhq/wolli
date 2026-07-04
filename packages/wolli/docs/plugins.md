@@ -1,10 +1,10 @@
 # Plugins
 
-A plugin is an npm-style package whose `package.json` carries a `"wolli"` manifest declaring the resources it contributes: integrations, workflows, tools, providers, skills, prompt templates, and/or themes. One install adds all of them to an agent at once, resolved in place from the single package. Plugins are how you share a channel (an [integration](./integrations.md) plus the [workflows](./workflows.md) that route it), a set of [tools](./tools.md), or any mix of resource types between agents and across machines.
+A plugin is an npm-style package whose `package.json` carries a `"wolli"` manifest declaring the resources it contributes: integrations, workflows, hooks, tools, providers, skills, prompt templates, and/or themes. One install adds all of them to an agent at once, resolved in place from the single package. Plugins are how you share a channel (an [integration](./integrations.md) plus the [workflows](./workflows.md) that route it), a set of [tools](./tools.md), or any mix of resource types between agents and across machines.
 
 > **Per-agent, not global.** Wolli has no project scope. A plugin is installed for one agent and lands in that agent's own home (`~/.wolli/agents/<name>/`). The agent name precedes every verb: `wolli <agent> plugins install <source>`.
 
-> **Security:** Plugins run with full host access. Integrations, workflows, tools, and providers execute arbitrary code inside the agent process, and skills can instruct the model to take any action. Review a plugin's source before installing a third-party package.
+> **Security:** Plugins run with full host access. Integrations, workflows, hooks, tools, and providers execute arbitrary code inside the agent process, and skills can instruct the model to take any action. Review a plugin's source before installing a third-party package.
 
 ## Table of Contents
 
@@ -25,6 +25,7 @@ A plugin is a directory (or published package) with a `package.json` whose `"wol
 
 - **integrations** — transport modules default-exporting `defineIntegration` (see [integrations.md](./integrations.md)).
 - **workflows** — routing and automation modules default-exporting `defineWorkflow` (see [workflows.md](./workflows.md)).
+- **hooks** — interception modules default-exporting `defineHook` (see [hooks.md](./hooks.md)).
 - **tools** — tool modules default-exporting `defineTool` (see [tools.md](./tools.md)).
 - **providers** — model provider modules default-exporting `defineProvider` (see [providers.md](./providers.md)).
 - **skills** — `SKILL.md` (or top-level `.md`) instruction files (see [skills.md](./skills.md)).
@@ -62,6 +63,7 @@ The plugin manager reads `package.json` and parses exactly the `"wolli"` object.
 |----------------|-----------------|-------------------------------|
 | `integrations` | integration modules | `.ts` / `.js`             |
 | `workflows`    | workflow modules    | `.ts` / `.js`             |
+| `hooks`        | hook modules        | `.ts` / `.js`             |
 | `tools`        | tool modules        | `.ts` / `.js`             |
 | `providers`    | provider modules    | `.ts` / `.js`             |
 | `skills`       | skills              | `SKILL.md` / `.md`        |
@@ -106,16 +108,16 @@ Plain single-file path entries are **first-class**; globs and override prefixes 
 **Notes:**
 
 - Paths are relative to the package root and resolved against it. An entry is one of three things:
-  - a **plain path** — a single file (`./index.ts`) loaded as-is, or a **directory**, which is then collected for that resource type. Directories collect by the type's file pattern (`.md` for skills/prompts, `.json` for themes); for the module types (`integrations`, `workflows`, `tools`, `providers`) the directory is collected with the same package-style discovery as a convention dir (an `index.ts`/`index.js` or nested `package.json` manifest per subdir, **not** a flat sweep of every `.ts`).
+  - a **plain path** — a single file (`./index.ts`) loaded as-is, or a **directory**, which is then collected for that resource type. Directories collect by the type's file pattern (`.md` for skills/prompts, `.json` for themes); for the module types (`integrations`, `workflows`, `hooks`, `tools`, `providers`) the directory is collected with the same package-style discovery as a convention dir (an `index.ts`/`index.js` or nested `package.json` manifest per subdir, **not** a flat sweep of every `.ts`).
   - a **glob** (contains `*` or `?`, e.g. `workflows/*.ts`) — expanded against the package root, then each match collected as above.
   - an **override prefix** (`!exclude`, `+force-include`, `-force-exclude`) — not a source itself; it layers on top of the paths the plain/glob entries already produced. `!` removes matches, `+` adds an exact path back even if excluded, `-` removes an exact path even if force-included.
   When an entry resolves to a directory (or a glob matches one), only files matching the resource type's pattern are picked up; a plain entry pointing straight at a single file is taken as-is, so list each file under its correct key.
-- If no `"wolli"` manifest is present, the manager falls back to convention directories — `integrations/`, `workflows/`, `tools/`, `providers/`, `skills/`, `prompts/`, `themes/` — and auto-discovers files there.
+- If no `"wolli"` manifest is present, the manager falls back to convention directories — `integrations/`, `workflows/`, `hooks/`, `tools/`, `providers/`, `skills/`, `prompts/`, `themes/` — and auto-discovers files there.
 - Third-party runtime deps (here `grammy`; `croner` in the scheduler plugin) go in `dependencies` and are installed automatically when the plugin is fetched. `"dependencies"` is **optional** and may be omitted entirely when the transport relies only on Node globals — a transport that talks to a plain HTTP endpoint can call `fetch` directly with no bundled client. Bundling a client library is only needed for richer protocols.
 
 ### Why peerDependencies on `wolli`
 
-Contribution modules import the host's definer helpers from `wolli` (`defineIntegration`, `defineWorkflow`, `defineTool`, `defineProvider`). The host process *provides* that package at runtime, so the plugin must not bundle its own copy. Declare it as a peer with a `"*"` range:
+Contribution modules import the host's definer helpers from `wolli` (`defineIntegration`, `defineWorkflow`, `defineHook`, `defineTool`, `defineProvider`). The host process *provides* that package at runtime, so the plugin must not bundle its own copy. Declare it as a peer with a `"*"` range:
 
 ```json
 { "peerDependencies": { "wolli": "*" } }
