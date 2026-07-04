@@ -22,6 +22,11 @@
  * first runtime proof that a value import from the bare "wolli" specifier resolves
  * through jiti when running from source.
  *
+ * The documented-surface suite pins the docs/workflows.md tables at the type level (the
+ * 14 lifecycle literals, the ctx/agent/session/ui key sets), and the doc-examples suite
+ * loads the docs' workflow files verbatim (the Phase 2 defineIntegration import replaced
+ * by a synthetic stand-in) and executes the named ones against the real runner.
+ *
  * The AgentRuntime suite is the wiring proof, in the extensions-suite stance: a REAL
  * AgentRuntime in a temp agent home with a faux pi-ai provider. Workflows auto-discover
  * from <agentDir>/workflows/, session_start flows through the live event wiring with a
@@ -52,6 +57,7 @@ import {
 } from "../src/core/integrations/index.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import {
+	type AgentEventMap,
 	type DialogUI,
 	defineWorkflow,
 	getWorkflowKind,
@@ -63,6 +69,7 @@ import {
 	RunJournal,
 	type StepEndRecord,
 	type StepStartRecord,
+	type WorkflowAgent,
 	type WorkflowAgentBackend,
 	type WorkflowContext,
 	type WorkflowError,
@@ -243,6 +250,41 @@ describe("defineWorkflow", () => {
 		});
 
 		expect(getWorkflowKind(workflow)).toBe("callable");
+	});
+});
+
+describe("documented surface", () => {
+	it("pins the docs/workflows.md name tables: a key added or renamed on either side fails typecheck", () => {
+		// The complete lifecycle-event set — observe-only; none of the extension system's
+		// mutating hook events (tool_call, context, input, before_agent_start, ...) belong here.
+		expectTypeOf<keyof AgentEventMap>().toEqualTypeOf<
+			| "session_start"
+			| "session_shutdown"
+			| "agent_start"
+			| "agent_end"
+			| "turn_start"
+			| "turn_end"
+			| "message_start"
+			| "message_update"
+			| "message_end"
+			| "tool_execution_start"
+			| "tool_execution_update"
+			| "tool_execution_end"
+			| "model_select"
+			| "thinking_level_select"
+		>();
+		expectTypeOf<keyof WorkflowContext>().toEqualTypeOf<"agent" | "integration" | "step" | "signal">();
+		expectTypeOf<keyof LifecycleWorkflowContext>().toEqualTypeOf<
+			"agent" | "integration" | "step" | "signal" | "session" | "ui"
+		>();
+		expectTypeOf<keyof WorkflowAgent>().toEqualTypeOf<
+			"findSessions" | "openSession" | "createSession" | "listSessions" | "cwd"
+		>();
+		// The docs' facade four plus the identity field session steps record.
+		expectTypeOf<keyof WorkflowSession>().toEqualTypeOf<
+			"id" | "prompt" | "sendUserMessage" | "getTags" | "setTags"
+		>();
+		expectTypeOf<keyof DialogUI>().toEqualTypeOf<"select" | "confirm" | "input" | "notify">();
 	});
 });
 
@@ -695,16 +737,16 @@ describe("WorkflowRunner lifecycle dispatch", () => {
 	});
 });
 
-describe("loadWorkflows", () => {
-	async function writeWorkflowsDir(files: Record<string, string>): Promise<string> {
-		const dir = join(await mkdtemp(join(tmpdir(), "wolli-workflows-")), "workflows");
-		await mkdir(dir);
-		for (const [name, source] of Object.entries(files)) {
-			await writeFile(join(dir, name), source);
-		}
-		return dir;
+async function writeWorkflowsDir(files: Record<string, string>): Promise<string> {
+	const dir = join(await mkdtemp(join(tmpdir(), "wolli-workflows-")), "workflows");
+	await mkdir(dir);
+	for (const [name, source] of Object.entries(files)) {
+		await writeFile(join(dir, name), source);
 	}
+	return dir;
+}
 
+describe("loadWorkflows", () => {
 	it("loads one workflow per file: basename name, default-export definition, classified kind", async () => {
 		const dir = await writeWorkflowsDir({
 			// The bare "wolli" value import is the point: it must resolve through jiti.
@@ -798,6 +840,223 @@ export default defineWorkflow({ on: "agent_end", run() {} });
 		// Discovery (plugin-manager, step 6) hands the loader the folder's file list; an
 		// empty or missing workflows/ folder arrives as an empty path list.
 		await expect(loadWorkflows([], "/agent-home")).resolves.toEqual({ workflows: [], errors: [] });
+	});
+});
+
+describe("doc examples (docs/workflows.md)", () => {
+	// The docs' workflow files, verbatim except that `import telegram from
+	// "../integrations/telegram"` becomes an inline synthetic stand-in — `defineIntegration`
+	// is Phase 2; the descriptor/key are inert data either way.
+	const syntheticTelegram = `
+// Synthetic stand-in for the Phase 2 defineIntegration default export.
+const telegram = {
+	service: "telegram",
+	events: { message: { kind: "integration", service: "telegram", event: "message" } },
+};
+`;
+	const docFixtures: Record<string, string> = {
+		"telegram-inbound.ts": `
+import { defineWorkflow } from "wolli";
+${syntheticTelegram}
+export default defineWorkflow({
+	on: telegram.events.message, // msg is typed from the event schema
+	async run(msg, ctx) {
+		const chatTag = { "telegram:chat": String(msg.chatId) };
+		const [match] = await ctx.agent.findSessions(chatTag);
+		const session = match
+			? await ctx.agent.openSession(match.id)
+			: await ctx.agent.createSession({
+					setup: (s) => s.appendTags(chatTag),
+				});
+		// followUp queues behind a running turn instead of interrupting it.
+		await session.sendUserMessage(msg.text, { deliverAs: "followUp" });
+	},
+});
+`,
+		"turn-metrics.ts": `
+import { defineWorkflow } from "wolli";
+
+export default defineWorkflow({
+	on: "turn_end", // evt is typed via AgentEventMap
+	async run(evt, ctx) {
+		console.log(\`turn \${evt.turnIndex} ran \${evt.toolResults.length} tools\`);
+	},
+});
+`,
+		"fetch-page.ts": `
+import { defineWorkflow } from "wolli";
+import { Type } from "typebox";
+
+export default defineWorkflow({
+	input: Type.Object({ url: Type.String() }),
+	output: Type.Object({ excerpt: Type.String() }),
+	async run(input) {
+		const res = await fetch(input.url);
+		return { excerpt: (await res.text()).slice(0, 500) };
+	},
+});
+`,
+		"greet-new-session.ts": `
+import { defineWorkflow } from "wolli";
+${syntheticTelegram}
+export default defineWorkflow({
+	on: "session_start",
+	async run(evt, ctx) {
+		const chat = ctx.session.getTags()["telegram:chat"]; // the producing session
+		if (!chat || evt.reason !== "new") return;
+		const text = await ctx.step("compose-greeting", () => "Fresh session ready.");
+		await ctx.integration(telegram).sendMessage({ chatId: Number(chat), text });
+	},
+});
+`,
+		"telegram-reply.ts": `
+import { defineWorkflow } from "wolli";
+${syntheticTelegram}
+export default defineWorkflow({
+	on: "agent_end",
+	async run(evt, ctx) {
+		const chat = ctx.session.getTags()["telegram:chat"];
+		if (!chat) return; // not a telegram-bound session
+		const text = evt.messages
+			.filter((m) => m.role === "assistant")
+			.at(-1)
+			?.content.filter((c) => c.type === "text")
+			.map((c) => c.text)
+			.join("")
+			.trim();
+		if (!text) return; // a pure tool-call turn sends nothing
+		await ctx.integration(telegram).sendMessage({ chatId: Number(chat), text });
+	},
+});
+`,
+	};
+
+	async function loadDocWorkflow(name: string) {
+		const dir = await writeWorkflowsDir({ [name]: docFixtures[name] });
+		const result = await loadWorkflows([join(dir, name)], dir);
+		expect(result.errors).toEqual([]);
+		return result.workflows[0];
+	}
+
+	/** A real IntegrationRunner over the docs' telegram surface: a `message` event and a `sendMessage` action. */
+	async function telegramIntegrationRunner(sent: Array<{ chatId: number; text: string }>): Promise<IntegrationRunner> {
+		const factory = (wolli: IntegrationsAPI) => {
+			wolli.registerIntegration({
+				name: "telegram",
+				events: { message: Type.Object({ chatId: Type.Number(), text: Type.String() }) },
+				actions: {
+					sendMessage: {
+						parameters: Type.Object({ chatId: Type.Number(), text: Type.String() }),
+						// Params reached execute through callAction's schema validation, so the cast is sound.
+						execute: async (params) => {
+							sent.push(params as { chatId: number; text: string });
+							return { ok: true };
+						},
+					},
+				},
+			});
+		};
+		const runtime = createIntegrationRuntime();
+		const integration = await loadIntegrationFromFactory(factory, process.cwd(), runtime, "<telegram>");
+		const runner = new IntegrationRunner(
+			[integration],
+			runtime,
+			process.cwd(),
+			IntegrationAccountStorage.inMemory({ telegram: { default: {} } }),
+			IntegrationStore.inMemory(),
+		);
+		runner.bindCore();
+		return runner;
+	}
+
+	it("loads every documented workflow file with the documented name and kind", async () => {
+		const dir = await writeWorkflowsDir(docFixtures);
+		const result = await loadWorkflows(
+			Object.keys(docFixtures).map((name) => join(dir, name)),
+			dir,
+		);
+
+		expect(result.errors).toEqual([]);
+		expect(result.workflows.map((w) => [w.name, getWorkflowKind(w.definition)])).toEqual([
+			["telegram-inbound", "integration"],
+			["turn-metrics", "lifecycle"],
+			["fetch-page", "callable"],
+			["greet-new-session", "lifecycle"],
+			["telegram-reply", "lifecycle"],
+		]);
+	});
+
+	it("telegram-inbound routes a message into a fresh session, recording the docs' run tree", async () => {
+		const workflow = await loadDocWorkflow("telegram-inbound.ts");
+		const { backend, deliveries } = memoryBackend();
+		const runner = new WorkflowRunner([workflow], {
+			backend,
+			integrations: await telegramIntegrationRunner([]),
+			generation: 1,
+		});
+
+		await runner.dispatchIntegrationEvent("telegram", "default", "message", { chatId: 7, text: "hi" });
+
+		expect(deliveries).toEqual([{ session: "s1", text: "hi" }]);
+		const journal = runner.runs[0];
+		const steps = journal.records.filter((r): r is StepStartRecord => r.type === "step_start");
+		expect(steps.map((s) => s.name)).toEqual([
+			"agent.findSessions",
+			"agent.createSession",
+			"session.sendUserMessage",
+		]);
+		expect(steps.every((s) => s.kind === "auto")).toBe(true);
+		expect(journal.records.at(-1)).toMatchObject({ type: "run_end", status: "ok" });
+	});
+
+	it("greet-new-session greets a telegram-tagged new session and honors the reason guard", async () => {
+		const workflow = await loadDocWorkflow("greet-new-session.ts");
+		const sent: Array<{ chatId: number; text: string }> = [];
+		const { backend } = memoryBackend();
+		const runner = new WorkflowRunner([workflow], {
+			backend,
+			integrations: await telegramIntegrationRunner(sent),
+			generation: 1,
+		});
+		const { session, ui } = stubProducingSession("live", { "telegram:chat": "7" });
+
+		await runner.dispatchLifecycle({ type: "session_start", reason: "new" }, session, ui);
+
+		expect(sent).toEqual([{ chatId: 7, text: "Fresh session ready." }]);
+		expect(runner.runs[0].records.filter((r): r is StepStartRecord => r.type === "step_start")).toMatchObject([
+			{ name: "compose-greeting", kind: "user" },
+			{ name: "integration.call sendMessage", kind: "auto" },
+		]);
+		expect(runner.runs[0].records.at(-1)).toMatchObject({ type: "run_end", status: "ok" });
+
+		// The documented guard: a non-"new" start greets nothing.
+		await runner.dispatchLifecycle({ type: "session_start", reason: "reload" }, session, ui);
+		expect(sent).toHaveLength(1);
+		expect(runner.runs[1].records.filter((r) => r.type === "step_start")).toHaveLength(0);
+	});
+
+	it("turn-metrics observes a turn_end event and completes cleanly", async () => {
+		const workflow = await loadDocWorkflow("turn-metrics.ts");
+		const { backend } = memoryBackend();
+		const runner = new WorkflowRunner([workflow], {
+			backend,
+			integrations: await telegramIntegrationRunner([]),
+			generation: 1,
+		});
+		const { session, ui } = stubProducingSession();
+
+		await runner.dispatchLifecycle(
+			{ type: "turn_end", turnIndex: 2, message: { role: "user", content: "hi", timestamp: 0 }, toolResults: [] },
+			session,
+			ui,
+		);
+
+		expect(runner.runs[0].records[0]).toMatchObject({
+			type: "run_start",
+			workflow: "turn-metrics",
+			trigger: { kind: "lifecycle", event: "turn_end" },
+		});
+		expect(runner.runs[0].records.at(-1)).toMatchObject({ type: "run_end", status: "ok" });
 	});
 });
 

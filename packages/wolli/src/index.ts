@@ -284,7 +284,8 @@ export { createMemoryTool, type MemoryToolDetails, type MemoryToolInput } from "
 export { resolveReadPathAsync, resolveToCwd } from "./core/tools/path-utils.ts";
 export { createReadTool, type ReadToolDetails, type ReadToolInput } from "./core/tools/read.ts";
 export { createWriteTool, type WriteToolInput } from "./core/tools/write.ts";
-// Workflow system (authoring surface; `getWorkflowKind` stays internal to core/workflows)
+// Workflow system: the documented authoring surface plus the `WorkflowRunner`/`loadWorkflows` test
+// seams. `getWorkflowKind` and the RunJournal machinery stay internal to core/workflows.
 export {
 	type AgentEventMap,
 	type CallableWorkflowDefinition,
@@ -296,9 +297,26 @@ export {
 	type IntegrationWorkflowDefinition,
 	type LifecycleWorkflowContext,
 	type LifecycleWorkflowDefinition,
+	type LoadWorkflowsResult,
+	loadWorkflows,
+	type RecordedError,
+	type RunEndRecord,
+	type RunRecord,
+	type RunStartRecord,
+	type RunStatus,
+	type RunTrigger,
+	type StepEndRecord,
+	type StepKind,
+	type StepStartRecord,
+	type Workflow,
 	type WorkflowAgent,
+	type WorkflowAgentBackend,
 	type WorkflowContext,
 	type WorkflowDefinition,
+	type WorkflowError,
+	type WorkflowErrorListener,
+	WorkflowRunner,
+	type WorkflowRunnerOptions,
 	type WorkflowSession,
 } from "./core/workflows/index.ts";
 export { type RunDaemonOptions, runDaemon } from "./server.ts";
