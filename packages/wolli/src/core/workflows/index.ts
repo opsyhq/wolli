@@ -7,7 +7,7 @@
 
 export { defineHook, type Hook, type HookDefinition, type HookEventMap, type HookResultMap } from "./hooks.ts";
 export { RunJournal, type RunJournalOptions, type StepOptions } from "./journal.ts";
-export { loadWorkflows } from "./loader.ts";
+export { loadHooks, loadWorkflows } from "./loader.ts";
 export { type WorkflowAgentBackend, WorkflowRunner, type WorkflowRunnerOptions } from "./runner.ts";
 export type {
 	AgentEventMap,

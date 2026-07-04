@@ -290,6 +290,7 @@ export {
 	type AgentEventMap,
 	type CallableWorkflowDefinition,
 	type DialogUI,
+	defineHook,
 	defineWorkflow,
 	type IntegrationEventDescriptor,
 	type IntegrationHandleOf,

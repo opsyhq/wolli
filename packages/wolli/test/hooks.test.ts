@@ -11,6 +11,9 @@
  * literals, mirroring the AgentEventMap pin in workflows.test.ts.
  */
 
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentMessage } from "@opsyhq/agent";
 import { Type } from "typebox";
 import { describe, expect, expectTypeOf, it } from "vitest";
@@ -36,6 +39,7 @@ import {
 	type HookEventMap,
 	type HookResultMap,
 	type LifecycleWorkflowContext,
+	loadHooks,
 	type RunStartRecord,
 	type StepStartRecord,
 	type WorkflowAgentBackend,
@@ -564,5 +568,104 @@ describe("WorkflowRunner hook dispatch", () => {
 
 		expect(runner.hasHooks("tool_call")).toBe(true);
 		expect(runner.hasHooks("input")).toBe(false);
+	});
+});
+
+// ============================================================================
+// Hooks folder loader
+// ============================================================================
+
+async function writeHooksDir(files: Record<string, string>): Promise<string> {
+	const dir = join(await mkdtemp(join(tmpdir(), "wolli-hooks-")), "hooks");
+	await mkdir(dir);
+	for (const [name, source] of Object.entries(files)) {
+		await writeFile(join(dir, name), source);
+	}
+	return dir;
+}
+
+describe("loadHooks", () => {
+	it("loads one hook per file: basename name, default-export definition intact", async () => {
+		const dir = await writeHooksDir({
+			// The real authoring idiom: defineHook imported from the bare "wolli" alias.
+			"guard-bash.ts": `
+import { defineHook } from "wolli";
+
+export default defineHook({
+	before: "tool_call",
+	run() {},
+});
+`,
+		});
+
+		const result = await loadHooks([join(dir, "guard-bash.ts")], dir);
+
+		expect(result.errors).toEqual([]);
+		expect(result.hooks.map((h) => h.name)).toEqual(["guard-bash"]);
+		expect(result.hooks[0].path).toBe(join(dir, "guard-bash.ts"));
+		expect(result.hooks[0].definition.before).toBe("tool_call");
+		expect(typeof result.hooks[0].definition.run).toBe("function");
+	});
+
+	it("collects an error entry per bad file while good files still load", async () => {
+		const dir = await writeHooksDir({
+			"good.ts": `
+export default { before: "input", run() {} };
+`,
+			// A defineWorkflow result loaded through the "wolli" alias: an object with run but no
+			// string before:, so the hook shape check rejects it.
+			"is-a-workflow.ts": `
+import { defineWorkflow } from "wolli";
+
+export default defineWorkflow({ on: "agent_end", run() {} });
+`,
+			"no-default.ts": "export const nope = true;\n",
+			"explodes.ts": 'throw new Error("kaboom at import");\n',
+		});
+
+		const result = await loadHooks(
+			[
+				join(dir, "good.ts"),
+				join(dir, "is-a-workflow.ts"),
+				join(dir, "no-default.ts"),
+				join(dir, "explodes.ts"),
+				join(dir, "missing.ts"),
+			],
+			dir,
+		);
+
+		expect(result.hooks.map((h) => h.name)).toEqual(["good"]);
+		expect(result.errors).toEqual([
+			{
+				path: join(dir, "is-a-workflow.ts"),
+				error: expect.stringContaining("does not export a valid defineHook definition"),
+			},
+			{
+				path: join(dir, "no-default.ts"),
+				error: expect.stringContaining("does not export a valid defineHook definition"),
+			},
+			{ path: join(dir, "explodes.ts"), error: expect.stringContaining("Failed to load hook") },
+			{ path: join(dir, "missing.ts"), error: expect.stringContaining("Failed to load hook") },
+		]);
+	});
+
+	it("loads multiple hooks preserving path order: the chain order contract depends on it", async () => {
+		const dir = await writeHooksDir({
+			"first.ts": `
+export default { before: "tool_call", run() {} };
+`,
+			"second.ts": `
+export default { before: "tool_result", run() {} };
+`,
+			"third.ts": `
+export default { before: "input", run() {} };
+`,
+		});
+
+		const result = await loadHooks([join(dir, "second.ts"), join(dir, "first.ts"), join(dir, "third.ts")], dir);
+
+		expect(result.errors).toEqual([]);
+		expect(result.hooks.map((h) => h.name)).toEqual(["second", "first", "third"]);
+		expect(result.hooks.map((h) => h.definition.before)).toEqual(["tool_result", "tool_call", "input"]);
 	});
 });
