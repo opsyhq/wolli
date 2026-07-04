@@ -110,7 +110,7 @@ export class WorkflowRunner {
 					outputValidator: Compile(definition.output),
 				});
 			} else if (typeof definition.on !== "string") {
-				const key = triggerKey(definition.on.service, definition.on.event);
+				const key = this.triggerKey(definition.on.service, definition.on.event);
 				const bindings = this.integrationTriggers.get(key);
 				if (bindings) bindings.push({ workflow, definition });
 				else this.integrationTriggers.set(key, [{ workflow, definition }]);
@@ -135,7 +135,7 @@ export class WorkflowRunner {
 	 * emitting producer.
 	 */
 	async dispatchIntegrationEvent(service: string, account: string, event: string, payload: unknown): Promise<void> {
-		const bindings = this.integrationTriggers.get(triggerKey(service, event));
+		const bindings = this.integrationTriggers.get(this.triggerKey(service, event));
 		if (!bindings) return;
 		const trigger: RunTrigger = { kind: "integration", service, account, event, payload };
 		for (const { workflow, definition } of bindings) {
@@ -163,12 +163,20 @@ export class WorkflowRunner {
 			throw new Error(`unknown callable workflow '${name}'`);
 		}
 		if (!entry.inputValidator.Check(input)) {
-			throw new Error(`invalid input for workflow '${name}'${validationDetail(entry.inputValidator, input)}`);
+			const detail = entry.inputValidator
+				.Errors(input)
+				.map((e) => `${e.instancePath || "root"}: ${e.message}`)
+				.join("; ");
+			throw new Error(`invalid input for workflow '${name}'${detail ? `: ${detail}` : ""}`);
 		}
 		const outcome = await this.executeRun(entry.workflow, { kind: "callable", input }, async (ctx) => {
 			const output = await entry.definition.run(input, ctx);
 			if (!entry.outputValidator.Check(output)) {
-				throw new Error(`invalid output from workflow '${name}'${validationDetail(entry.outputValidator, output)}`);
+				const detail = entry.outputValidator
+					.Errors(output)
+					.map((e) => `${e.instancePath || "root"}: ${e.message}`)
+					.join("; ");
+				throw new Error(`invalid output from workflow '${name}'${detail ? `: ${detail}` : ""}`);
 			}
 			return output;
 		});
@@ -199,7 +207,7 @@ export class WorkflowRunner {
 		const controller = new AbortController();
 		this.activeRuns.add(controller);
 		try {
-			const result = await handler(this.buildContext(journal, controller.signal));
+			const result = await handler(this.createContext(journal, controller.signal));
 			journal.endRun("ok");
 			return { status: "ok", result };
 		} catch (error) {
@@ -219,27 +227,29 @@ export class WorkflowRunner {
 		}
 	}
 
-	private buildContext(journal: RunJournal, signal: AbortSignal): WorkflowContext {
+	/** Build the per-run ctx handed to the handler. Everything it does lands in the journal as steps. */
+	private createContext(journal: RunJournal, signal: AbortSignal): WorkflowContext {
 		const backend = this.backend;
 		const agent: WorkflowAgent = {
 			cwd: backend.cwd,
 			findSessions: (filter) =>
 				journal.step("agent.findSessions", () => backend.findSessions(filter), { kind: "auto", args: filter }),
 			listSessions: () => journal.step("agent.listSessions", () => backend.listSessions(), { kind: "auto" }),
-			openSession: (id) => sessionStep(journal, "agent.openSession", id, () => backend.openSession(id)),
+			openSession: (id) => this.runSessionStep(journal, "agent.openSession", id, () => backend.openSession(id)),
 			createSession: (options) =>
-				sessionStep(journal, "agent.createSession", undefined, () => backend.createSession(options)),
+				this.runSessionStep(journal, "agent.createSession", undefined, () => backend.createSession(options)),
 		};
 		return {
 			agent,
 			integration: <TActions>(key: IntegrationKey<TActions>, account = "default") =>
-				this.integrationHandle(journal, key, account),
+				this.createIntegrationHandle(journal, key, account),
 			step: (name, fn) => journal.step(name, fn, { kind: "user" }),
 			signal,
 		};
 	}
 
-	private integrationHandle<TActions>(
+	/** Build the flat action handle `ctx.integration(key)` returns; every action call records a step. */
+	private createIntegrationHandle<TActions>(
 		journal: RunJournal,
 		key: IntegrationKey<TActions>,
 		account: string,
@@ -261,60 +271,46 @@ export class WorkflowRunner {
 		return actions as IntegrationHandleOf<TActions>;
 	}
 
+	/**
+	 * Bracket a session-producing backend call: the step records the session id as its
+	 * result — identity, not the live object — and the returned handle records its own
+	 * deliveries against the same journal (rehydrated handle semantics).
+	 */
+	private async runSessionStep(
+		journal: RunJournal,
+		name: string,
+		args: unknown,
+		open: () => Promise<WorkflowSession>,
+	): Promise<WorkflowSession> {
+		const stepId = journal.startStep(name, { kind: "auto", args });
+		try {
+			const session = await open();
+			journal.endStep(stepId, { status: "ok", result: session.id });
+			return {
+				id: session.id,
+				prompt: (text, options) =>
+					journal.step("session.prompt", () => session.prompt(text, options), { kind: "auto", args: text }),
+				sendUserMessage: (content, options) =>
+					journal.step("session.sendUserMessage", () => session.sendUserMessage(content, options), {
+						kind: "auto",
+						args: content,
+					}),
+				getTags: () => session.getTags(),
+				setTags: (tags) => session.setTags(tags),
+			};
+		} catch (error) {
+			journal.endStep(stepId, { status: "error", error });
+			throw error;
+		}
+	}
+
+	private triggerKey(service: string, event: string): string {
+		return `${service} ${event}`;
+	}
+
 	private emitError(error: WorkflowError): void {
 		for (const listener of this.errorListeners) {
 			listener(error);
 		}
 	}
-}
-
-/**
- * Bracket a session-producing backend call: the step records the session id as its
- * result — identity, not the live object — and the returned handle records its own
- * deliveries against the same journal (rehydrated handle semantics).
- */
-async function sessionStep(
-	journal: RunJournal,
-	name: string,
-	args: unknown,
-	open: () => Promise<WorkflowSession>,
-): Promise<WorkflowSession> {
-	const stepId = journal.startStep(name, { kind: "auto", args });
-	try {
-		const session = await open();
-		journal.endStep(stepId, { status: "ok", result: session.id });
-		return recordingSession(journal, session);
-	} catch (error) {
-		journal.endStep(stepId, { status: "error", error });
-		throw error;
-	}
-}
-
-/** The session handle a workflow holds: deliveries record as steps; tag access passes through. */
-function recordingSession(journal: RunJournal, session: WorkflowSession): WorkflowSession {
-	return {
-		id: session.id,
-		prompt: (text, options) =>
-			journal.step("session.prompt", () => session.prompt(text, options), { kind: "auto", args: text }),
-		sendUserMessage: (content, options) =>
-			journal.step("session.sendUserMessage", () => session.sendUserMessage(content, options), {
-				kind: "auto",
-				args: content,
-			}),
-		getTags: () => session.getTags(),
-		setTags: (tags) => session.setTags(tags),
-	};
-}
-
-function triggerKey(service: string, event: string): string {
-	return `${service} ${event}`;
-}
-
-/** Formats validator errors as `: path: message; ...`, or empty when there is no detail. */
-function validationDetail(validator: Validator, value: unknown): string {
-	const detail = validator
-		.Errors(value)
-		.map((e) => `${e.instancePath || "root"}: ${e.message}`)
-		.join("; ");
-	return detail ? `: ${detail}` : "";
 }
