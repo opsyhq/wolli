@@ -21,14 +21,27 @@
  * The loadWorkflows suite loads real fixture files from a temp workflows/ folder — the
  * first runtime proof that a value import from the bare "wolli" specifier resolves
  * through jiti when running from source.
+ *
+ * The AgentRuntime suite is the wiring proof, in the extensions-suite stance: a REAL
+ * AgentRuntime in a temp agent home with a faux pi-ai provider. Workflows auto-discover
+ * from <agentDir>/workflows/, session_start flows through the live event wiring with a
+ * working ctx.session/ctx.ui, reload swaps the runner generation and picks up edited
+ * code, failures ride the host error sink, and runs mirror to <agentDir>/runs/.
  */
 
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type Api, type Model, type OAuthLoginCallbacks, registerFauxProvider } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@opsyhq/agent";
 import { Type } from "typebox";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
+import { getAgentDir } from "../src/config.ts";
+import { AgentRuntime } from "../src/core/agent-runtime.ts";
+import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import { noOpUIContext } from "../src/core/extensions/runner.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { IntegrationStore } from "../src/core/integration-store.ts";
 import {
@@ -37,6 +50,7 @@ import {
 	type IntegrationsAPI,
 	loadIntegrationFromFactory,
 } from "../src/core/integrations/index.ts";
+import { ModelRegistry } from "../src/core/model-registry.ts";
 import {
 	type DialogUI,
 	defineWorkflow,
@@ -784,5 +798,240 @@ export default defineWorkflow({ on: "agent_end", run() {} });
 		// Discovery (plugin-manager, step 6) hands the loader the folder's file list; an
 		// empty or missing workflows/ folder arrives as an empty path list.
 		await expect(loadWorkflows([], "/agent-home")).resolves.toEqual({ workflows: [], errors: [] });
+	});
+});
+
+describe("AgentRuntime workflow wiring", () => {
+	const AGENT = "flowsmith";
+	let home: string;
+	let sharedDir: string;
+	let markerDir: string;
+	const registrations: Array<{ unregister(): void }> = [];
+
+	/** The daemon→client login seam is unused here; the callbacks just have to exist. */
+	const inertLoginCallbacks: OAuthLoginCallbacks = {
+		onAuth: () => {},
+		onDeviceCode: () => {},
+		onProgress: () => {},
+		onPrompt: async () => "",
+		onManualCodeInput: async () => "",
+		onSelect: async () => undefined,
+	};
+
+	// Loaded by jiti at runtime (never typechecked by this suite), so it reads its marker
+	// dir from the env each call. Writes what it saw of the typed event and the gated
+	// ctx.session/ctx.ui, and records a user step.
+	const greetSource = (greeting: string) => `
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { defineWorkflow } from "wolli";
+
+export default defineWorkflow({
+	on: "session_start",
+	async run(evt, ctx) {
+		const text = await ctx.step("compose", () => "${greeting}");
+		ctx.ui.notify("greeted " + ctx.session.id);
+		writeFileSync(
+			join(process.env.WOLLI_TEST_MARKER_DIR ?? ".", "workflow-run.json"),
+			JSON.stringify({ reason: evt.reason, sessionId: ctx.session.id, tags: ctx.session.getTags(), text }),
+		);
+	},
+});
+`;
+
+	function makeRuntime(): AgentRuntime {
+		const registration = registerFauxProvider();
+		registrations.push(registration);
+		// Faux models are typed Model<string>; the runtime wants Model<Api> (Api is a
+		// string supertype) — the cast bridges the faux test double to the real shape.
+		const model = registration.getModel() as unknown as Model<Api>;
+		const authStorage = AuthStorage.create(join(sharedDir, "auth.json"));
+		authStorage.setRuntimeApiKey(model.provider, "faux-test-key");
+		return new AgentRuntime({
+			name: AGENT,
+			model,
+			authStorage,
+			modelRegistry: ModelRegistry.create(authStorage),
+			integrationAccounts: IntegrationAccountStorage.inMemory(),
+			integrationStore: IntegrationStore.inMemory(),
+		});
+	}
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "wolli-wf-home-"));
+		sharedDir = mkdtempSync(join(tmpdir(), "wolli-wf-shared-"));
+		markerDir = mkdtempSync(join(tmpdir(), "wolli-wf-marker-"));
+		process.env.WOLLI_HOME = home;
+		process.env.WOLLI_SHARED_DIR = sharedDir;
+		process.env.WOLLI_TEST_MARKER_DIR = markerDir;
+		AgentSettingsManager.createAgent({ name: AGENT });
+		mkdirSync(join(getAgentDir(AGENT), "workflows"), { recursive: true });
+	});
+
+	afterEach(() => {
+		for (const registration of registrations.splice(0)) registration.unregister();
+		delete process.env.WOLLI_HOME;
+		delete process.env.WOLLI_SHARED_DIR;
+		delete process.env.WOLLI_TEST_MARKER_DIR;
+		rmSync(home, { recursive: true, force: true });
+		rmSync(sharedDir, { recursive: true, force: true });
+		rmSync(markerDir, { recursive: true, force: true });
+	});
+
+	it("auto-discovers workflows/ and dispatches session_start with a live ctx.session and ctx.ui", async () => {
+		const agentDir = getAgentDir(AGENT);
+		writeFileSync(join(agentDir, "workflows", "greet-new-session.ts"), greetSource("hello v1"), "utf-8");
+		writeFileSync(
+			join(agentDir, "workflows", "shout.ts"),
+			`
+import { Type } from "typebox";
+import { defineWorkflow } from "wolli";
+
+export default defineWorkflow({
+	input: Type.Object({ text: Type.String() }),
+	output: Type.Object({ text: Type.String() }),
+	run: (input) => ({ text: input.text.toUpperCase() }),
+});
+`,
+			"utf-8",
+		);
+
+		const runtime = makeRuntime();
+		const notifications: string[] = [];
+		runtime.bindInteractiveContext({
+			createSessionUI: () => ({
+				...noOpUIContext,
+				notify: (message) => {
+					notifications.push(message);
+				},
+			}),
+			createLoginCallbacks: () => inertLoginCallbacks,
+			mode: "print",
+		});
+		await runtime.start();
+
+		const session = await runtime.createSession({
+			setup: async (sessionManager) => {
+				await sessionManager.appendTags({ "telegram:chat": "7" });
+			},
+		});
+
+		// The handler saw the typed event and the producing session (id, tags) plus its UI rail.
+		const marker = JSON.parse(readFileSync(join(markerDir, "workflow-run.json"), "utf-8"));
+		expect(marker).toEqual({
+			reason: "new",
+			sessionId: session.getSessionId(),
+			tags: { "telegram:chat": "7" },
+			text: "hello v1",
+		});
+		expect(notifications).toEqual([`greeted ${session.getSessionId()}`]);
+
+		// The run recorded on the live runner: generation 1, the user step, a clean end.
+		const workflowRunner = runtime.workflowRunner;
+		expect(workflowRunner).toBeDefined();
+		expect(workflowRunner?.runs).toHaveLength(1);
+		const journal = workflowRunner!.runs[0];
+		expect(journal.records[0]).toMatchObject({
+			type: "run_start",
+			workflow: "greet-new-session",
+			generation: 1,
+			trigger: { kind: "lifecycle", event: "session_start", payload: { type: "session_start", reason: "new" } },
+		});
+		expect(journal.records[1]).toMatchObject({ type: "step_start", name: "compose", kind: "user" });
+		expect(journal.records.at(-1)).toMatchObject({ type: "run_end", status: "ok" });
+
+		// The run mirrored to <agentDir>/runs/<runId>.jsonl and parses back identically.
+		await journal.flush();
+		const lines = readFileSync(join(agentDir, "runs", `${journal.runId}.jsonl`), "utf-8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(lines).toEqual(journal.records);
+
+		// The discovered callable fixture is reachable by name on the same runner.
+		await expect(workflowRunner!.invoke("shout", { text: "hi" })).resolves.toEqual({ text: "HI" });
+		await runtime.cleanup();
+	});
+
+	it("reload swaps the runner generation and runs the edited workflow code", async () => {
+		const workflowPath = join(getAgentDir(AGENT), "workflows", "greet-new-session.ts");
+		writeFileSync(workflowPath, greetSource("v1"), "utf-8");
+		const runtime = makeRuntime();
+		await runtime.start();
+		const firstRunner = runtime.workflowRunner;
+
+		await runtime.createSession();
+		expect(JSON.parse(readFileSync(join(markerDir, "workflow-run.json"), "utf-8"))).toMatchObject({
+			reason: "new",
+			text: "v1",
+		});
+		expect(firstRunner?.runs[0].records[0]).toMatchObject({ generation: 1 });
+
+		// Edit the file on disk; the rebuilt runner must load the NEW code (fresh jiti per
+		// file, no module cache), and reload re-emits session_start on the resident session.
+		writeFileSync(workflowPath, greetSource("v2"), "utf-8");
+		await runtime.reload();
+
+		const secondRunner = runtime.workflowRunner;
+		expect(secondRunner).toBeDefined();
+		expect(secondRunner).not.toBe(firstRunner);
+		expect(JSON.parse(readFileSync(join(markerDir, "workflow-run.json"), "utf-8"))).toMatchObject({
+			reason: "reload",
+			text: "v2",
+		});
+		expect(secondRunner?.runs[0].records[0]).toMatchObject({ generation: 2 });
+		// The reload-fired run landed only on the new generation; the old records stay put.
+		expect(firstRunner?.runs).toHaveLength(1);
+		await runtime.cleanup();
+	});
+
+	it("routes run failures to the host error sink and load failures to the resource summary", async () => {
+		const workflowsDir = join(getAgentDir(AGENT), "workflows");
+		writeFileSync(
+			join(workflowsDir, "kaput.ts"),
+			`
+import { defineWorkflow } from "wolli";
+
+export default defineWorkflow({
+	on: "session_start",
+	run() {
+		throw new Error("kaput by design");
+	},
+});
+`,
+			"utf-8",
+		);
+		writeFileSync(join(workflowsDir, "no-default.ts"), "export const nope = true;\n", "utf-8");
+
+		const runtime = makeRuntime();
+		const errors: WorkflowError[] = [];
+		runtime.bindInteractiveContext({
+			createSessionUI: () => noOpUIContext,
+			createLoginCallbacks: () => inertLoginCallbacks,
+			mode: "print",
+			onError: (error) => {
+				errors.push(error);
+			},
+		});
+		await runtime.start();
+
+		// The unloadable file surfaces as a diagnostic beside extension/integration load errors.
+		const summary = runtime.getResourceSummary();
+		expect(
+			summary.diagnostics.some(
+				(d) => d.type === "error" && d.path?.endsWith("no-default.ts") && d.message.includes("defineWorkflow"),
+			),
+		).toBe(true);
+
+		// The failed run lands on the same host error sink extensions and integrations use.
+		await runtime.createSession();
+		expect(errors).toEqual([
+			expect.objectContaining({
+				path: expect.stringContaining("kaput.ts"),
+				event: "session_start",
+				error: "workflow 'kaput' failed: kaput by design",
+			}),
+		]);
+		await runtime.cleanup();
 	});
 });
