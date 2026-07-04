@@ -45,6 +45,7 @@ export interface ResourceLoader {
 	getIntegrations(): LoadIntegrationsResult;
 	getIntegrationRunner(): IntegrationRunner | undefined;
 	getWorkflowPaths(): string[];
+	getHookPaths(): string[];
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
@@ -208,6 +209,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private integrationRunner?: IntegrationRunner;
 	/** Resolved workflow file paths; the runtime loads them itself so it owns the per-generation runner swap. */
 	private workflowPaths: string[];
+	/** Resolved hook file paths; the runtime loads them itself so it owns the per-generation runner swap. */
+	private hookPaths: string[];
 	private skills: Skill[];
 	private skillDiagnostics: ResourceDiagnostic[];
 	private prompts: PromptTemplate[];
@@ -256,6 +259,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
 		this.integrationsResult = { integrations: [], errors: [], runtime: createIntegrationRuntime() };
 		this.workflowPaths = [];
+		this.hookPaths = [];
 		this.skills = [];
 		this.skillDiagnostics = [];
 		this.prompts = [];
@@ -286,6 +290,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getWorkflowPaths(): string[] {
 		return this.workflowPaths;
+	}
+
+	getHookPaths(): string[] {
+		return this.hookPaths;
 	}
 
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] } {
@@ -392,6 +400,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const enabledExtensions = getEnabledPaths(resolvedPaths.extensions);
 		const enabledIntegrations = getEnabledPaths(resolvedPaths.integrations);
 		const enabledWorkflows = getEnabledPaths(resolvedPaths.workflows);
+		const enabledHooks = getEnabledPaths(resolvedPaths.hooks);
 		const enabledSkillResources = getEnabledResources(resolvedPaths.skills);
 		const enabledPrompts = getEnabledPaths(resolvedPaths.prompts);
 		const enabledThemes = getEnabledPaths(resolvedPaths.themes);
@@ -415,6 +424,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		// Workflows arm: resolution only. The runtime runs loadWorkflows over these paths
 		// itself so it can stamp the load generation and swap the WorkflowRunner.
 		this.workflowPaths = enabledWorkflows;
+
+		// Hooks arm: resolution only. The runtime runs loadHooks over these paths itself
+		// so it can stamp the load generation and swap the hook runner.
+		this.hookPaths = enabledHooks;
 
 		const extensionPaths = this.noExtensions ? [] : enabledExtensions;
 

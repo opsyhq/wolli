@@ -60,6 +60,7 @@ export interface ResolvedPaths {
 	extensions: ResolvedResource[];
 	integrations: ResolvedResource[];
 	workflows: ResolvedResource[];
+	hooks: ResolvedResource[];
 	skills: ResolvedResource[];
 	prompts: ResolvedResource[];
 	themes: ResolvedResource[];
@@ -145,6 +146,7 @@ interface PluginManifest {
 	extensions?: string[];
 	integrations?: string[];
 	workflows?: string[];
+	hooks?: string[];
 	skills?: string[];
 	prompts?: string[];
 	themes?: string[];
@@ -154,6 +156,7 @@ interface ResourceAccumulator {
 	extensions: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	integrations: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	workflows: Map<string, { metadata: PathMetadata; enabled: boolean }>;
+	hooks: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	skills: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	prompts: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	themes: Map<string, { metadata: PathMetadata; enabled: boolean }>;
@@ -181,19 +184,29 @@ interface PluginFilter {
 	extensions?: string[];
 	integrations?: string[];
 	workflows?: string[];
+	hooks?: string[];
 	skills?: string[];
 	prompts?: string[];
 	themes?: string[];
 }
 
-type ResourceType = "extensions" | "integrations" | "workflows" | "skills" | "prompts" | "themes";
+type ResourceType = "extensions" | "integrations" | "workflows" | "hooks" | "skills" | "prompts" | "themes";
 
-const RESOURCE_TYPES: ResourceType[] = ["extensions", "integrations", "workflows", "skills", "prompts", "themes"];
+const RESOURCE_TYPES: ResourceType[] = [
+	"extensions",
+	"integrations",
+	"workflows",
+	"hooks",
+	"skills",
+	"prompts",
+	"themes",
+];
 
 const FILE_PATTERNS: Record<ResourceType, RegExp> = {
 	extensions: /\.(ts|js)$/,
 	integrations: /\.(ts|js)$/,
 	workflows: /\.(ts|js)$/,
+	hooks: /\.(ts|js)$/,
 	skills: /\.md$/,
 	prompts: /\.md$/,
 	themes: /\.json$/,
@@ -484,8 +497,8 @@ function collectAutoThemeEntries(dir: string): string[] {
 	return entries;
 }
 
-/** One workflow per file, directly under workflows/ — no recursion, so helper modules in subdirs never load as workflows. */
-function collectAutoWorkflowEntries(dir: string): string[] {
+/** One resource per file, directly under the folder — no recursion, so helper modules in subdirs never load. */
+function collectAutoFlatFileEntries(dir: string, pattern: RegExp): string[] {
 	const entries: string[] = [];
 	if (!existsSync(dir)) return entries;
 
@@ -511,7 +524,7 @@ function collectAutoWorkflowEntries(dir: string): string[] {
 			const relPath = toPosixPath(relative(dir, fullPath));
 			if (ig.ignores(relPath)) continue;
 
-			if (isFile && FILE_PATTERNS.workflows.test(entry.name)) {
+			if (isFile && pattern.test(entry.name)) {
 				entries.push(fullPath);
 			}
 		}
@@ -2109,6 +2122,7 @@ export class DefaultPluginManager implements PluginManager {
 			extensions: (globalSettings.extensions ?? []) as string[],
 			integrations: (globalSettings.integrations ?? []) as string[],
 			workflows: (globalSettings.workflows ?? []) as string[],
+			hooks: (globalSettings.hooks ?? []) as string[],
 			skills: (globalSettings.skills ?? []) as string[],
 			prompts: (globalSettings.prompts ?? []) as string[],
 			themes: (globalSettings.themes ?? []) as string[],
@@ -2118,6 +2132,7 @@ export class DefaultPluginManager implements PluginManager {
 			extensions: join(globalBaseDir, "extensions"),
 			integrations: join(globalBaseDir, "integrations"),
 			workflows: join(globalBaseDir, "workflows"),
+			hooks: join(globalBaseDir, "hooks"),
 			skills: join(globalBaseDir, "skills"),
 			prompts: join(globalBaseDir, "prompts"),
 			themes: join(globalBaseDir, "themes"),
@@ -2158,9 +2173,18 @@ export class DefaultPluginManager implements PluginManager {
 		// User workflows from <agentDir>/workflows/ (one flat file per workflow)
 		addResources(
 			"workflows",
-			collectAutoWorkflowEntries(userDirs.workflows),
+			collectAutoFlatFileEntries(userDirs.workflows, FILE_PATTERNS.workflows),
 			userMetadata,
 			userOverrides.workflows,
+			globalBaseDir,
+		);
+
+		// User hooks from <agentDir>/hooks/ (one flat file per hook)
+		addResources(
+			"hooks",
+			collectAutoFlatFileEntries(userDirs.hooks, FILE_PATTERNS.hooks),
+			userMetadata,
+			userOverrides.hooks,
 			globalBaseDir,
 		);
 
@@ -2219,6 +2243,8 @@ export class DefaultPluginManager implements PluginManager {
 				return accumulator.integrations;
 			case "workflows":
 				return accumulator.workflows;
+			case "hooks":
+				return accumulator.hooks;
 			case "skills":
 				return accumulator.skills;
 			case "prompts":
@@ -2247,6 +2273,7 @@ export class DefaultPluginManager implements PluginManager {
 			extensions: new Map(),
 			integrations: new Map(),
 			workflows: new Map(),
+			hooks: new Map(),
 			skills: new Map(),
 			prompts: new Map(),
 			themes: new Map(),
@@ -2277,6 +2304,7 @@ export class DefaultPluginManager implements PluginManager {
 			extensions: mapToResolved(accumulator.extensions),
 			integrations: mapToResolved(accumulator.integrations),
 			workflows: mapToResolved(accumulator.workflows),
+			hooks: mapToResolved(accumulator.hooks),
 			skills: mapToResolved(accumulator.skills),
 			prompts: mapToResolved(accumulator.prompts),
 			themes: mapToResolved(accumulator.themes),

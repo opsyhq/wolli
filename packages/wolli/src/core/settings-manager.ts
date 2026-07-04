@@ -32,6 +32,7 @@ export type PluginSource =
 			extensions?: string[];
 			integrations?: string[];
 			workflows?: string[];
+			hooks?: string[];
 			skills?: string[];
 			prompts?: string[];
 			themes?: string[];
@@ -64,6 +65,7 @@ export interface Settings {
 	extensions?: string[]; // Array of local extension file paths or directories
 	integrations?: string[]; // Array of local integration file paths or directories
 	workflows?: string[]; // Array of local workflow file paths or directories
+	hooks?: string[]; // Array of local hook file paths or directories
 	skills?: string[]; // Array of local skill file paths or directories
 	prompts?: string[]; // Array of local prompt template paths or directories
 	themes?: string[]; // Array of local theme file paths or directories
