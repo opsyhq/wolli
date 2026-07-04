@@ -235,6 +235,12 @@ export interface Workflow {
 	definition: WorkflowDefinition;
 }
 
+/** Mirror of `LoadIntegrationsResult`; workflows have no load-time runtime to carry. */
+export interface LoadWorkflowsResult {
+	workflows: Workflow[];
+	errors: Array<{ path: string; error: string }>;
+}
+
 /** Workflow errors reuse the extension error shape so they ride the existing error sink unchanged. */
 export type WorkflowError = ExtensionError;
 

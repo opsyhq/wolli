@@ -57,6 +57,8 @@ export const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
 	// The host-package identity string is wolli's own package name.
 	"@opsyhq/wolli": _bundledPiCodingAgent,
+	// The bare authoring specifier: workflow files `import { defineWorkflow } from "wolli"`.
+	wolli: _bundledPiCodingAgent,
 	// NOTE: integration-specific deps (e.g. grammy) are NOT bundled here. A
 	// self-contained integration package brings its own node_modules, and jiti
 	// resolves the integration's own copy. (If a future Bun binary build cannot
@@ -76,7 +78,12 @@ export function getAliases(): Record<string, string> {
 	if (_aliases) return _aliases;
 
 	const __dirname = path.dirname(fileURLToPath(import.meta.url));
-	const packageIndex = path.resolve(__dirname, "../..", "index.js");
+	// Running from source (dev/Vitest), the compiled index.js beside this file's parent
+	// does not exist; value imports from "wolli"/"@opsyhq/wolli" must land on index.ts.
+	const compiledPackageIndex = path.resolve(__dirname, "../..", "index.js");
+	const packageIndex = fs.existsSync(compiledPackageIndex)
+		? compiledPackageIndex
+		: path.resolve(__dirname, "../..", "index.ts");
 
 	const typeboxEntry = require.resolve("typebox");
 	const typeboxCompileEntry = require.resolve("typebox/compile");
@@ -103,6 +110,9 @@ export function getAliases(): Record<string, string> {
 
 	const piCodingAgentEntry = packageIndex;
 	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@opsyhq/agent");
+	// Required by the from-source "wolli" entry: src/core/session.ts imports the /node
+	// subpath, and jiti prefix-appends onto the bare "@opsyhq/agent" alias without it.
+	const piAgentCoreNodeEntry = resolveWorkspaceOrImport("agent/dist/node.js", "@opsyhq/agent/node");
 	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@opsyhq/tui");
 	const piAiEntry = resolveWorkspaceOrImport("ai/dist/index.js", "@earendil-works/pi-ai");
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai/oauth");
@@ -110,6 +120,8 @@ export function getAliases(): Record<string, string> {
 	_aliases = {
 		// The host-package identity string is wolli's own package name.
 		"@opsyhq/wolli": piCodingAgentEntry,
+		// The bare authoring specifier: workflow files `import { defineWorkflow } from "wolli"`.
+		wolli: piCodingAgentEntry,
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,
 		"typebox/value": typeboxValueEntry,
@@ -123,6 +135,7 @@ export function getAliases(): Record<string, string> {
 	// Vitest SSR (no import.meta.resolve) the bundled library entries may be omitted and
 	// fall back to the host module resolver.
 	if (piAgentCoreEntry) _aliases["@opsyhq/agent"] = piAgentCoreEntry;
+	if (piAgentCoreNodeEntry) _aliases["@opsyhq/agent/node"] = piAgentCoreNodeEntry;
 	if (piTuiEntry) _aliases["@opsyhq/tui"] = piTuiEntry;
 	if (piAiEntry) _aliases["@earendil-works/pi-ai"] = piAiEntry;
 	if (piAiOauthEntry) _aliases["@earendil-works/pi-ai/oauth"] = piAiOauthEntry;

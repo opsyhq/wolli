@@ -17,9 +17,13 @@
  * The lifecycle-dispatch suite drives dispatchLifecycle against a stub producing session
  * (scripted session + typed no-op dialog UI): typed events in, the gated
  * ctx.session/ctx.ui, and recorded deliveries out.
+ *
+ * The loadWorkflows suite loads real fixture files from a temp workflows/ folder — the
+ * first runtime proof that a value import from the bare "wolli" specifier resolves
+ * through jiti when running from source.
  */
 
-import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@opsyhq/agent";
@@ -41,6 +45,7 @@ import {
 	type IntegrationKey,
 	type LifecycleWorkflowContext,
 	type LifecycleWorkflowDefinition,
+	loadWorkflows,
 	RunJournal,
 	type StepEndRecord,
 	type StepStartRecord,
@@ -673,5 +678,111 @@ describe("WorkflowRunner lifecycle dispatch", () => {
 
 		expect(sawSession).toBe(false);
 		expect(sawUi).toBe(false);
+	});
+});
+
+describe("loadWorkflows", () => {
+	async function writeWorkflowsDir(files: Record<string, string>): Promise<string> {
+		const dir = join(await mkdtemp(join(tmpdir(), "wolli-workflows-")), "workflows");
+		await mkdir(dir);
+		for (const [name, source] of Object.entries(files)) {
+			await writeFile(join(dir, name), source);
+		}
+		return dir;
+	}
+
+	it("loads one workflow per file: basename name, default-export definition, classified kind", async () => {
+		const dir = await writeWorkflowsDir({
+			// The bare "wolli" value import is the point: it must resolve through jiti.
+			"on-agent-end.ts": `
+import { defineWorkflow } from "wolli";
+
+export default defineWorkflow({
+	on: "agent_end",
+	async run() {},
+});
+`,
+			"fetch-excerpt.ts": `
+import { Type } from "typebox";
+import { defineWorkflow } from "wolli";
+
+export default defineWorkflow({
+	input: Type.Object({ url: Type.String() }),
+	output: Type.Object({ excerpt: Type.String() }),
+	run: (input) => ({ excerpt: input.url.slice(0, 4) }),
+});
+`,
+			// Inline descriptor stand-in for a Phase 2 defineIntegration event.
+			"heartbeat-inbound.ts": `
+import { defineWorkflow } from "wolli";
+
+export default defineWorkflow({
+	on: { kind: "integration", service: "heartbeat", event: "tick" },
+	run() {},
+});
+`,
+		});
+
+		const result = await loadWorkflows(
+			[join(dir, "on-agent-end.ts"), join(dir, "fetch-excerpt.ts"), join(dir, "heartbeat-inbound.ts")],
+			dir,
+		);
+
+		expect(result.errors).toEqual([]);
+		expect(result.workflows.map((w) => w.name)).toEqual(["on-agent-end", "fetch-excerpt", "heartbeat-inbound"]);
+		expect(result.workflows.map((w) => getWorkflowKind(w.definition))).toEqual([
+			"lifecycle",
+			"callable",
+			"integration",
+		]);
+		expect(result.workflows[0].path).toBe(join(dir, "on-agent-end.ts"));
+		expect(result.workflows[0].definition).toMatchObject({ on: "agent_end" });
+		expect(result.workflows[2].definition).toMatchObject({
+			on: { kind: "integration", service: "heartbeat", event: "tick" },
+		});
+	});
+
+	it("collects an error entry per bad file while good files still load", async () => {
+		const dir = await writeWorkflowsDir({
+			"good.ts": `
+import { defineWorkflow } from "wolli";
+
+export default defineWorkflow({ on: "agent_end", run() {} });
+`,
+			"no-default.ts": "export const nope = true;\n",
+			"not-a-definition.ts": "export default 42;\n",
+			"explodes.ts": 'throw new Error("kaboom at import");\n',
+		});
+
+		const result = await loadWorkflows(
+			[
+				join(dir, "good.ts"),
+				join(dir, "no-default.ts"),
+				join(dir, "not-a-definition.ts"),
+				join(dir, "explodes.ts"),
+				join(dir, "missing.ts"),
+			],
+			dir,
+		);
+
+		expect(result.workflows.map((w) => w.name)).toEqual(["good"]);
+		expect(result.errors).toEqual([
+			{
+				path: join(dir, "no-default.ts"),
+				error: expect.stringContaining("does not export a valid defineWorkflow definition"),
+			},
+			{
+				path: join(dir, "not-a-definition.ts"),
+				error: expect.stringContaining("does not export a valid defineWorkflow definition"),
+			},
+			{ path: join(dir, "explodes.ts"), error: expect.stringContaining("kaboom at import") },
+			{ path: join(dir, "missing.ts"), error: expect.stringContaining("Failed to load workflow") },
+		]);
+	});
+
+	it("yields no workflows and no errors for an empty workflows folder", async () => {
+		// Discovery (plugin-manager, step 6) hands the loader the folder's file list; an
+		// empty or missing workflows/ folder arrives as an empty path list.
+		await expect(loadWorkflows([], "/agent-home")).resolves.toEqual({ workflows: [], errors: [] });
 	});
 });
