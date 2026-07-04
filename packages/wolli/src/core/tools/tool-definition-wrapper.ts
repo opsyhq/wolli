@@ -1,5 +1,6 @@
 import type { AgentTool } from "@opsyhq/agent";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
+import type { LoadedToolDefinition, ToolContext } from "./types.ts";
 
 /** Wrap a ToolDefinition into an AgentTool for the core runtime. */
 export function wrapToolDefinition<TDetails = unknown>(
@@ -15,6 +16,23 @@ export function wrapToolDefinition<TDetails = unknown>(
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate) =>
 			definition.execute(toolCallId, params, signal, onUpdate, ctxFactory?.() as ExtensionContext),
+	};
+}
+
+/**
+ * Wrap an authored (tools/) ToolDefinition into an AgentTool. `getContext` is resolved
+ * lazily, so `execute` sees the live session facade and the current generation's
+ * integration resolver at execution time.
+ */
+export function wrapAuthoredTool(definition: LoadedToolDefinition, getContext: () => ToolContext): AgentTool {
+	return {
+		name: definition.name,
+		label: definition.label,
+		description: definition.description,
+		parameters: definition.parameters,
+		executionMode: definition.executionMode,
+		execute: (toolCallId, params, signal, onUpdate) =>
+			definition.execute(toolCallId, params, signal, onUpdate, getContext()),
 	};
 }
 

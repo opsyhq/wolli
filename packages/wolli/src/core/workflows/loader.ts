@@ -1,10 +1,14 @@
 /**
  * Workflow loader. Loads one workflow per file with jiti from the paths the resource
  * loader resolves: the file basename is the workflow name, the default export the
- * definition. Mirrors the integrations loader: a fresh jiti per file, and a bad file
- * becomes an error entry that never aborts the rest.
+ * definition. Mirrors the integrations loader: one jiti per pass with
+ * `moduleCache: true` (backed by the process-global CommonJS cache), so a workflow
+ * importing an integration file resolves to the SAME stamped module the integrations
+ * loader evaluated. Entry files are evicted from that cache before importing (per-call
+ * re-evaluation); a bad file becomes an error entry that never aborts the rest.
  */
 
+import { createRequire } from "node:module";
 import * as path from "node:path";
 import { createJiti } from "jiti/static";
 import { isBunBinary, isBundled } from "../../config.ts";
@@ -12,21 +16,25 @@ import { canonicalizePath, resolvePath } from "../../utils/paths.ts";
 import { getAliases, VIRTUAL_MODULES } from "../extensions/loader.ts";
 import type { LoadWorkflowsResult, Workflow, WorkflowDefinition } from "./types.ts";
 
+const require = createRequire(import.meta.url);
+
 export async function loadWorkflows(paths: string[], cwd: string): Promise<LoadWorkflowsResult> {
 	const workflows: Workflow[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
 	const resolvedCwd = resolvePath(cwd);
+	const jiti = createJiti(import.meta.url, {
+		moduleCache: true,
+		...(isBunBinary || isBundled ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
+	});
 
 	for (const workflowPath of paths) {
 		const resolvedPath = resolvePath(workflowPath, resolvedCwd, { normalizeUnicodeSpaces: true });
 		try {
-			const jiti = createJiti(import.meta.url, {
-				moduleCache: false,
-				...(isBunBinary || isBundled
-					? { virtualModules: VIRTUAL_MODULES, tryNative: false }
-					: { alias: getAliases() }),
-			});
-			const definition = await jiti.import(canonicalizePath(resolvedPath), { default: true });
+			const canonicalPath = canonicalizePath(resolvedPath);
+			// Evict the entry so every load call re-evaluates it; nested modules stay cached
+			// (a subtree flush here would wipe the stamped integration modules).
+			delete require.cache[canonicalPath];
+			const definition = await jiti.import(canonicalPath, { default: true });
 			// Structural defineWorkflow-result check: a trigger (`on`) or the callable schema
 			// pair (`input`/`output`), plus the run function.
 			const shaped =

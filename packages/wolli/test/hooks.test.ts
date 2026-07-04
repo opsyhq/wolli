@@ -139,6 +139,8 @@ function stubProducingSession(id = "live", tags: Record<string, string> = {}) {
 		setTags: (next) => {
 			Object.assign(tags, next);
 		},
+		getSessionName: () => undefined,
+		model: undefined,
 	};
 	const ui: DialogUI = {
 		select: async () => undefined,

@@ -1,3 +1,5 @@
+// The tool authoring surface (docs/tools.md): one defineTool file per tool under tools/.
+
 export {
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -26,6 +28,7 @@ export {
 	type GrepToolDetails,
 	type GrepToolInput,
 } from "./grep.ts";
+export { loadTools } from "./loader.ts";
 export {
 	createLsTool,
 	createLsToolDefinition,
@@ -39,6 +42,7 @@ export {
 	type ReadToolInput,
 	type ReadToolOptions,
 } from "./read.ts";
+export { wrapAuthoredTool } from "./tool-definition-wrapper.ts";
 export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -49,6 +53,14 @@ export {
 	truncateLine,
 	truncateTail,
 } from "./truncate.ts";
+export type {
+	LoadedTool,
+	LoadedToolDefinition,
+	LoadToolsResult,
+	ToolContext,
+	ToolDefinition,
+} from "./types.ts";
+export { defineTool } from "./types.ts";
 export {
 	createWriteTool,
 	createWriteToolDefinition,
@@ -57,7 +69,9 @@ export {
 
 import type { AgentTool } from "@opsyhq/agent";
 import type { Environment } from "../environments/types.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
+// Aliased: the unqualified `ToolDefinition` export above is the authored (tools/) type;
+// the built-in suite still types against the extension one until Phase 5.
+import type { ToolDefinition as ExtensionToolDefinition } from "../extensions/types.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition } from "./edit.ts";
 import { createFindTool, createFindToolDefinition } from "./find.ts";
@@ -67,7 +81,7 @@ import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "
 import { createWriteTool, createWriteToolDefinition } from "./write.ts";
 
 export type Tool = AgentTool<any>;
-export type ToolDef = ToolDefinition<any, any>;
+export type ToolDef = ExtensionToolDefinition<any, any>;
 export type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
 export const allToolNames: Set<ToolName> = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 

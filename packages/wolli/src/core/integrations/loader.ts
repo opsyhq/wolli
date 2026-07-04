@@ -1,100 +1,73 @@
 /**
  * Integration loader. Loads TypeScript integration modules with jiti from the
- * paths the package manager's `resolve()` surfaces, and exposes the definer-side
- * `IntegrationsAPI`. Definitions are written to the integration's `definitions`
- * map directly at load time.
+ * paths the package manager's `resolve()` surfaces. A module default-exports a
+ * `defineIntegration` definition; the loader stamps the service name onto it —
+ * the caller-threaded name when the resolver derived one, else the file/dir
+ * basename — and carries the authored config on the Integration.
+ *
+ * One jiti per `loadIntegrations` pass, with `moduleCache: true` — jiti integrates
+ * with the process-global CommonJS cache, so a workflow file importing an
+ * integration file later resolves to the SAME stamped module. Entry files are
+ * evicted from that cache before importing (per-call re-evaluation); nested helper
+ * modules are flushed per load generation by the resource loader's reload.
  */
 
-import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as path from "node:path";
-import { createJiti } from "jiti/static";
+import { createJiti, type Jiti } from "jiti/static";
+import type { TSchema } from "typebox";
 import { isBunBinary, isBundled } from "../../config.ts";
-import { resolvePath } from "../../utils/paths.ts";
+import { canonicalizePath, resolvePath } from "../../utils/paths.ts";
 import { getAliases, VIRTUAL_MODULES } from "../extensions/loader.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
-import type {
-	Integration,
-	IntegrationConfig,
-	IntegrationFactory,
-	IntegrationRuntime,
-	IntegrationsAPI,
-	LoadIntegrationsResult,
-} from "./types.ts";
+import type { Integration, IntegrationAction, IntegrationDefinition, LoadIntegrationsResult } from "./types.ts";
 
-/**
- * Create a runtime with no-op registration stubs.
- *
- * Definitions are written to the integration map directly by the API, so the
- * pre-bind `registerIntegration`/`unregisterIntegration` are no-ops. `bindCore()`
- * on the runner replaces them with live implementations for post-bind effect.
- */
-export function createIntegrationRuntime(): IntegrationRuntime {
-	const state: { staleMessage?: string } = {};
-	const assertActive = () => {
-		if (state.staleMessage) {
-			throw new Error(state.staleMessage);
-		}
-	};
+const require = createRequire(import.meta.url);
 
-	const runtime: IntegrationRuntime = {
-		assertActive,
-		invalidate: (message) => {
-			state.staleMessage ??=
-				message ??
-				"This integration ctx is stale after a reload. Do not register against a captured wolli after reload.";
-		},
-		// Pre-bind no-ops: the API writes definitions directly. bindCore() rebinds these.
-		registerIntegration: () => {},
-		unregisterIntegration: () => {},
-	};
+/** The widest definition shape the loader handles — a `defineIntegration` result with any generics erased. */
+type LoadedIntegrationDefinition = IntegrationDefinition<
+	TSchema,
+	Record<string, TSchema>,
+	Record<string, IntegrationAction>
+>;
 
-	return runtime;
-}
-
-/** Default service name for a config without an explicit `name`. */
+/** Fallback service name for an integration path: the file basename, or the package dir for a `<pkg>/index.ts` entry. */
 function defaultServiceName(integrationPath: string): string {
 	if (integrationPath.startsWith("<") && integrationPath.endsWith(">")) {
 		return integrationPath.slice(1, -1).split(":")[0] || "integration";
 	}
-	return path.basename(integrationPath, path.extname(integrationPath));
+	const base = path.basename(integrationPath, path.extname(integrationPath));
+	return base === "index" ? path.basename(path.dirname(integrationPath)) : base;
 }
 
-/**
- * Create the IntegrationsAPI for an integration. Registration writes to the
- * integration's `definitions` map directly, then notifies the runtime (a no-op
- * pre-bind, live once the runner's `bindCore()` has rebound it).
- */
-function createIntegrationAPI(integration: Integration, runtime: IntegrationRuntime): IntegrationsAPI {
-	return {
-		registerIntegration(config: IntegrationConfig): void {
-			runtime.assertActive();
-			const name = config.name ?? defaultServiceName(integration.path);
-			integration.definitions.set(name, config);
-			runtime.registerIntegration(config, integration.path);
-		},
-
-		unregisterIntegration(name: string): void {
-			runtime.assertActive();
-			integration.definitions.delete(name);
-			runtime.unregisterIntegration(name, integration.path);
-		},
-	};
+async function loadIntegrationModule(
+	integrationPath: string,
+	jiti: Jiti,
+): Promise<LoadedIntegrationDefinition | undefined> {
+	// Canonicalize exactly like the workflows loader and the reload flush, so all
+	// three producers of module-cache keys stay equivalent.
+	const canonicalPath = canonicalizePath(integrationPath);
+	// Evict the entry so every load call re-evaluates it; nested modules stay cached
+	// (a subtree flush here would wipe stamped modules other files already imported).
+	delete require.cache[canonicalPath];
+	const module = await jiti.import(canonicalPath, { default: true });
+	if (
+		typeof module === "object" &&
+		module !== null &&
+		(module as LoadedIntegrationDefinition).kind === "integration"
+	) {
+		return module as LoadedIntegrationDefinition;
+	}
+	return undefined;
 }
 
-async function loadIntegrationModule(integrationPath: string): Promise<IntegrationFactory | undefined> {
-	const jiti = createJiti(import.meta.url, {
-		moduleCache: false,
-		...(isBunBinary || isBundled ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
-	});
-
-	const realPath = fs.existsSync(integrationPath) ? fs.realpathSync(integrationPath) : integrationPath;
-	const module = await jiti.import(realPath, { default: true });
-	const factory = module as IntegrationFactory;
-	return typeof factory !== "function" ? undefined : factory;
-}
-
-/** Create an Integration object with an empty definitions map. */
-function createIntegration(integrationPath: string, resolvedPath: string): Integration {
+/** Create an Integration carrying its stamped service name and authored config. */
+function createIntegration(
+	integrationPath: string,
+	resolvedPath: string,
+	service: string,
+	config: Integration["config"],
+): Integration {
 	const source =
 		integrationPath.startsWith("<") && integrationPath.endsWith(">")
 			? integrationPath.slice(1, -1).split(":")[0] || "temporary"
@@ -105,30 +78,32 @@ function createIntegration(integrationPath: string, resolvedPath: string): Integ
 		path: integrationPath,
 		resolvedPath,
 		sourceInfo: createSyntheticSourceInfo(integrationPath, { source, baseDir }),
-		definitions: new Map(),
+		service,
+		config,
 	};
 }
 
 async function loadIntegration(
 	integrationPath: string,
+	service: string | undefined,
 	cwd: string,
-	runtime: IntegrationRuntime,
+	jiti: Jiti,
 ): Promise<{ integration: Integration | null; error: string | null }> {
 	const resolvedPath = resolvePath(integrationPath, cwd, { normalizeUnicodeSpaces: true });
 
 	try {
-		const factory = await loadIntegrationModule(resolvedPath);
-		if (!factory) {
+		const definition = await loadIntegrationModule(resolvedPath, jiti);
+		if (!definition) {
 			return {
 				integration: null,
-				error: `Integration does not export a valid factory function: ${integrationPath}`,
+				error: `Integration does not export a defineIntegration definition: ${integrationPath}`,
 			};
 		}
 
-		const integration = createIntegration(integrationPath, resolvedPath);
-		const api = createIntegrationAPI(integration, runtime);
-		await factory(api);
+		const stampedService = service ?? defaultServiceName(integrationPath);
+		stampIntegrationDefinition(definition, stampedService);
 
+		const integration = createIntegration(integrationPath, resolvedPath, stampedService, definition.config);
 		return { integration, error: null };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -136,33 +111,51 @@ async function loadIntegration(
 	}
 }
 
-/** Create an Integration from an inline factory function (tests / programmatic use). */
-export async function loadIntegrationFromFactory(
-	factory: IntegrationFactory,
-	cwd: string,
-	runtime: IntegrationRuntime,
-	integrationPath = "<inline>",
-): Promise<Integration> {
-	const integration = createIntegration(integrationPath, integrationPath);
-	const api = createIntegrationAPI(integration, runtime);
-	void resolvePath(cwd);
-	await factory(api);
-	return integration;
+/**
+ * Stamp the service name onto a `defineIntegration` definition and every event
+ * descriptor, so workflow `on:` bindings resolve.
+ */
+function stampIntegrationDefinition(definition: LoadedIntegrationDefinition, service: string): void {
+	definition.service = service;
+	for (const event of Object.keys(definition.events)) {
+		definition.events[event].service = service;
+	}
 }
 
-/** Load integrations from paths. */
+/** Create an Integration from an inline `defineIntegration` definition (tests / programmatic use). */
+export function loadIntegrationFromDefinition<
+	TAccount extends TSchema,
+	TEvents extends Record<string, TSchema>,
+	TActions extends Record<string, IntegrationAction>,
+>(definition: IntegrationDefinition<TAccount, TEvents, TActions>, integrationPath = "<inline>"): Integration {
+	// Erase the authored generics at this boundary; stamping mutates only `service` fields.
+	const loaded = definition as LoadedIntegrationDefinition;
+	const service = defaultServiceName(integrationPath);
+	stampIntegrationDefinition(loaded, service);
+	return createIntegration(integrationPath, integrationPath, service, loaded.config);
+}
+
+/**
+ * Load integrations. One jiti (and one module-cache view) per pass. An entry may
+ * thread a resolver-derived `service` name; a bare path (or absent name) falls back
+ * to the basename rule.
+ */
 export async function loadIntegrations(
-	paths: string[],
+	entries: Array<string | { path: string; service?: string }>,
 	cwd: string,
-	runtime?: IntegrationRuntime,
 ): Promise<LoadIntegrationsResult> {
 	const integrations: Integration[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
 	const resolvedCwd = resolvePath(cwd);
-	const resolvedRuntime = runtime ?? createIntegrationRuntime();
+	const jiti = createJiti(import.meta.url, {
+		moduleCache: true,
+		...(isBunBinary || isBundled ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
+	});
 
-	for (const intPath of paths) {
-		const { integration, error } = await loadIntegration(intPath, resolvedCwd, resolvedRuntime);
+	for (const entry of entries) {
+		const intPath = typeof entry === "string" ? entry : entry.path;
+		const service = typeof entry === "string" ? undefined : entry.service;
+		const { integration, error } = await loadIntegration(intPath, service, resolvedCwd, jiti);
 
 		if (error) {
 			errors.push({ path: intPath, error });
@@ -174,9 +167,5 @@ export async function loadIntegrations(
 		}
 	}
 
-	return {
-		integrations,
-		errors,
-		runtime: resolvedRuntime,
-	};
+	return { integrations, errors };
 }

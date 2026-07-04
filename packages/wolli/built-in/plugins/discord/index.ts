@@ -1,17 +1,42 @@
 /**
  * Discord transport — holds the bot token, emits a `message` event per inbound message;
- * the paired `discord-chat.ts` extension maps those onto sessions. Transport is the
- * gateway WebSocket (discord.js `Client`); snowflake ids stay `string`. MESSAGE CONTENT
- * is a privileged intent — enable it in the Developer Portal or `m.content` is empty.
+ * the routing workflows (`discord-inbound.ts`, `discord-reply.ts`, `discord-typing.ts`,
+ * declared under `wolli.workflows`) map those onto sessions. Transport is the gateway
+ * WebSocket (discord.js `Client`); snowflake ids stay `string`. MESSAGE CONTENT is a
+ * privileged intent — enable it in the Developer Portal or `m.content` is empty. The
+ * "typing…" keep-alive timers live here, since workflow files hold no module state.
  * See README.md for setup.
  */
 
-import type { IntegrationOnboardContext, IntegrationsAPI } from "@opsyhq/wolli";
+import { defineIntegration, type IntegrationOnboardContext } from "wolli";
 import { Client, Events, GatewayIntentBits, Partials, REST, Routes } from "discord.js";
 import { Type } from "typebox";
 
 /** Discord caps a single message at 2000 UTF-16 code units. */
 const DISCORD_MAX_LENGTH = 2000;
+
+/** Typing indicator refresh interval — Discord's typing state lasts ~10s, so refresh a little ahead. */
+const TYPING_INTERVAL_MS = 8000;
+
+/**
+ * Live "typing…" keep-alive timers, keyed by channelId. Per-channel so parallel channels
+ * never stomp each other; cleared by `stopTyping` and by the producer's disposer on reload,
+ * so a reload can never orphan an interval.
+ */
+const typingTimers = new Map<string, ReturnType<typeof setInterval>>();
+
+function stopTypingTimer(channelId: string): void {
+	const timer = typingTimers.get(channelId);
+	if (timer) {
+		clearInterval(timer);
+		typingTimers.delete(channelId);
+	}
+}
+
+function clearAllTypingTimers(): void {
+	for (const timer of typingTimers.values()) clearInterval(timer);
+	typingTimers.clear();
+}
 
 const ONBOARD_GUIDE = [
 	"## Connect Discord",
@@ -84,109 +109,126 @@ async function onboard(ctx: IntegrationOnboardContext): Promise<{ botToken: stri
 	return { botToken: token };
 }
 
-export default function (wolli: IntegrationsAPI) {
-	wolli.registerIntegration({
-		name: "discord",
-		account: Type.Object({
-			botToken: Type.String(),
-			/** Empty/absent = allow all (logged as a warning). */
-			allowedChannelIds: Type.Optional(Type.Array(Type.String())),
-		}),
-		events: {
-			message: Type.Object({
-				channelId: Type.String(),
-				messageId: Type.String(),
-				text: Type.String(),
-				author: Type.Object({
-					id: Type.String(),
-					name: Type.Optional(Type.String()),
-				}),
+export default defineIntegration({
+	account: Type.Object({
+		botToken: Type.String(),
+		/** Empty/absent = allow all (logged as a warning). */
+		allowedChannelIds: Type.Optional(Type.Array(Type.String())),
+	}),
+	events: {
+		message: Type.Object({
+			channelId: Type.String(),
+			messageId: Type.String(),
+			text: Type.String(),
+			author: Type.Object({
+				id: Type.String(),
+				name: Type.Optional(Type.String()),
 			}),
-		},
-		onboard,
-		actions: {
-			sendMessage: {
-				description: "Send a text message to a channel (chunked at 2000; Discord renders markdown natively).",
-				parameters: Type.Object({
-					channelId: Type.String(),
-					text: Type.String(),
-				}),
-				execute: async (params, ctx) => {
-					const { channelId, text } = params as { channelId: string; text: string };
-					const account = ctx.account as DiscordAccount;
-					const rest = getRest(account.botToken);
+		}),
+	},
+	onboard,
+	actions: {
+		sendMessage: {
+			description: "Send a text message to a channel (chunked at 2000; Discord renders markdown natively).",
+			parameters: Type.Object({
+				channelId: Type.String(),
+				text: Type.String(),
+			}),
+			execute: async (params, ctx) => {
+				const { channelId, text } = params as { channelId: string; text: string };
+				const account = ctx.account as DiscordAccount;
+				const rest = getRest(account.botToken);
 
-					const messageIds: string[] = [];
-					for (const content of chunkText(text)) {
-						const sent = (await rest.post(Routes.channelMessages(channelId), { body: { content } })) as {
-							id: string;
-						};
-						messageIds.push(sent.id);
-					}
-					return { messageIds };
-				},
-			},
-			sendTyping: {
-				description: "Show the 'typing…' indicator in a channel (lasts ~10s).",
-				parameters: Type.Object({
-					channelId: Type.String(),
-				}),
-				execute: async (params, ctx) => {
-					const { channelId } = params as { channelId: string };
-					const account = ctx.account as DiscordAccount;
-					const rest = getRest(account.botToken);
-					await rest.post(Routes.channelTyping(channelId));
-					return { ok: true };
-				},
+				const messageIds: string[] = [];
+				for (const content of chunkText(text)) {
+					const sent = (await rest.post(Routes.channelMessages(channelId), { body: { content } })) as {
+						id: string;
+					};
+					messageIds.push(sent.id);
+				}
+				return { messageIds };
 			},
 		},
-		run(ctx) {
-			const account = ctx.account as DiscordAccount;
-			const { botToken, allowedChannelIds } = account;
-			const allowAll = !allowedChannelIds || allowedChannelIds.length === 0;
-			if (allowAll) {
-				console.warn("[discord] no allowedChannelIds configured — accepting messages from ANY channel.");
-			}
-
-			const client = new Client({
-				intents: [
-					GatewayIntentBits.Guilds,
-					GatewayIntentBits.GuildMessages,
-					GatewayIntentBits.MessageContent,
-					GatewayIntentBits.DirectMessages,
-				],
-				partials: [Partials.Channel], // required to receive DMs
-			});
-
-			client.on(Events.MessageCreate, (m) => {
-				if (m.author.id === client.user?.id) return; // skip self
-				if (m.author.bot) return; // skip other bots (loop prevention)
-				if (!allowAll && !allowedChannelIds?.includes(m.channelId)) return;
-				const text = m.content;
-				if (!text) return; // empty without the MESSAGE CONTENT intent, or media-only
-
-				ctx.emit("message", {
-					channelId: m.channelId,
-					messageId: m.id,
-					text,
-					author: { id: m.author.id, name: m.author.username },
-				});
-			});
-
-			client.on(Events.Error, (err) => {
-				console.error("[discord] client error:", err.message);
-			});
-
-			// Fire-and-forget: login never settles into a state we await.
-			if (!ctx.signal.aborted) {
-				void client.login(botToken).catch((err) => {
-					console.error("[discord] failed to log in:", err instanceof Error ? err.message : err);
-				});
-			}
-
-			const dispose = () => void client.destroy();
-			ctx.signal.addEventListener("abort", dispose);
-			return dispose;
+		startTyping: {
+			description: "Show the 'typing…' indicator in a channel and keep it alive on a timer until stopTyping.",
+			parameters: Type.Object({
+				channelId: Type.String(),
+			}),
+			execute: async (params, ctx) => {
+				const { channelId } = params as { channelId: string };
+				const account = ctx.account as DiscordAccount;
+				const rest = getRest(account.botToken);
+				const send = () => {
+					void rest.post(Routes.channelTyping(channelId)).catch(() => {});
+				};
+				send(); // immediate first tick; the indicator would otherwise lag by the interval
+				stopTypingTimer(channelId); // replace any existing timer for this channel
+				typingTimers.set(channelId, setInterval(send, TYPING_INTERVAL_MS));
+				return { ok: true };
+			},
 		},
-	});
-}
+		stopTyping: {
+			description: "Stop the 'typing…' indicator in a channel.",
+			parameters: Type.Object({
+				channelId: Type.String(),
+			}),
+			execute: async (params) => {
+				const { channelId } = params as { channelId: string };
+				stopTypingTimer(channelId);
+				return { ok: true };
+			},
+		},
+	},
+	run(ctx) {
+		const account = ctx.account as DiscordAccount;
+		const { botToken, allowedChannelIds } = account;
+		const allowAll = !allowedChannelIds || allowedChannelIds.length === 0;
+		if (allowAll) {
+			console.warn("[discord] no allowedChannelIds configured — accepting messages from ANY channel.");
+		}
+
+		const client = new Client({
+			intents: [
+				GatewayIntentBits.Guilds,
+				GatewayIntentBits.GuildMessages,
+				GatewayIntentBits.MessageContent,
+				GatewayIntentBits.DirectMessages,
+			],
+			partials: [Partials.Channel], // required to receive DMs
+		});
+
+		client.on(Events.MessageCreate, (m) => {
+			if (m.author.id === client.user?.id) return; // skip self
+			if (m.author.bot) return; // skip other bots (loop prevention)
+			if (!allowAll && !allowedChannelIds?.includes(m.channelId)) return;
+			const text = m.content;
+			if (!text) return; // empty without the MESSAGE CONTENT intent, or media-only
+
+			ctx.emit("message", {
+				channelId: m.channelId,
+				messageId: m.id,
+				text,
+				author: { id: m.author.id, name: m.author.username },
+			});
+		});
+
+		client.on(Events.Error, (err) => {
+			console.error("[discord] client error:", err.message);
+		});
+
+		// Fire-and-forget: login never settles into a state we await.
+		if (!ctx.signal.aborted) {
+			void client.login(botToken).catch((err) => {
+				console.error("[discord] failed to log in:", err instanceof Error ? err.message : err);
+			});
+		}
+
+		const dispose = () => {
+			// Clear typing timers here so a reload can never orphan an interval.
+			clearAllTypingTimers();
+			void client.destroy();
+		};
+		ctx.signal.addEventListener("abort", dispose);
+		return dispose;
+	},
+});

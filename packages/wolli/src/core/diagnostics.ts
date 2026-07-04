@@ -17,6 +17,7 @@ export interface ResourceDiagnostic {
 /** Loaded-resource counts plus any diagnostics, surfaced at startup and after `/reload`. */
 export interface ResourceSummary {
 	extensions: number;
+	tools: number;
 	skills: number;
 	prompts: number;
 	commands: number;

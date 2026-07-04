@@ -3,8 +3,8 @@
  * managed `.plugins/` install layout.
  *
  * These cover the invariants of the self-contained-integration model and the on-disk store:
- *  - a dual-half plugin (one manifest declaring both `wolli.integrations` and
- *    `wolli.extensions`) resolves BOTH halves from a single managed copy under
+ *  - a channel plugin (one manifest declaring both `wolli.integrations` and
+ *    `wolli.workflows`) resolves BOTH halves from a single managed copy under
  *    `.plugins/local/<key>/`, each carrying plugin metadata (`origin: "package"`);
  *  - `local:` sources are copied into the agent home so they survive the origin moving away;
  *  - `<agentDir>/integrations/` is auto-discovered like extensions;
@@ -15,11 +15,12 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAgentConfigPath, getAgentDir } from "../src/config.ts";
 import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { DefaultPluginManager } from "../src/core/plugin-manager.ts";
+import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 
 let tempDir: string;
 let agentDir: string;
@@ -52,25 +53,25 @@ afterEach(() => {
 	rmSync(tempDir, { recursive: true, force: true });
 });
 
-/** A self-contained package whose one manifest declares both halves. */
-function writeDualHalfPackage(dir: string): { integrationPath: string; extensionPath: string } {
+/** A self-contained channel package whose one manifest declares both halves. */
+function writeDualHalfPackage(dir: string): { integrationPath: string; workflowPath: string } {
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(
 		join(dir, "package.json"),
 		JSON.stringify({
-			name: "telegram-chat",
-			wolli: { integrations: ["./index.ts"], extensions: ["./telegram-chat.ts"] },
+			name: "telegram-channel",
+			wolli: { integrations: ["./index.ts"], workflows: ["./telegram-inbound.ts"] },
 		}),
 	);
 	writeFileSync(join(dir, "index.ts"), "export default function () {}");
-	writeFileSync(join(dir, "telegram-chat.ts"), "export default function () {}");
+	writeFileSync(join(dir, "telegram-inbound.ts"), "export default function () {}");
 	// A sibling file declared by neither half must not be surfaced.
 	writeFileSync(join(dir, "helper.ts"), "export const x = 1;");
-	return { integrationPath: join(dir, "index.ts"), extensionPath: join(dir, "telegram-chat.ts") };
+	return { integrationPath: join(dir, "index.ts"), workflowPath: join(dir, "telegram-inbound.ts") };
 }
 
 describe("DefaultPluginManager — integrations as a plugin resource", () => {
-	it("copies both halves of a dual-half plugin into .plugins/local/, each with origin: package", async () => {
+	it("copies both halves of a channel plugin into .plugins/local/, each with origin: package", async () => {
 		const pkgDir = join(tempDir, "telegram-pkg");
 		writeDualHalfPackage(pkgDir);
 
@@ -81,13 +82,13 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		const result = await pm.resolve();
 
 		const integration = result.integrations.find((r) => r.path.endsWith("index.ts"));
-		const extension = result.extensions.find((r) => r.path.endsWith("telegram-chat.ts"));
+		const workflow = result.workflows.find((r) => r.path.endsWith("telegram-inbound.ts"));
 
 		// Both halves surface, both enabled, both resolved from the same managed copy.
 		expect(integration?.enabled).toBe(true);
-		expect(extension?.enabled).toBe(true);
+		expect(workflow?.enabled).toBe(true);
 		expect(integration?.metadata.origin).toBe("package");
-		expect(extension?.metadata.origin).toBe("package");
+		expect(workflow?.metadata.origin).toBe("package");
 
 		// The copy lives under <agentDir>/.plugins/local/<key>/ — a single install for both halves,
 		// pointed at the store rather than the origin dir.
@@ -95,19 +96,19 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		const store = integration?.metadata.baseDir;
 		expect(store).toBeDefined();
 		expect(store?.startsWith(localRoot)).toBe(true);
-		expect(extension?.metadata.baseDir).toBe(store);
+		expect(workflow?.metadata.baseDir).toBe(store);
 		expect(integration?.path.startsWith(localRoot)).toBe(true);
-		expect(extension?.path.startsWith(localRoot)).toBe(true);
+		expect(workflow?.path.startsWith(localRoot)).toBe(true);
 		expect(integration?.path.startsWith(pkgDir)).toBe(false);
 
 		// The store is a real copy of the origin, and the origin still exists independently.
 		expect(existsSync(join(store!, "index.ts"))).toBe(true);
-		expect(existsSync(join(store!, "telegram-chat.ts"))).toBe(true);
+		expect(existsSync(join(store!, "telegram-inbound.ts"))).toBe(true);
 		expect(existsSync(pkgDir)).toBe(true);
 
 		// The undeclared sibling is surfaced by neither half.
 		expect(result.integrations.some((r) => r.path.endsWith("helper.ts"))).toBe(false);
-		expect(result.extensions.some((r) => r.path.endsWith("helper.ts"))).toBe(false);
+		expect(result.workflows.some((r) => r.path.endsWith("helper.ts"))).toBe(false);
 	});
 
 	it("keeps a local source loadable after its origin is removed (the copy travels)", async () => {
@@ -172,6 +173,59 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		expect(discovered?.enabled).toBe(true);
 		expect(discovered?.metadata.source).toBe("auto");
 		expect(discovered?.metadata.origin).toBe("top-level");
+	});
+
+	it("auto-discovers tools from <agentDir>/tools/, skipping subdir helper files without an index", async () => {
+		const toolsDir = join(agentDir, "tools");
+		mkdirSync(join(toolsDir, "helpers"), { recursive: true });
+		const toolPath = join(toolsDir, "echo.ts");
+		writeFileSync(toolPath, "export default function () {}");
+		// A helper module in a subdirectory with no index.ts must not surface as a tool.
+		writeFileSync(join(toolsDir, "helpers", "util.ts"), "export const x = 1;");
+
+		const settingsManager = AgentSettingsManager.create("alice");
+		const pm = new DefaultPluginManager({ cwd: tempDir, agentDir, settingsManager });
+
+		const result = await pm.resolve();
+
+		const discovered = result.tools.find((r) => r.path === toolPath);
+		expect(discovered?.enabled).toBe(true);
+		expect(discovered?.metadata.source).toBe("auto");
+		expect(discovered?.metadata.origin).toBe("top-level");
+		expect(result.tools.some((r) => r.path.endsWith("util.ts"))).toBe(false);
+	});
+
+	it("stamps a materialized package's integration with the original package dir's name", async () => {
+		// A local package is copied to a hash-suffixed store dir (`.plugins/local/telegram-<hash>/`),
+		// so the loader's basename rule alone would stamp `telegram-<hash>` as the service. The
+		// resource loader must thread the ORIGINAL source dir's name through instead.
+		const pkgDir = join(tempDir, "telegram");
+		mkdirSync(pkgDir, { recursive: true });
+		writeFileSync(
+			join(pkgDir, "package.json"),
+			JSON.stringify({ name: "telegram-plugin", wolli: { integrations: ["./index.ts"] } }),
+		);
+		writeFileSync(
+			join(pkgDir, "index.ts"),
+			`
+import { defineIntegration } from "wolli";
+
+export default defineIntegration({});
+`,
+		);
+
+		const settingsManager = AgentSettingsManager.create("alice");
+		settingsManager.setPlugins([pkgDir]);
+		const loader = new DefaultResourceLoader({ cwd: tempDir, agentDir, settingsManager });
+		await loader.reload();
+
+		const { integrations, errors } = loader.getIntegrations();
+		expect(errors).toEqual([]);
+		expect(integrations).toHaveLength(1);
+		// The fixture really exercised the materialized case: the entry lives in a hash-suffixed store dir…
+		expect(basename(dirname(integrations[0].resolvedPath))).toMatch(/^telegram-[0-9a-f]{12}$/);
+		// …yet the stamped service is the original package dir's name.
+		expect(integrations[0].service).toBe("telegram");
 	});
 
 	it("persists installs to the named agent's agent.json only, and round-trips on resolve", async () => {

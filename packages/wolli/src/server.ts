@@ -45,6 +45,7 @@ import type { Integration, IntegrationOnboardUI } from "./core/integrations/type
 import { ModelRegistry } from "./core/model-registry.ts";
 import { findInitialModel } from "./core/model-resolver.ts";
 import type { DefaultPluginManager } from "./core/plugin-manager.ts";
+import { deriveIntegrationServiceName } from "./core/resource-loader.ts";
 import { type Theme, theme } from "./theme/theme.ts";
 import {
 	type DaemonAgentState,
@@ -186,8 +187,12 @@ async function runDaemonOnboarding(
 	const agentDir = getAgentDir(name);
 	const { pluginManager } = createAgentPluginManager(name);
 	const resolved = await pluginManager.resolve();
-	const integrationPaths = resolved.integrations.filter((r) => r.enabled).map((r) => r.path);
-	const { integrations } = await loadIntegrations(integrationPaths, agentDir);
+	// Thread the resolver-derived service names exactly like the resource loader's reload,
+	// so onboarding writes accounts under the same services the runtime's producers read.
+	const integrationEntries = resolved.integrations
+		.filter((r) => r.enabled)
+		.map((r) => ({ path: r.path, service: deriveIntegrationServiceName(r.path, r.metadata) }));
+	const { integrations } = await loadIntegrations(integrationEntries, agentDir);
 
 	const services = selectServices({ integrations, pluginManager });
 	// The runtime's live account store is the single writer; the initiating session's ui renders dialogs.
@@ -357,9 +362,7 @@ async function handleCommand(
 					const services: string[] = [];
 					for (const integration of integrations) {
 						if (root && getCwdRelativePath(integration.resolvedPath, root) === undefined) continue;
-						for (const [service, config] of integration.definitions) {
-							if (config.onboard) services.push(service);
-						}
+						if (integration.config.onboard) services.push(integration.service);
 					}
 					return services;
 				}),

@@ -100,6 +100,12 @@ export class WorkflowRunner {
 	/** Controllers of in-flight runs; `stop()` fires them. */
 	private readonly activeRuns = new Set<AbortController>();
 	private readonly errorListeners = new Set<WorkflowErrorListener>();
+	/**
+	 * Index-time load failures: a workflow whose integration trigger carries an unstamped
+	 * descriptor (`service === ""`, i.e. the definition never passed through the integrations
+	 * loader) is not indexed and lands here instead of binding silently under `" event"`.
+	 */
+	private readonly _indexErrors: Array<{ path: string; error: string }> = [];
 
 	constructor(workflows: Workflow[], options: WorkflowRunnerOptions) {
 		this.backend = options.backend;
@@ -121,6 +127,13 @@ export class WorkflowRunner {
 				const bindings = this.lifecycleTriggers.get(definition.on);
 				if (bindings) bindings.push({ workflow, definition });
 				else this.lifecycleTriggers.set(definition.on, [{ workflow, definition }]);
+			} else if (definition.on.service === "") {
+				// An unstamped descriptor means the integration definition was not loaded from
+				// integrations/, so the trigger addresses no real service — fail the index.
+				this._indexErrors.push({
+					path: workflow.path,
+					error: `workflow '${workflow.name}': integration definition was not loaded from integrations/ (event descriptor has no service)`,
+				});
 			} else {
 				const key = this.triggerKey(definition.on.service, definition.on.event);
 				const bindings = this.integrationTriggers.get(key);
@@ -128,6 +141,11 @@ export class WorkflowRunner {
 				else this.integrationTriggers.set(key, [{ workflow, definition }]);
 			}
 		}
+	}
+
+	/** Index-time load failures (unstamped integration triggers), surfaced in the resource summary. */
+	get indexErrors(): ReadonlyArray<{ path: string; error: string }> {
+		return this._indexErrors;
 	}
 
 	/** Journals of every run this runner has executed, in start order — the observability seam. */
@@ -141,15 +159,14 @@ export class WorkflowRunner {
 	}
 
 	/**
-	 * Fire every workflow bound to (service, event) — the seam the IntegrationRunner wires
-	 * into in Phase 2, which emits per (service, account). Runs execute inline and
-	 * sequentially; a failed run surfaces on the error sink and never throws back into the
-	 * emitting producer.
+	 * Fire every workflow bound to (service, event) — the seam the IntegrationRunner's
+	 * validated-event firehose wires into. Runs execute inline and sequentially; a failed
+	 * run surfaces on the error sink and never throws back into the emitting producer.
 	 */
-	async dispatchIntegrationEvent(service: string, account: string, event: string, payload: unknown): Promise<void> {
+	async dispatchIntegrationEvent(service: string, event: string, payload: unknown): Promise<void> {
 		const bindings = this.integrationTriggers.get(this.triggerKey(service, event));
 		if (!bindings) return;
-		const trigger: RunTrigger = { kind: "integration", service, account, event, payload };
+		const trigger: RunTrigger = { kind: "integration", service, event, payload };
 		for (const { workflow, definition } of bindings) {
 			await this.dispatchRun(workflow, trigger, `${service}.${event}`, (journal, signal) =>
 				definition.run(payload, this.createContext(journal, signal)),
@@ -187,6 +204,10 @@ export class WorkflowRunner {
 							}),
 						getTags: () => session.getTags(),
 						setTags: (tags) => session.setTags(tags),
+						getSessionName: () => session.getSessionName(),
+						get model() {
+							return session.model;
+						},
 					},
 					ui,
 				}),
@@ -311,8 +332,7 @@ export class WorkflowRunner {
 		};
 		return {
 			agent,
-			integration: <TActions>(key: IntegrationKey<TActions>, account = "default") =>
-				this.createIntegrationHandle(journal, key, account),
+			integration: <TActions>(key: IntegrationKey<TActions>) => this.createIntegrationHandle(journal, key),
 			step: (name, fn) => journal.step(name, fn, { kind: "user" }),
 			signal,
 		};
@@ -322,9 +342,8 @@ export class WorkflowRunner {
 	private createIntegrationHandle<TActions>(
 		journal: RunJournal,
 		key: IntegrationKey<TActions>,
-		account: string,
 	): IntegrationHandleOf<TActions> {
-		const handle = this.integrations.getIntegration(key.service, account);
+		const handle = this.integrations.getIntegration(key.service);
 		const capability = this.integrations.getServiceCapabilities().find((c) => c.service === key.service);
 		// A plain object over the registered action names: a typo'd or stale action fails as
 		// a missing property, and no property is fabricated (a Proxy handle would fabricate
@@ -367,6 +386,10 @@ export class WorkflowRunner {
 					}),
 				getTags: () => session.getTags(),
 				setTags: (tags) => session.setTags(tags),
+				getSessionName: () => session.getSessionName(),
+				get model() {
+					return session.model;
+				},
 			};
 		} catch (error) {
 			journal.endStep(stepId, { status: "error", error });

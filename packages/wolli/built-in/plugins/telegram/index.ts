@@ -3,9 +3,11 @@
  *
  * This integration faces the network, holds the bot token, and emits a `message`
  * event per inbound Telegram message. It does not touch sessions or the agent; the
- * paired extension (`telegram-chat.ts`, declared under `wolli.extensions`) maps those
- * events into a chat loop and is resolved in place by the package manager. See
- * `INTEGRATION.md` for the transport-vs-mapping split.
+ * routing workflows (`telegram-inbound.ts`, `telegram-reply.ts`, `telegram-typing.ts`,
+ * declared under `wolli.workflows`) map those events onto sessions and are resolved in
+ * place by the package manager. In-memory transport state that outlives a single call —
+ * the "typing…" keep-alive timers and the BotFather command menu — lives here, since
+ * workflow files hold no module state.
  *
  * Transport is grammY long polling (`@grammyjs/runner`'s `run`), so no public URL
  * or TLS is needed. The package brings its OWN grammy + @grammyjs/runner deps.
@@ -18,7 +20,7 @@
  * Onboarding asks for the BotFather token directly, verifies it with a live `getMe()`,
  * and stores the raw token in `~/.wolli/agents/<name>/integrations.json`:
  *
- *   { "telegram": { "default": { "botToken": "123456:ABC..." } } }
+ *   { "telegram": { "botToken": "123456:ABC..." } }
  *
  * `botToken` is still resolved on read, so a `$ENV` / `!cmd` reference placed there by
  * hand keeps working — onboarding just stores the literal token. `allowedChatIds` is an
@@ -36,14 +38,44 @@
  */
 
 import { run } from "@grammyjs/runner";
-// The integration types are host-provided via the loader's VIRTUAL_MODULES / aliases, so
-// @opsyhq/wolli is a peerDependency, not a dependency.
-import type { IntegrationOnboardContext, IntegrationsAPI } from "@opsyhq/wolli";
+// The integration surface is host-provided via the loader's VIRTUAL_MODULES / aliases, so
+// wolli is a peerDependency, not a dependency.
+import { defineIntegration, type IntegrationOnboardContext } from "wolli";
 import { Bot, GrammyError } from "grammy";
 import { Type } from "typebox";
 
 /** Telegram caps a single message at 4096 UTF-16 code units. */
 const TELEGRAM_MAX_LENGTH = 4096;
+
+/** Typing indicator refresh interval — Telegram clears the "typing…" state after a few seconds. */
+const TYPING_INTERVAL_MS = 4000;
+
+/** BotFather slash-command menu, registered at producer start. */
+const COMMANDS = [
+	{ command: "new", description: "Start a fresh session" },
+	{ command: "status", description: "Show the current session and model" },
+	{ command: "help", description: "List available commands" },
+];
+
+/**
+ * Live "typing…" keep-alive timers, keyed by chatId. Per-chat so parallel chats never
+ * stomp each other; cleared by `stopTyping` and by the producer's disposer on reload,
+ * so a reload can never orphan an interval.
+ */
+const typingTimers = new Map<number, ReturnType<typeof setInterval>>();
+
+function stopTypingTimer(chatId: number): void {
+	const timer = typingTimers.get(chatId);
+	if (timer) {
+		clearInterval(timer);
+		typingTimers.delete(chatId);
+	}
+}
+
+function clearAllTypingTimers(): void {
+	for (const timer of typingTimers.values()) clearInterval(timer);
+	typingTimers.clear();
+}
 
 /** BotFather walkthrough shown on the onboarding guide screen. */
 const ONBOARD_GUIDE = [
@@ -160,152 +192,153 @@ async function onboard(ctx: IntegrationOnboardContext): Promise<{ botToken: stri
 	return { botToken: token };
 }
 
-export default function (wolli: IntegrationsAPI) {
-	wolli.registerIntegration({
-		name: "telegram",
-		account: Type.Object({
-			/** BotFather token. Onboarding stores it raw; a `$ENV`/`!cmd` reference also works. */
-			botToken: Type.String(),
-			/** Allowlist of chat ids. Empty/absent = allow all (logged as a warning). */
-			allowedChatIds: Type.Optional(Type.Array(Type.Number())),
-			/** Outbound formatting; `"plain"` disables parse mode. */
-			parseMode: Type.Optional(
-				Type.Union([Type.Literal("MarkdownV2"), Type.Literal("HTML"), Type.Literal("plain")]),
-			),
-		}),
-		events: {
-			message: Type.Object({
-				chatId: Type.Number(),
-				messageId: Type.Number(),
-				text: Type.String(),
-				from: Type.Object({
-					id: Type.Number(),
-					username: Type.Optional(Type.String()),
-					firstName: Type.Optional(Type.String()),
-				}),
-				chatType: Type.String(),
-				date: Type.Number(),
+export default defineIntegration({
+	account: Type.Object({
+		/** BotFather token. Onboarding stores it raw; a `$ENV`/`!cmd` reference also works. */
+		botToken: Type.String(),
+		/** Allowlist of chat ids. Empty/absent = allow all (logged as a warning). */
+		allowedChatIds: Type.Optional(Type.Array(Type.Number())),
+		/** Outbound formatting; `"plain"` disables parse mode. */
+		parseMode: Type.Optional(
+			Type.Union([Type.Literal("MarkdownV2"), Type.Literal("HTML"), Type.Literal("plain")]),
+		),
+	}),
+	events: {
+		message: Type.Object({
+			chatId: Type.Number(),
+			messageId: Type.Number(),
+			text: Type.String(),
+			from: Type.Object({
+				id: Type.Number(),
+				username: Type.Optional(Type.String()),
+				firstName: Type.Optional(Type.String()),
 			}),
-		},
-		onboard,
-		actions: {
-			sendMessage: {
-				description: "Send a text message to a chat (chunked at 4096, with plain-text fallback).",
-				parameters: Type.Object({
-					chatId: Type.Number(),
-					text: Type.String(),
-					replyToMessageId: Type.Optional(Type.Number()),
-				}),
-				execute: async (params, ctx) => {
-					const { chatId, text, replyToMessageId } = params as {
-						chatId: number;
-						text: string;
-						replyToMessageId?: number;
-					};
-					const account = ctx.account as TelegramAccount;
-					const parseMode = account.parseMode ?? "MarkdownV2";
-					const bot = getBot(account.botToken);
+			chatType: Type.String(),
+			date: Type.Number(),
+		}),
+	},
+	onboard,
+	actions: {
+		sendMessage: {
+			description: "Send a text message to a chat (chunked at 4096, with plain-text fallback).",
+			parameters: Type.Object({
+				chatId: Type.Number(),
+				text: Type.String(),
+				replyToMessageId: Type.Optional(Type.Number()),
+			}),
+			execute: async (params, ctx) => {
+				const { chatId, text, replyToMessageId } = params as {
+					chatId: number;
+					text: string;
+					replyToMessageId?: number;
+				};
+				const account = ctx.account as TelegramAccount;
+				const parseMode = account.parseMode ?? "MarkdownV2";
+				const bot = getBot(account.botToken);
 
-					const messageIds: number[] = [];
-					// Reply-to applies only to the first chunk; later chunks just continue.
-					let replyTo = replyToMessageId;
-					for (const chunk of chunkText(text)) {
-						messageIds.push(await sendChunk(bot, chatId, chunk, parseMode, replyTo));
-						replyTo = undefined;
-					}
-					return { messageIds };
-				},
-			},
-			sendChatAction: {
-				description: "Show a chat action (e.g. the 'typing…' indicator).",
-				parameters: Type.Object({
-					chatId: Type.Number(),
-					action: Type.String(),
-				}),
-				execute: async (params, ctx) => {
-					const { chatId, action } = params as { chatId: number; action: string };
-					const account = ctx.account as TelegramAccount;
-					const bot = getBot(account.botToken);
-					// grammY types `action` as a union; the runtime accepts any valid string.
-					await bot.api.sendChatAction(chatId, action as "typing");
-					return { ok: true };
-				},
-			},
-			setCommands: {
-				description: "Register the bot's slash-command menu (BotFather command list).",
-				parameters: Type.Object({
-					commands: Type.Array(
-						Type.Object({
-							command: Type.String(),
-							description: Type.String(),
-						}),
-					),
-				}),
-				execute: async (params, ctx) => {
-					const { commands } = params as { commands: { command: string; description: string }[] };
-					const account = ctx.account as TelegramAccount;
-					const bot = getBot(account.botToken);
-					await bot.api.setMyCommands(commands);
-					return { ok: true };
-				},
+				const messageIds: number[] = [];
+				// Reply-to applies only to the first chunk; later chunks just continue.
+				let replyTo = replyToMessageId;
+				for (const chunk of chunkText(text)) {
+					messageIds.push(await sendChunk(bot, chatId, chunk, parseMode, replyTo));
+					replyTo = undefined;
+				}
+				return { messageIds };
 			},
 		},
-		run(ctx) {
-			const account = ctx.account as TelegramAccount;
-			const { botToken, allowedChatIds } = account;
-			const allowAll = !allowedChatIds || allowedChatIds.length === 0;
-			if (allowAll) {
-				console.warn("[telegram] no allowedChatIds configured — accepting messages from ANY chat.");
-			}
+		startTyping: {
+			description: "Show the 'typing…' indicator in a chat and keep it alive on a timer until stopTyping.",
+			parameters: Type.Object({
+				chatId: Type.Number(),
+			}),
+			execute: async (params, ctx) => {
+				const { chatId } = params as { chatId: number };
+				const account = ctx.account as TelegramAccount;
+				const bot = getBot(account.botToken);
+				const send = () => {
+					void bot.api.sendChatAction(chatId, "typing").catch(() => {});
+				};
+				send(); // immediate first tick; Telegram would otherwise show nothing until the interval
+				stopTypingTimer(chatId); // replace any existing timer for this chat
+				typingTimers.set(chatId, setInterval(send, TYPING_INTERVAL_MS));
+				return { ok: true };
+			},
+		},
+		stopTyping: {
+			description: "Stop the 'typing…' indicator in a chat.",
+			parameters: Type.Object({
+				chatId: Type.Number(),
+			}),
+			execute: async (params) => {
+				const { chatId } = params as { chatId: number };
+				stopTypingTimer(chatId);
+				return { ok: true };
+			},
+		},
+	},
+	run(ctx) {
+		const account = ctx.account as TelegramAccount;
+		const { botToken, allowedChatIds } = account;
+		const allowAll = !allowedChatIds || allowedChatIds.length === 0;
+		if (allowAll) {
+			console.warn("[telegram] no allowedChatIds configured — accepting messages from ANY chat.");
+		}
 
-			const bot = getBot(botToken);
+		const bot = getBot(botToken);
 
-			bot.on("message:text", (c) => {
-				// Ignore our own messages and anything outside the allowlist.
-				if (c.from?.id === c.me.id) return;
-				const chatId = c.chat.id;
-				if (!allowAll && !allowedChatIds?.includes(chatId)) return;
+		// Register the BotFather slash-command menu — transport-level registration, re-run each
+		// reload. Fire-and-forget: a menu-registration failure must not block the poller.
+		void bot.api.setMyCommands(COMMANDS).catch((err) => {
+			console.error("[telegram] failed to register command menu:", err instanceof Error ? err.message : err);
+		});
 
-				ctx.emit("message", {
-					chatId,
-					messageId: c.msg.message_id,
-					text: c.msg.text,
-					from: {
-						id: c.from?.id ?? 0,
-						username: c.from?.username,
-						firstName: c.from?.first_name,
-					},
-					chatType: c.chat.type,
-					date: c.msg.date,
-				});
+		bot.on("message:text", (c) => {
+			// Ignore our own messages and anything outside the allowlist.
+			if (c.from?.id === c.me.id) return;
+			const chatId = c.chat.id;
+			if (!allowAll && !allowedChatIds?.includes(chatId)) return;
+
+			ctx.emit("message", {
+				chatId,
+				messageId: c.msg.message_id,
+				text: c.msg.text,
+				from: {
+					id: c.from?.id ?? 0,
+					username: c.from?.username,
+					firstName: c.from?.first_name,
+				},
+				chatType: c.chat.type,
+				date: c.msg.date,
+			});
+		});
+
+		// Swallow producer-side errors so a transient poll failure can't crash the host.
+		bot.catch((err) => {
+			console.error("[telegram] bot error:", err.message);
+		});
+
+		// Fire-and-forget startup: drop any webhook + backlog, then start long polling.
+		// The runner never resolves, so we must NOT await it.
+		let runner: ReturnType<typeof run> | undefined;
+		void bot.api
+			.deleteWebhook({ drop_pending_updates: true })
+			.then(() => {
+				if (ctx.signal.aborted) return;
+				runner = run(bot);
+			})
+			.catch((err) => {
+				console.error("[telegram] failed to start long polling:", err instanceof Error ? err.message : err);
 			});
 
-			// Swallow producer-side errors so a transient poll failure can't crash the host.
-			bot.catch((err) => {
-				console.error("[telegram] bot error:", err.message);
-			});
-
-			// Fire-and-forget startup: drop any webhook + backlog, then start long polling.
-			// The runner never resolves, so we must NOT await it.
-			let runner: ReturnType<typeof run> | undefined;
-			void bot.api
-				.deleteWebhook({ drop_pending_updates: true })
-				.then(() => {
-					if (ctx.signal.aborted) return;
-					runner = run(bot);
-				})
-				.catch((err) => {
-					console.error("[telegram] failed to start long polling:", err instanceof Error ? err.message : err);
-				});
-
-			// Belt and suspenders: stop the runner on abort and via the returned disposer.
-			// The stop-before-start swap on reload relies on this to avoid Telegram's 409
-			// ("two pollers on one token") conflict.
-			const dispose = () => {
-				if (runner?.isRunning()) void runner.stop();
-			};
-			ctx.signal.addEventListener("abort", dispose);
-			return dispose;
-		},
-	});
-}
+		// Belt and suspenders: stop the runner on abort and via the returned disposer.
+		// The stop-before-start swap on reload relies on this to avoid Telegram's 409
+		// ("two pollers on one token") conflict.
+		const dispose = () => {
+			// Clear typing timers here so a reload can never orphan an interval.
+			clearAllTypingTimers();
+			if (runner?.isRunning()) void runner.stop();
+		};
+		ctx.signal.addEventListener("abort", dispose);
+		return dispose;
+	},
+});

@@ -20,7 +20,7 @@ export interface OnboardIntegrationParams {
 	service: string;
 	/** Loaded integrations to search for the service definition. */
 	integrations: Integration[];
-	/** Per-agent account store (the record is written here). */
+	/** Per-agent account store (the service's record is written here). */
 	accounts: IntegrationAccountStorage;
 	/** Narrowed dialog surface forwarded to `onboard(ctx)`. */
 	ui: IntegrationOnboardUI;
@@ -42,9 +42,8 @@ export type OnboardIntegrationResult =
 export async function onboardIntegration(params: OnboardIntegrationParams): Promise<OnboardIntegrationResult> {
 	const { service, integrations, accounts, ui, signal } = params;
 
-	const integration = integrations.find((i) => i.definitions.has(service));
-	const config = integration?.definitions.get(service);
-	if (!integration || !config) {
+	const config = integrations.find((i) => i.service === service)?.config;
+	if (!config) {
 		return { status: "not-found" };
 	}
 	if (!config.onboard) {
@@ -87,7 +86,7 @@ export async function onboardIntegration(params: OnboardIntegrationParams): Prom
 			return { status: "error", message: `invalid account for '${service}'${detail ? `: ${detail}` : ""}` };
 		}
 	}
-	accounts.set(service, "default", record);
+	accounts.set(service, record);
 
 	// The paired extension (the mapping half of a dual-half package) is resolved in place
 	// by the package manager from the same install — nothing to copy.

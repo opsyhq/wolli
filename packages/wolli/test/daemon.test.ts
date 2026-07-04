@@ -545,20 +545,24 @@ describe("daemon plugin/onboarding consistency", () => {
 	it("onboard_plugin drives the just-installed plugin's onboarding over SSE and writes through the live account store", async () => {
 		await startDaemon();
 
-		// A local plugin whose integration onboard() asks for a token over the wire.
+		// A local plugin whose integration onboard() asks for a token over the wire. The
+		// service name is the file basename.
 		const onboardSource = [
-			"export default function (wolli) {",
-			"  wolli.registerIntegration({",
-			'    name: "fakesvc",',
-			"    onboard: async (ctx) => {",
-			'      const token = await ctx.ui.input("Paste your token");',
-			"      return token === undefined ? undefined : { token };",
-			"    },",
-			"  });",
-			"}",
+			'import { defineIntegration } from "@opsyhq/wolli";',
+			"",
+			"export default defineIntegration({",
+			"  onboard: async (ctx) => {",
+			'    const token = await ctx.ui.input("Paste your token");',
+			"    return token === undefined ? undefined : { token };",
+			"  },",
+			"});",
 			"",
 		].join("\n");
-		const pkg = writePackage(join(home, "int-pkg"), { integrations: ["./index.ts"] }, { "index.ts": onboardSource });
+		const pkg = writePackage(
+			join(home, "int-pkg"),
+			{ integrations: ["./fakesvc.ts"] },
+			{ "fakesvc.ts": onboardSource },
+		);
 		expect(await control({ type: "install_plugin", source: pkg })).toMatchObject({ success: true });
 
 		const client = newSse();
@@ -580,7 +584,7 @@ describe("daemon plugin/onboarding consistency", () => {
 		expect(res.data.results).toEqual([{ service: "fakesvc", status: "connected" }]);
 
 		// Onboarding wrote through the runtime's LIVE account store — no cross-process refresh path.
-		expect(activeRuntime?.integrationAccounts.get("fakesvc", "default")).toEqual({ token: "secret-token" });
+		expect(activeRuntime?.integrationAccounts.get("fakesvc")).toEqual({ token: "secret-token" });
 	});
 
 	it("login drives the api-key prompt over the login seam and writes the credential daemon-side", async () => {

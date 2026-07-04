@@ -35,30 +35,16 @@ import type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "../extensions/types.ts";
-import type { IntegrationOnboardUI } from "../integrations/types.ts";
+import type { IntegrationEventDescriptor, IntegrationOnboardUI } from "../integrations/types.ts";
 import type { SessionInfo } from "../session.ts";
 
 // ============================================================================
 // Triggers
 // ============================================================================
 
-/**
- * A typed, inert event descriptor an integration definition exposes (e.g.
- * `telegram.events.message`) and a workflow binds with `on:`. Carries no behavior — just
- * the (service, event) address plus the payload type for handler inference.
- *
- * `service` is stamped by the integrations loader from the file basename, so it must stay
- * writable. `schema` is populated once `defineIntegration` mints descriptors (Phase 2);
- * until then fixtures mint them inline.
- */
-export interface IntegrationEventDescriptor<TPayload = unknown> {
-	kind: "integration";
-	service: string;
-	event: string;
-	schema?: TSchema;
-	/** Phantom payload-type carrier; never present at runtime. */
-	readonly _payload?: TPayload;
-}
+// The descriptor trigger lives with `defineIntegration`, which mints it; re-exported here
+// because it is equally the workflow-side `on:` type.
+export type { IntegrationEventDescriptor };
 
 /**
  * The agent lifecycle events a workflow can bind with `on:`. This is the complete,
@@ -109,11 +95,13 @@ export type IntegrationHandleOf<TActions> = {
 // ============================================================================
 
 /**
- * A live session as a workflow sees it: the delivery verbs plus the tag surface, and the
- * session id. Steps that produce a session record its id, not the object; the engine
- * rehydrates this handle on access.
+ * A live session as a workflow sees it: the delivery verbs, the tag surface, the session
+ * id, and the read-only name/model a router surfaces (e.g. a `/status` command). Steps
+ * that produce a session record its id, not the object; the engine rehydrates this handle
+ * on access.
  */
-export interface WorkflowSession extends Pick<Session, "prompt" | "sendUserMessage" | "getTags" | "setTags"> {
+export interface WorkflowSession
+	extends Pick<Session, "prompt" | "sendUserMessage" | "getTags" | "setTags" | "getSessionName" | "model"> {
 	readonly id: string;
 }
 
@@ -141,11 +129,8 @@ export interface WorkflowAgent {
 export interface WorkflowContext {
 	/** The this-agent surface. */
 	readonly agent: WorkflowAgent;
-	/**
-	 * Resolve a configured integration to its flat action handle. The imported definition
-	 * is the typed key; `account` defaults to `"default"`.
-	 */
-	integration<TActions>(key: IntegrationKey<TActions>, account?: string): IntegrationHandleOf<TActions>;
+	/** Resolve a configured integration to its flat action handle. The imported definition is the typed key. */
+	integration<TActions>(key: IntegrationKey<TActions>): IntegrationHandleOf<TActions>;
 	/** Wrap inline logic in a named, recorded step. Return values must be serializable. */
 	step<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
 	/** The run's abort signal; pass it to anything long-running. */
@@ -235,7 +220,7 @@ export interface Workflow {
 	definition: WorkflowDefinition;
 }
 
-/** Mirror of `LoadIntegrationsResult`; workflows have no load-time runtime to carry. */
+/** Mirror of `LoadIntegrationsResult`. */
 export interface LoadWorkflowsResult {
 	workflows: Workflow[];
 	errors: Array<{ path: string; error: string }>;
@@ -256,7 +241,7 @@ export type WorkflowErrorListener = (error: WorkflowError) => void;
  * step results only.
  */
 export type RunTrigger =
-	| { kind: "integration"; service: string; account: string; event: string; payload: unknown }
+	| { kind: "integration"; service: string; event: string; payload: unknown }
 	| { kind: "lifecycle"; event: keyof AgentEventMap; payload: unknown }
 	| { kind: "callable"; input: unknown };
 

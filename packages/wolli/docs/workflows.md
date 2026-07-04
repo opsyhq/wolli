@@ -111,9 +111,9 @@ export default defineWorkflow({
 });
 ```
 
-`ctx.integration(telegram)` takes the imported definition as a typed key and returns a flat action handle; parameters are validated on every call. Pass an account id for a second account, `ctx.integration(telegram, "work")`; the default is `"default"`. `ctx.step(name, fn)` wraps inline logic in a named, recorded step. `ctx.signal` is the run's `AbortSignal`; pass it to anything long-running.
+`ctx.integration(telegram)` takes the imported definition as a typed key and returns a flat action handle; parameters are validated on every call. `ctx.step(name, fn)` wraps inline logic in a named, recorded step. `ctx.signal` is the run's `AbortSignal`; pass it to anything long-running.
 
-`ctx.session` exists only on lifecycle-triggered runs, as the facade of the producing session (`prompt`, `sendUserMessage`, `getTags`, `setTags`). Integration-event and callable runs have no producing session, so the field is absent. The same rule gates `ctx.ui`, four dialog primitives (`select`, `confirm`, `input`, `notify`) available only when `ctx.session` exists. Everywhere else the run is headless; a workflow that needs an answer from a user asks through its channel.
+`ctx.session` exists only on lifecycle-triggered runs, as the facade of the producing session (`prompt`, `sendUserMessage`, `getTags`, `setTags`, plus the read-only `getSessionName()` and `model` a router surfaces, e.g. in a `/status` command). Integration-event and callable runs have no producing session, so the field is absent. The same rule gates `ctx.ui`, four dialog primitives (`select`, `confirm`, `input`, `notify`) available only when `ctx.session` exists. Everywhere else the run is headless; a workflow that needs an answer from a user asks through its channel.
 
 ## Runs and steps
 

@@ -119,7 +119,6 @@ export type {
 	TerminalInputHandler,
 	ToolCallEvent,
 	ToolCallEventResult,
-	ToolDefinition,
 	ToolExecutionMode,
 	ToolInfo,
 	ToolRenderResultOptions,
@@ -134,7 +133,6 @@ export type {
 } from "./core/extensions/index.ts";
 export {
 	createExtensionRuntime,
-	defineTool,
 	discoverAndLoadExtensions,
 	ExtensionRunner,
 	isBashToolResult,
@@ -167,27 +165,29 @@ export {
 	IntegrationAccountStorage,
 	type IntegrationAccountStorageData,
 } from "./core/integration-account-storage.ts";
-// Integration system
+// Integration system. `IntegrationEventDescriptor` is exported here (not from the
+// workflows block) because `defineIntegration` mints it; workflows only bind it.
 export {
-	createIntegrationRuntime,
+	defineIntegration,
 	type Integration,
 	type IntegrationAction,
 	type IntegrationActionContext,
-	type IntegrationConfig,
+	type IntegrationDefinition,
+	type IntegrationDefinitionConfig,
 	type IntegrationError,
 	type IntegrationErrorListener,
-	type IntegrationFactory,
+	type IntegrationEventDescriptor,
+	type IntegrationEventPayload,
 	type IntegrationHandle,
 	type IntegrationOnboardContext,
 	type IntegrationOnboardUI,
 	type IntegrationRunContext,
+	type IntegrationRunContextOf,
 	IntegrationRunner,
-	type IntegrationRuntime,
-	type IntegrationRuntimeState,
-	type IntegrationsAPI,
 	type KeyValueStore,
+	type LoadedIntegrationConfig,
 	type LoadIntegrationsResult,
-	loadIntegrationFromFactory,
+	loadIntegrationFromDefinition,
 	loadIntegrations,
 } from "./core/integrations/index.ts";
 export {
@@ -280,11 +280,20 @@ export {
 export { createFindTool, type FindToolDetails, type FindToolInput } from "./core/tools/find.ts";
 export { createGrepTool, type GrepToolDetails, type GrepToolInput } from "./core/tools/grep.ts";
 export type { ToolName } from "./core/tools/index.ts";
+// The tool authoring surface (docs/tools.md): one defineTool file per tool under tools/,
+// loaded by loadTools. This `defineTool`/`ToolDefinition` pair supersedes the extension
+// system's (still exported from core/extensions/index.ts for internal use until Phase 5).
 // Tool primitives for custom tools and extensions
 export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
+	defineTool,
 	formatSize,
+	type LoadedTool,
+	type LoadToolsResult,
+	loadTools,
+	type ToolContext,
+	type ToolDefinition,
 	type TruncationOptions,
 	type TruncationResult,
 	truncateHead,
@@ -304,7 +313,6 @@ export {
 	type CallableWorkflowDefinition,
 	type DialogUI,
 	defineWorkflow,
-	type IntegrationEventDescriptor,
 	type IntegrationHandleOf,
 	type IntegrationKey,
 	type IntegrationWorkflowDefinition,

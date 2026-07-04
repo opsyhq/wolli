@@ -52,7 +52,7 @@ Long-running tools stream progress through `onUpdate`, which accepts the same sh
 onUpdate?.({ content: [{ type: "text", text: `fetched ${done} of ${total} pages` }], details: { done } });
 ```
 
-Clients render each partial result in place while the call runs. Both `signal` and `onUpdate` are optional to handle; a short tool can ignore them. The fifth argument, `ctx`, is the session facade for the session that made the call.
+Clients render each partial result in place while the call runs. Both `signal` and `onUpdate` are optional to handle; a short tool can ignore them. The fifth argument, `ctx`, carries `session`, the session facade for the session that made the call, and `integration`, which takes an imported [integration](./integrations.md) definition as a typed key and returns its flat action handle — the same resolver workflow handlers get, so a tool can call the actions of the integration it ships with.
 
 The return value carries `content`, the text or image parts the model reads, and `details`, structured data for logs and client rendering that stays out of model context. Throw an `Error` on failure instead of encoding it in `content`.
 

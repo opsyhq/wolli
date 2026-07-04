@@ -724,7 +724,7 @@ session.close();
 
 ## Integrations
 
-Integrations (per-agent service connections with their own onboarding and producer loops) are configured and onboarded over the daemon (`onboard_plugin`, `login`) and inspected with `SessionHandle.listIntegrations()`. The integration authoring API (`createIntegrationRuntime`, `Integration`, `IntegrationAction`, onboarding context) is re-exported from the barrel. See [integrations.md](integrations.md) for the full surface.
+Integrations (per-agent service connections with their own onboarding and producer loops) are configured and onboarded over the daemon (`onboard_plugin`, `login`) and inspected with `SessionHandle.listIntegrations()`. The integration authoring API (`defineIntegration`, `Integration`, `IntegrationAction`, onboarding context) is re-exported from the barrel. See [integrations.md](integrations.md) for the full surface.
 
 ## Configuration and Environment
 
@@ -751,7 +751,7 @@ agents/<name>/
   USER.md           facts about the human
   sessions/         JsonlSessionRepo session tree
   workspace/        the stable cwd passed to every session
-  integrations.json per-(service, account) credential registry
+  integrations.json per-service credential registry
   store/            per-integration runtime state, one file per service
   approvals.json    durable host-escalation prefix rules
 ```
