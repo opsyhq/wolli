@@ -284,6 +284,23 @@ export { createMemoryTool, type MemoryToolDetails, type MemoryToolInput } from "
 export { resolveReadPathAsync, resolveToCwd } from "./core/tools/path-utils.ts";
 export { createReadTool, type ReadToolDetails, type ReadToolInput } from "./core/tools/read.ts";
 export { createWriteTool, type WriteToolInput } from "./core/tools/write.ts";
+// Workflow system (authoring surface; `getWorkflowKind` stays internal to core/workflows)
+export {
+	type AgentEventMap,
+	type CallableWorkflowDefinition,
+	type DialogUI,
+	defineWorkflow,
+	type IntegrationEventDescriptor,
+	type IntegrationHandleOf,
+	type IntegrationKey,
+	type IntegrationWorkflowDefinition,
+	type LifecycleWorkflowContext,
+	type LifecycleWorkflowDefinition,
+	type WorkflowAgent,
+	type WorkflowContext,
+	type WorkflowDefinition,
+	type WorkflowSession,
+} from "./core/workflows/index.ts";
 export { type RunDaemonOptions, runDaemon } from "./server.ts";
 export {
 	getAvailableThemesWithPaths,
