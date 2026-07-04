@@ -141,6 +141,40 @@ function Home() {
 	const [copied, setCopied] = useState(false);
 	const railRef = useRef<HTMLElement | null>(null);
 
+	// Randomized per page load, applied after mount (randomizing during render
+	// would mismatch the server HTML): each glow spawns somewhere in its rough
+	// quadrant — random within it, but the four stay spread out — and heads off
+	// in a random direction with guaranteed sideways travel. Until the effect
+	// runs, the CSS defaults in styles.css position and move them.
+	const [glowStyles, setGlowStyles] = useState<React.CSSProperties[] | null>(null);
+	useEffect(() => {
+		const spawns = [
+			{ left: [-18, 20], top: [-30, 10] },
+			{ left: [55, 90], top: [-25, 15] },
+			{ left: [0, 35], top: [40, 75] },
+			{ left: [50, 85], top: [35, 70] },
+		];
+		const range = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
+		const sign = () => (Math.random() < 0.5 ? -1 : 1);
+		setGlowStyles(
+			spawns.map((spawn) => {
+				const duration = range(4, 6.5);
+				return {
+					left: `${range(spawn.left[0]!, spawn.left[1]!)}%`,
+					top: `${range(spawn.top[0]!, spawn.top[1]!)}%`,
+					right: "auto",
+					bottom: "auto",
+					animationDuration: `${duration}s`,
+					// Random phase, so the four never pulse in step on load.
+					animationDelay: `${-range(0, duration)}s`,
+					"--glow-dx": `${sign() * range(16, 30)}%`,
+					"--glow-dy": `${sign() * range(10, 24)}%`,
+					"--glow-scale": range(1.04, 1.14).toFixed(3),
+				} as React.CSSProperties;
+			}),
+		);
+	}, []);
+
 	// One player per section, created once; activate() drives them from the scroll
 	// position. A continuing section gets its predecessor's player to fold from.
 	const playersRef = useRef<SessionPlayer[] | null>(null);
@@ -268,22 +302,33 @@ function Home() {
 
 	return (
 		<>
-			{/* Short hero (72svh) so the card below peeks well under the fold, hinting there's more. */}
-			<main className="flex min-h-[72svh] flex-col items-center justify-center px-6">
+			{/* Short hero (81svh) so the card below peeks under the fold, hinting there's more. */}
+			<main className="relative flex min-h-[81svh] flex-col items-center justify-center px-6">
+				{/* Ambient brand glows drifting behind the hero (styles.css); decorative only.
+				    The field extends below the hero (-bottom) so the motion bleeds into the
+				    start of the demo rail instead of cutting off at the fold. */}
+				<div
+					aria-hidden
+					className="hero-glow-field pointer-events-none absolute inset-x-0 top-0 -bottom-[22svh] -z-10 overflow-hidden"
+				>
+					{["hero-glow-1", "hero-glow-2", "hero-glow-3", "hero-glow-4"].map((glow, index) => (
+						<div key={glow} className={`hero-glow ${glow}`} style={glowStyles?.[index]} />
+					))}
+				</div>
 				<div className="mx-auto flex max-w-3xl flex-col items-center text-center">
-					<h1 className="text-5xl font-semibold tracking-tight text-balance sm:text-6xl md:text-7xl">
+					<h1 className="font-heading text-[2.125rem]/[1.15] font-normal tracking-[-0.005em] text-balance [word-spacing:0.06em] sm:text-[2.75rem]/[1.1] md:text-[3.25rem]/[1.1]">
 						Create agents that grow around a purpose
 					</h1>
-					<p className="mt-6 max-w-xl text-lg text-balance text-muted-foreground sm:text-xl">
-						Each agent remembers across sessions, runs on schedules, reacts to events, and extends itself over
-						time.
+					<p className="mt-3 max-w-xl text-[13px] text-muted-foreground sm:text-[15px]">
+						Each agent remembers across sessions, runs on schedules,{" "}
+						<span className="sm:whitespace-nowrap">reacts to events, and extends itself over time.</span>
 					</p>
-					<div className="group mt-10 flex items-center gap-1 rounded-full bg-background py-2.5 pr-3 pl-5 shadow-[0_2px_8px_rgba(0,0,0,0.06)] ring-1 ring-black/[0.06]">
+					<div className="group mt-14 flex items-center gap-1 rounded-full bg-background py-1.5 pr-2.5 pl-4 shadow-[0_2px_8px_rgba(0,0,0,0.06)] ring-1 ring-black/[0.06]">
 						<span className="pr-1 font-mono text-base text-muted-foreground select-none">$</span>
 						<span className="font-mono text-sm text-foreground">{INSTALL_COMMAND}</span>
 						<Button
 							variant="ghost"
-							size="icon"
+							size="icon-sm"
 							onClick={copyInstall}
 							aria-label="Copy install command"
 							className="ml-1 cursor-pointer rounded-full"
@@ -376,7 +421,7 @@ function Home() {
 			    (apps/docs/src/routes/__root.tsx); changes here must be applied
 			    there too. */}
 			<footer className="border-t border-border bg-muted/50">
-				<div className="mx-auto flex h-14 w-full items-center justify-between px-6 text-sm text-muted-foreground md:px-32 lg:px-48">
+				<div className="mx-auto flex h-14 w-full items-center justify-between px-6 text-sm text-muted-foreground md:px-24 lg:px-40">
 					<p>© 2026 Opsy, Inc.</p>
 					<a
 						href="https://github.com/opsyhq/wolli"
