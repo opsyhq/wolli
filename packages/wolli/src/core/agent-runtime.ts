@@ -112,16 +112,9 @@ import { createSyntheticSourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 // File tools live under tools/. memory is wolli's own curated-notes tool; the
 // rest — read/write/edit/ls/grep/find and bash — are wired with no overrides.
-import {
-	createBashTool,
-	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
-} from "./tools/index.ts";
+import { createAllToolDefinitions } from "./tools/index.ts";
 import { createMemoryTool } from "./tools/memory.ts";
+import { wrapToolDefinition } from "./tools/tool-definition-wrapper.ts";
 import type { Tool, ToolContext } from "./tools/types.ts";
 import { loadWorkflows } from "./workflows/loader.ts";
 import { WorkflowRunner } from "./workflows/runner.ts";
@@ -298,8 +291,11 @@ interface SessionTooling {
 	baseTools: AgentTool[];
 	/** Loaded tools/ definitions plus extension-registered tools; these auto-activate on reload. */
 	tools: AgentTool[];
+	/** Representative prompt (all tools active), backing ctx.getSystemPrompt(); model prompt is per-turn. */
 	systemPrompt: string;
 	systemPromptOptions: BuildSystemPromptOptions;
+	/** Per-tool guideline bullets keyed by tool name; the turn's active tools select which render. */
+	toolGuidelinesByName: Record<string, string[]>;
 }
 
 /** The per-session runtime state handed to an `AgentSession` at construction. */
@@ -1239,14 +1235,23 @@ export class AgentRuntime {
 
 		const tooling = this.buildSessionTooling(agentSession);
 
-		// Frozen system prompt as a constant callback (prefix cache stays warm); request-time auth
-		// resolves through resolveRequestAuth, closing over this session id.
+		// The frozen memory snapshot in systemPromptOptions is reused unchanged; only the Available tools +
+		// Guidelines sections rebuild per turn from the turn's active tools (mirrors coding-agent's
+		// _rebuildSystemPrompt). A stable active-tool set yields a byte-identical prompt, so the prefix
+		// cache stays warm. request-time auth resolves through resolveRequestAuth, closing over this session id.
 		const harness = new AgentHarness({
 			env: args.env,
 			session: args.session,
 			model: args.model,
 			thinkingLevel: args.thinkingLevel,
-			systemPrompt: () => tooling.systemPrompt,
+			systemPrompt: ({ activeTools }) => {
+				const activeToolNames = activeTools.map((tool) => tool.name);
+				return buildSystemPrompt({
+					...tooling.systemPromptOptions,
+					selectedTools: activeToolNames,
+					toolGuidelines: activeToolNames.flatMap((toolName) => tooling.toolGuidelinesByName[toolName] ?? []),
+				});
+			},
 			tools: [...tooling.baseTools, ...tooling.tools],
 			resources: toHarnessResources(this._skills, this._promptTemplates),
 			getApiKeyAndHeaders: (requestModel) => this.resolveRequestAuth(requestModel, args.metadata.id),
@@ -1277,18 +1282,14 @@ export class AgentRuntime {
 		const environments = session.environments;
 		const defaultEnv = environments.targets[environments.default];
 
-		// Tools operate in the agent's home dir. memory is wolli's curated-notes tool; the rest are
-		// read/write/edit/ls/grep/find plus bash, routed through the session's default target.
+		// Tools operate in the agent's home dir. The built-in suite is kept as definitions (mirrors
+		// coding-agent's _baseToolDefinitions) so their promptSnippet/promptGuidelines can feed the
+		// prompt below, then wrapped into engine tools here. Only bash gets the target map; the rest
+		// stay on the default target. memory is wolli's curated-notes tool, built inline (no snippet).
+		const baseDefinitions = createAllToolDefinitions(defaultEnv, { bash: { environments } });
 		const baseTools: AgentTool[] = [
 			createMemoryTool(name),
-			createReadTool(defaultEnv),
-			createWriteTool(defaultEnv),
-			createEditTool(defaultEnv),
-			createLsTool(defaultEnv),
-			createGrepTool(defaultEnv),
-			createFindTool(defaultEnv),
-			// Only bash gets the target map; the rest stay on the default target.
-			createBashTool(defaultEnv, { environments }),
+			...Object.values(baseDefinitions).map((definition) => wrapToolDefinition(definition)),
 		];
 		// Tools from the tools/ capability, wrapped into engine AgentTools. The ctx is built lazily
 		// inside `execute`, so it sees the live facade and the current generation's integration runner.
@@ -1317,6 +1318,21 @@ export class AgentRuntime {
 		// no trust gate. Re-read on each session build, like curated memory (frozen-snapshot rule).
 		const appendPath = join(agentDir, "APPEND_SYSTEM.md");
 		const appendSystemPrompt = existsSync(appendPath) ? readFileSync(appendPath, "utf-8") : undefined;
+		// Collect the prompt-facing fields from every tool that declares them (built-in + authored). The
+		// snippet map and per-tool guideline map feed the Available tools + Guidelines sections; the turn's
+		// active tools select which apply, so the harness callback below rebuilds those sections per turn.
+		const toolSnippets: Record<string, string> = {};
+		const toolGuidelinesByName: Record<string, string[]> = {};
+		for (const definition of [...Object.values(baseDefinitions), ...this._tools.map((tool) => tool.definition)]) {
+			const snippet = this.normalizePromptSnippet(definition.promptSnippet);
+			if (snippet) {
+				toolSnippets[definition.name] = snippet;
+			}
+			const guidelines = this.normalizePromptGuidelines(definition.promptGuidelines);
+			if (guidelines.length > 0) {
+				toolGuidelinesByName[definition.name] = guidelines;
+			}
+		}
 		const selectedTools = [...baseTools, ...tools].map((t) => t.name);
 		const systemPromptOptions: BuildSystemPromptOptions = {
 			config,
@@ -1326,10 +1342,37 @@ export class AgentRuntime {
 			user,
 			skills: this._skills,
 			selectedTools,
+			toolSnippets,
+			toolGuidelines: selectedTools.flatMap((toolName) => toolGuidelinesByName[toolName] ?? []),
 			appendSystemPrompt,
 		};
+		// The stored prompt (ctx-readable copy, all tools active) is a representative snapshot; the
+		// model-facing prompt is rebuilt per turn from the turn's active tools in the harness callback.
 		const systemPrompt = buildSystemPrompt(systemPromptOptions);
-		return { baseTools, tools, systemPrompt, systemPromptOptions };
+		return { baseTools, tools, systemPrompt, systemPromptOptions, toolGuidelinesByName };
+	}
+
+	/** Collapse a tool's promptSnippet to the single line the Available tools section renders. */
+	private normalizePromptSnippet(text: string | undefined): string | undefined {
+		if (!text) return undefined;
+		const oneLine = text
+			.replace(/[\r\n]+/g, " ")
+			.replace(/\s+/g, " ")
+			.trim();
+		return oneLine.length > 0 ? oneLine : undefined;
+	}
+
+	/** Trim and de-duplicate a tool's promptGuidelines bullets. */
+	private normalizePromptGuidelines(guidelines: string[] | undefined): string[] {
+		if (!guidelines || guidelines.length === 0) return [];
+		const unique = new Set<string>();
+		for (const guideline of guidelines) {
+			const normalized = guideline.trim();
+			if (normalized.length > 0) {
+				unique.add(normalized);
+			}
+		}
+		return Array.from(unique);
 	}
 
 	/**
