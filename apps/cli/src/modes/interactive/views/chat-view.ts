@@ -417,7 +417,6 @@ export class ChatView extends Container implements AppView {
 	private showResourceSummary(): void {
 		const summary = this.session.getResourceSummary();
 		const parts: string[] = [];
-		if (summary.extensions > 0) parts.push(`${summary.extensions} extension${summary.extensions === 1 ? "" : "s"}`);
 		if (summary.skills > 0) parts.push(`${summary.skills} skill${summary.skills === 1 ? "" : "s"}`);
 		if (summary.prompts > 0) parts.push(`${summary.prompts} prompt${summary.prompts === 1 ? "" : "s"}`);
 		if (summary.commands > 0) parts.push(`${summary.commands} command${summary.commands === 1 ? "" : "s"}`);
@@ -534,15 +533,9 @@ export class ChatView extends Container implements AppView {
 			}
 		}
 
-		// Queue input typed during a compaction (extension commands still run immediately).
+		// Queue input typed during a compaction.
 		if (this.session.isCompacting) {
-			if (this.isExtensionCommand(trimmed)) {
-				this.editor.addToHistory?.(trimmed);
-				this.editor.setText("");
-				await this.session.prompt(trimmed);
-			} else {
-				this.queueCompactionMessage(trimmed, "steer");
-			}
+			this.queueCompactionMessage(trimmed, "steer");
 			return;
 		}
 
@@ -1668,15 +1661,9 @@ export class ChatView extends Container implements AppView {
 		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
 		if (!text) return;
 
-		// Queue input typed during a compaction (extension commands still run immediately).
+		// Queue input typed during a compaction.
 		if (this.session.isCompacting) {
-			if (this.isExtensionCommand(text)) {
-				this.editor.addToHistory?.(text);
-				this.editor.setText("");
-				await this.session.prompt(text);
-			} else {
-				this.queueCompactionMessage(text, "followUp");
-			}
+			this.queueCompactionMessage(text, "followUp");
 			return;
 		}
 
@@ -1720,14 +1707,6 @@ export class ChatView extends Container implements AppView {
 		return allQueued.length;
 	}
 
-	/** Whether `text` is a registered extension command (run immediately even during compaction). */
-	private isExtensionCommand(text: string): boolean {
-		if (!text.startsWith("/")) return false;
-		const spaceIndex = text.indexOf(" ");
-		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		return this.session.getCommands().some((command) => command.name === commandName && command.source === "extension");
-	}
-
 	/** Hold a message typed during a compaction; it is flushed when the compaction ends. */
 	private queueCompactionMessage(text: string, mode: "steer" | "followUp"): void {
 		this.compactionQueuedMessages.push({ text, mode });
@@ -1766,9 +1745,7 @@ export class ChatView extends Container implements AppView {
 			if (options?.willRetry) {
 				// A retry is pending: queue the messages for the retry turn.
 				for (const message of queuedMessages) {
-					if (this.isExtensionCommand(message.text)) {
-						await this.session.prompt(message.text);
-					} else if (message.mode === "followUp") {
+					if (message.mode === "followUp") {
 						await this.session.prompt(message.text, { streamingBehavior: "followUp" });
 					} else {
 						await this.session.prompt(message.text, { streamingBehavior: "steer" });
@@ -1778,23 +1755,9 @@ export class ChatView extends Container implements AppView {
 				return;
 			}
 
-			// Find the first non-extension-command message to use as the prompt that starts the turn.
-			const firstPromptIndex = queuedMessages.findIndex((message) => !this.isExtensionCommand(message.text));
-			if (firstPromptIndex === -1) {
-				// All extension commands - execute them all.
-				for (const message of queuedMessages) {
-					await this.session.prompt(message.text);
-				}
-				return;
-			}
-
-			const preCommands = queuedMessages.slice(0, firstPromptIndex);
-			const firstPrompt = queuedMessages[firstPromptIndex]!;
-			const rest = queuedMessages.slice(firstPromptIndex + 1);
-
-			for (const message of preCommands) {
-				await this.session.prompt(message.text);
-			}
+			// The first queued message starts the turn; the rest queue behind it.
+			const firstPrompt = queuedMessages[0]!;
+			const rest = queuedMessages.slice(1);
 
 			// Send the first prompt (starts streaming).
 			const promptPromise = this.session.prompt(firstPrompt.text).catch((error) => {
@@ -1803,9 +1766,7 @@ export class ChatView extends Container implements AppView {
 
 			// Queue the remaining messages behind it.
 			for (const message of rest) {
-				if (this.isExtensionCommand(message.text)) {
-					await this.session.prompt(message.text);
-				} else if (message.mode === "followUp") {
+				if (message.mode === "followUp") {
 					await this.session.prompt(message.text, { streamingBehavior: "followUp" });
 				} else {
 					await this.session.prompt(message.text, { streamingBehavior: "steer" });

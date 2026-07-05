@@ -1,5 +1,5 @@
 export interface ResourceCollision {
-	resourceType: "extension" | "skill" | "prompt" | "theme";
+	resourceType: "skill" | "prompt" | "theme";
 	name: string; // skill name, command/tool/flag name, prompt name, theme name
 	winnerPath: string;
 	loserPath: string;
@@ -16,7 +16,6 @@ export interface ResourceDiagnostic {
 
 /** Loaded-resource counts plus any diagnostics, surfaced at startup and after `/reload`. */
 export interface ResourceSummary {
-	extensions: number;
 	tools: number;
 	/** Optional so the daemon client's cached default (which predates the providers folder) stays valid. */
 	providers?: number;

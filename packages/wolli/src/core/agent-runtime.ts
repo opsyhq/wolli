@@ -599,7 +599,6 @@ export class AgentRuntime {
 			...this._skillDiagnostics,
 		];
 		return {
-			extensions: 0,
 			tools: this._tools.length,
 			providers: this._providerCount,
 			skills: this._skills.length,

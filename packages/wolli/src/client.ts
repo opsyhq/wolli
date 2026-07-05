@@ -457,7 +457,6 @@ export class SessionHandle {
 	private snap: DaemonSessionState;
 	private queue: { steer: AgentMessage[]; followUp: AgentMessage[] } = { steer: [], followUp: [] };
 	private resourceSummary: ResourceSummary = {
-		extensions: 0,
 		tools: 0,
 		skills: 0,
 		prompts: 0,
