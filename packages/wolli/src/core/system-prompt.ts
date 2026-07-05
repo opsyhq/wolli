@@ -25,8 +25,12 @@ export interface BuildSystemPromptOptions {
 	user?: string;
 	/** Skills discovered for this agent, formatted into the frozen prompt. */
 	skills?: Skill[];
-	/** Names of the tools active this session, so extensions can tailor guidance. */
+	/** Names of the tools active this session; filters which snippets show in Available tools. */
 	selectedTools?: string[];
+	/** One-line prompt entries keyed by tool name, rendered in the Available tools section. */
+	toolSnippets?: Record<string, string>;
+	/** Guideline bullets rendered in the Guidelines section while their tools are active. */
+	toolGuidelines?: string[];
 	/** Text appended to the end of the system prompt. */
 	appendSystemPrompt?: string;
 }
@@ -78,6 +82,26 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	if (!config) return "";
 
 	const parts = [`You are ${config.name}, a persistent, purposeful agent.`];
+
+	// Available tools + Guidelines: the prompt-facing half of a tool's definition (docs/tools.md).
+	// A tool shows in Available tools only when it declares a promptSnippet; promptGuidelines bullets
+	// collect into Guidelines. buildSessionTooling harvests both from the built-in and authored tools.
+	const selectedTools = options.selectedTools ?? [];
+	const toolSnippets = options.toolSnippets ?? {};
+	const visibleTools = selectedTools.filter((name) => toolSnippets[name]);
+	if (visibleTools.length > 0) {
+		parts.push("", "## Available tools", ...visibleTools.map((name) => `- ${name}: ${toolSnippets[name]}`));
+	}
+	const toolGuidelines: string[] = [];
+	for (const guideline of options.toolGuidelines ?? []) {
+		const normalized = guideline.trim();
+		if (normalized.length > 0 && !toolGuidelines.includes(normalized)) {
+			toolGuidelines.push(normalized);
+		}
+	}
+	if (toolGuidelines.length > 0) {
+		parts.push("", "## Guidelines", ...toolGuidelines.map((g) => `- ${g}`));
+	}
 
 	const soul = options.soul ?? "";
 	const memory = options.memory ?? "";
