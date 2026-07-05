@@ -1,8 +1,8 @@
 /**
- * Tools loader. Loads one tool per file with jiti from the paths the resource loader
- * resolves: the default export is the `defineTool` definition. Mirrors the workflows
+ * Providers loader. Loads one provider per file with jiti from the paths the resource loader
+ * resolves: the default export is the `defineProvider` config. Mirrors the tools
  * loader: one jiti per pass with `moduleCache: true` (backed by the process-global
- * CommonJS cache), so a tool importing an integration file resolves to the SAME stamped
+ * CommonJS cache), so a provider importing an integration file resolves to the SAME stamped
  * module the integrations loader evaluated. Entry files are evicted from that cache
  * before importing (per-call re-evaluation); a bad file becomes an error entry that
  * never aborts the rest.
@@ -15,12 +15,12 @@ import { isBunBinary, isBundled } from "../../config.ts";
 import { canonicalizePath, resolvePath } from "../../utils/paths.ts";
 import { getAliases, VIRTUAL_MODULES } from "../integrations/loader.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
-import type { LoadToolsResult, Tool, ToolDefinition } from "./types.ts";
+import type { LoadProvidersResult, Provider, ProviderConfig } from "./types.ts";
 
 const require = createRequire(import.meta.url);
 
-export async function loadTools(paths: string[], cwd: string): Promise<LoadToolsResult> {
-	const tools: Tool[] = [];
+export async function loadProviders(paths: string[], cwd: string): Promise<LoadProvidersResult> {
+	const providers: Provider[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
 	const resolvedCwd = resolvePath(cwd);
 	const jiti = createJiti(import.meta.url, {
@@ -28,36 +28,38 @@ export async function loadTools(paths: string[], cwd: string): Promise<LoadTools
 		...(isBunBinary || isBundled ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
 	});
 
-	for (const toolPath of paths) {
-		const resolvedPath = resolvePath(toolPath, resolvedCwd, { normalizeUnicodeSpaces: true });
+	for (const providerPath of paths) {
+		const resolvedPath = resolvePath(providerPath, resolvedCwd, { normalizeUnicodeSpaces: true });
 		try {
 			const canonicalPath = canonicalizePath(resolvedPath);
 			// Evict the entry so every load call re-evaluates it; nested modules stay cached
 			// (a subtree flush here would wipe the stamped integration modules).
 			delete require.cache[canonicalPath];
 			const definition = await jiti.import(canonicalPath, { default: true });
-			// Structural defineTool-result check: name, parameters schema, execute function.
-			const shaped =
-				typeof definition === "object" &&
-				definition !== null &&
-				typeof (definition as { name?: unknown }).name === "string" &&
-				typeof (definition as { parameters?: unknown }).parameters === "object" &&
-				typeof (definition as { execute?: unknown }).execute === "function";
+			// Structural defineProvider-result check: a non-null object (a ProviderConfig).
+			const shaped = typeof definition === "object" && definition !== null;
 			if (!shaped) {
-				errors.push({ path: toolPath, error: `Tool does not export a defineTool definition: ${toolPath}` });
+				errors.push({
+					path: providerPath,
+					error: `Provider does not export a defineProvider config: ${providerPath}`,
+				});
 				continue;
 			}
-			tools.push({
-				definition: definition as ToolDefinition,
-				sourceInfo: createSyntheticSourceInfo(toolPath, { source: "local", baseDir: path.dirname(resolvedPath) }),
-				path: toolPath,
+			providers.push({
+				name: path.basename(providerPath, path.extname(providerPath)),
+				config: definition as ProviderConfig,
+				sourceInfo: createSyntheticSourceInfo(providerPath, {
+					source: "local",
+					baseDir: path.dirname(resolvedPath),
+				}),
+				path: providerPath,
 				resolvedPath,
 			});
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
-			errors.push({ path: toolPath, error: `Failed to load tool: ${message}` });
+			errors.push({ path: providerPath, error: `Failed to load provider: ${message}` });
 		}
 	}
 
-	return { tools, errors };
+	return { providers, errors };
 }

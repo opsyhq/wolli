@@ -2,7 +2,6 @@ import type { AgentTool } from "@opsyhq/agent";
 import { constants } from "fs";
 import { type Static, Type } from "typebox";
 import type { Environment } from "../environments/types.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
 import {
 	applyEditsToNormalizedContent,
 	detectLineEnding,
@@ -16,6 +15,7 @@ import {
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
+import type { ExtensionToolDefinition } from "./types.ts";
 
 const replaceEditSchema = Type.Object(
 	{
@@ -89,7 +89,7 @@ function validateEditInput(input: EditToolInput): { path: string; edits: Edit[] 
 
 export function createEditToolDefinition(
 	env: Environment,
-): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
+): ExtensionToolDefinition<typeof editSchema, EditToolDetails | undefined> {
 	return {
 		name: "edit",
 		label: "edit",

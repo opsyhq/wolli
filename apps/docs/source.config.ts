@@ -53,7 +53,7 @@ function rewriteLink(url: string): string {
 	if (url.startsWith("../")) {
 		return `${GITHUB_BLOB}/${url.slice("../".length)}`;
 	}
-	// `extensions.md#anchor` / `./extensions.md` → site routes under /docs;
+	// `workflows.md#anchor` / `./workflows.md` → site routes under /docs;
 	// index.md is published as getting-started.
 	const match = url.match(/^(?:\.\/)?([\w-]+)\.md(#.*)?$/);
 	if (!match) return url;

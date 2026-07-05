@@ -15,14 +15,14 @@ Today: only launchd redirects daemon stdout/stderr to files (in the OS temp dir)
 Remaining:
 
 - A first-class log primitive the agent and human can query — durable, not launchd temp files or journald.
-- Structured capture from extensions and integrations, keyed so a single run can be reconstructed.
-- A query surface (tool + CLI) to fetch and filter logs while debugging an extension or integration.
+- Structured capture from workflows and integrations, keyed so a single run can be reconstructed.
+- A query surface (tool + CLI) to fetch and filter logs while debugging a workflow or integration.
 
 ### Agent as a versioned git folder
 
 Status: Proposed
 
-Today: the agent home (`~/.wolli/agents/<name>`) is plain on-disk files the user owns — `agent.json`, the memory files, and `extensions/`, `integrations/`, `skills/`, `prompts/`, `themes/` — and the agent already self-edits it (memory tool for MEMORY.md/USER.md, file tools for SOUL.md; edits apply next session). Plugins install from `npm:`, `git:`, and local sources into a managed per-agent store.
+Today: the agent home (`~/.wolli/agents/<name>`) is plain on-disk files the user owns — `agent.json`, the memory files, and `integrations/`, `workflows/`, `hooks/`, `tools/`, `providers/`, `skills/`, `prompts/`, `themes/` — and the agent already self-edits it (memory tool for MEMORY.md/USER.md, file tools for SOUL.md; edits apply next session). Plugins install from `npm:`, `git:`, and local sources into a managed per-agent store.
 
 Remaining:
 
@@ -33,14 +33,13 @@ Remaining:
 
 Status: Proposed
 
-Today: the integration runner routes channel events into the agent through each integration's paired chat extension; extensions register tools, commands, events, and UI — including dynamically mid-session; srt sandboxing confines writes only (reads and network are unrestricted), with full isolation Docker-only.
+Today: the integration runner routes channel events into the agent through each integration's paired chat workflow, and what an agent statically owns is split into per-type folders in its home — `workflows/`, `tools/`, `hooks/`, `providers/` alongside `integrations/` and `skills/`, each an addressable file the agent and human edit directly rather than one bundled module; srt sandboxing confines writes only (reads and network are unrestricted), with full isolation Docker-only.
 
 Remaining:
 
-- Make extensions static-registration only; move everything dynamic (including today's mid-session tool and provider registration) into workflows whose steps run in sandboxes.
-- Disassemble what an extension statically owns into per-type folders in the agent home, e.g. tools into `tools/` alongside the existing `skills/`, so each capability is an addressable file the agent and human edit directly instead of one bundled extension module.
+- Run workflow steps in sandboxes — the dynamic work (including mid-session tool and provider changes) now lives in workflows, but their steps still execute in-process.
 - Treat every agent action as a workflow step — a tool call becomes a workflow with steps underneath — so the unit of execution is a step the runtime runs inline locally or as a separate sandboxed/cloud job.
-- Lift the channel-aware routing logic currently embedded in the paired chat extensions into a default routing workflow that is itself first-class.
+- Make the channel-aware routing, now embedded in each integration's paired chat workflow, a single default routing workflow that is itself first-class.
 - Support agent-authored workflows.
 - Top level `ctx.agent.*` in future we will add `ctx.db.*`, `ctx.proxy/webhook.*`
 
@@ -58,7 +57,7 @@ Remaining:
 
 Status: Proposed
 
-Today: extensions emit UI over a small serialized daemon protocol (awaited dialogs plus notify, status, widgets), clients reconstruct live activity independently from per-session SSE with snapshot and replay, and persisted custom messages exist — but their renderers are not wired over the daemon and they are fed back into agent context.
+Today: workflows and integration onboarding emit dialog UI over a small serialized daemon protocol (awaited select/confirm/input dialogs plus a fire-and-forget notify), clients reconstruct live activity independently from per-session SSE with snapshot and replay, and persisted custom messages exist — but their renderers are not wired over the daemon and they are fed back into agent context.
 
 Remaining:
 
@@ -115,7 +114,7 @@ Remaining:
 
 Status: Planned
 
-Today: `@opsyhq/agent` (engine) and `@opsyhq/tui` are split out, but `@opsyhq/wolli` still bundles the agent client (`client.ts`), the agent server (`server.ts` + `AgentRuntime` + `AgentSession`), the environments (`host`, the srt-confined `local-os`, `docker`), the management/spawner (`AgentSettingsManager` + `ServiceManager`), and beyond those the extension, integration, and plugin systems, the built-in tool suite, themes, the model registry, auth, and approvals.
+Today: `@opsyhq/agent` (engine) and `@opsyhq/tui` are split out, but `@opsyhq/wolli` still bundles the agent client (`client.ts`), the agent server (`server.ts` + `AgentRuntime` + `AgentSession`), the environments (`host`, the srt-confined `local-os`, `docker`), the management/spawner (`AgentSettingsManager` + `ServiceManager`), and beyond those the integration, workflow, hook, provider, and plugin systems, the built-in tool suite, themes, the model registry, auth, and approvals.
 
 Remaining:
 
@@ -125,12 +124,12 @@ Notes:
 
 - This is the groundwork for later remote/cloud hosting (a remote agent server, a configurable transport). Those abstractions come after the split, not as part of it — though seams exist already: the in-process SDK facade and the session-namespaced HTTP/SSE wire protocol.
 
-### Build-time compilation and testing of extensions and integrations
+### Build-time compilation and testing of workflows and integrations
 
 Status: Planned
 
-Today: the loaders compile TS on import via jiti and report load errors and cross-extension conflicts as structured diagnostics; sandboxing and the vitest harness exist. Nothing validates at build time.
+Today: the loaders compile TS on import via jiti and report load errors and cross-resource conflicts as structured diagnostics; sandboxing and the vitest harness exist. Nothing validates at build time.
 
 Remaining:
 
-- A build-time compile and self-test loop the agent runs against extensions and integrations it has authored, so it can validate them before handing them to the user.
+- A build-time compile and self-test loop the agent runs against workflows and integrations it has authored, so it can validate them before handing them to the user.

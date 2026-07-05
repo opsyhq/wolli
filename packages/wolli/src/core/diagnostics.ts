@@ -18,6 +18,8 @@ export interface ResourceDiagnostic {
 export interface ResourceSummary {
 	extensions: number;
 	tools: number;
+	/** Optional so the daemon client's cached default (which predates the providers folder) stays valid. */
+	providers?: number;
 	skills: number;
 	prompts: number;
 	commands: number;

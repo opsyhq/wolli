@@ -22,7 +22,6 @@ import { getAgentDir } from "../src/config.ts";
 import { AgentRuntime } from "../src/core/agent-runtime.ts";
 import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import type { Session } from "../src/core/extensions/types.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { IntegrationStore } from "../src/core/integration-store.ts";
 import { IntegrationRunner, loadIntegrations } from "../src/core/integrations/index.ts";
@@ -30,7 +29,7 @@ import { ModelRegistry } from "../src/core/model-registry.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { loadTools } from "../src/core/tools/loader.ts";
 import { defineTool, type ToolContext, type ToolDefinition } from "../src/core/tools/types.ts";
-import type { IntegrationHandleOf, IntegrationKey } from "../src/core/workflows/types.ts";
+import type { IntegrationHandleOf, IntegrationKey, Session } from "../src/core/workflows/types.ts";
 import { defineTool as barrelDefineTool } from "../src/index.ts";
 
 // ============================================================================

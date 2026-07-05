@@ -22,14 +22,6 @@ import { type AgentConfig, AgentSettingsManager } from "./core/agent-settings-ma
 import { AuthStorage } from "./core/auth-storage.ts";
 import { THINKING_LEVELS } from "./core/defaults.ts";
 import type { ResourceSummary } from "./core/diagnostics.ts";
-import type {
-	ExtensionContext,
-	ExtensionShortcut,
-	MessageRenderer,
-	SlashCommandInfo,
-	ToolInfo,
-} from "./core/extensions/index.ts";
-import type { KeyId } from "./core/keybindings.ts";
 import { readMemoryFile } from "./core/memory.ts";
 import { ModelRegistry } from "./core/model-registry.ts";
 import type { ScopedModel } from "./core/model-resolver.ts";
@@ -37,6 +29,8 @@ import type { ConfiguredPlugin } from "./core/plugin-manager.ts";
 import { daemonLaunchCommand, getServiceManager } from "./core/service/service-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import type { Skill } from "./core/skills.ts";
+import type { SlashCommandInfo } from "./core/slash-commands.ts";
+import type { ToolInfo } from "./core/workflows/types.ts";
 import type {
 	AuthSelectorProvider,
 	DaemonAgentState,
@@ -352,7 +346,7 @@ export class Agent {
 		await fetch(`${this.base}/sessions/${sessionId}/ui-response`, {
 			method: "POST",
 			headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
-			body: JSON.stringify({ type: "extension_ui_response", id, ...answer }),
+			body: JSON.stringify({ type: "ui_response", id, ...answer }),
 		});
 	}
 
@@ -505,7 +499,7 @@ export class SessionHandle {
 	/** Route one parsed SSE frame (post-hello): extension-UI / login request → bridge; else session event. */
 	private handleFrame(data: string): void {
 		const evt = JSON.parse(data) as SessionEvent | ExtensionUIRequest | LoginUIRequest;
-		if (evt.type === "extension_ui_request") {
+		if (evt.type === "ui_request") {
 			this.onUiRequest?.(evt);
 			return;
 		}
@@ -795,20 +789,6 @@ export class SessionHandle {
 
 	getFollowUpMessages(): AgentMessage[] {
 		return this.queue.followUp;
-	}
-
-	// ---- Extension surface, inert client-side (the runner lives server-side) ----
-	getShortcuts(): Map<KeyId, ExtensionShortcut> {
-		return new Map();
-	}
-
-	getMessageRenderer(): MessageRenderer | undefined {
-		return undefined;
-	}
-
-	/** Unreachable (`getShortcuts()` is always empty); fails loud rather than fabricating a context. */
-	createShortcutContext(): ExtensionContext {
-		throw new Error("Extension shortcuts are not wired over the daemon.");
 	}
 
 	respondUi(id: string, answer: Record<string, unknown>): Promise<void> {

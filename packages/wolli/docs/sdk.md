@@ -132,7 +132,7 @@ const { repo, session, env, cwd } = await openAgentSession("my-agent", {
 });
 ```
 
-`AgentRuntime` (exported as `AgentRuntime`, `AgentRuntimeOptions`) is the **daemon's internal engine**. It owns N resident sessions keyed by id, the single extension + integration runners, the model registry, auth, reload, and cleanup. The daemon (`runDaemon`) constructs one `AgentRuntime` and wraps the [HTTP/SSE routes](#rpc-mode) around it; `AgentRuntime` is what `createAgentSession` ultimately feeds.
+`AgentRuntime` (exported as `AgentRuntime`, `AgentRuntimeOptions`) is the **daemon's internal engine**. It owns N resident sessions keyed by id, the single integration, workflow, and hook runners, the model registry, auth, reload, and cleanup. The daemon (`runDaemon`) constructs one `AgentRuntime` and wraps the [HTTP/SSE routes](#rpc-mode) around it; `AgentRuntime` is what `createAgentSession` ultimately feeds.
 
 > `AgentRuntime` and its per-session `AgentSession` are documented here as the engine the daemon runs, **not** as an embedding path. They are not a turnkey `new AgentRuntime(...)` SDK surface — their options (`authStorage`, `integrationAccounts`, `integrationStore`, a resolved `model`) are the daemon's to assemble. To embed in-process, use `createAgentSession()` + the harness; to drive an agent remotely, use the [daemon client](#rpc-mode).
 
@@ -195,7 +195,7 @@ harness.subscribe((event) => {
 });
 ```
 
-> Wolli does **not** emit `compaction_start`/`compaction_end`, `auto_retry_start`/`auto_retry_end`, or `extension_error` on the forwarded stream. It **does** add `model_update`, `thinking_level_update`, and (over the daemon) `scoped_models_update`. See [Events over the daemon](#events-1) for the exact forwarded allowlist.
+> Wolli does **not** emit `compaction_start`/`compaction_end` or `auto_retry_start`/`auto_retry_end` on the forwarded stream. It **does** add `model_update`, `thinking_level_update`, and (over the daemon) `scoped_models_update`. See [Events over the daemon](#events-1) for the exact forwarded allowlist.
 
 ## Options Reference
 
@@ -275,14 +275,14 @@ import {
 
 > There is no `tools: ["read", "bash"]` string allowlist and no `noTools`/`excludeTools` here — you build the `AgentTool[]` explicitly and pass it. The daemon assembles the active set itself; over the client, read it with [`listTools()`](#sessionhandle).
 
-### Extensions, Skills, Context Files, Slash Commands
+### Skills, Context Files, Slash Commands
 
-`createAgentSession()` accepts `resources?: AgentHarnessResources` — skills and prompt templates pre-mapped into the harness shapes for explicit invocation (`harness.skill()` / `harness.promptFromTemplate()`). Full discovery (extensions, skills, prompt templates, integrations) is the `AgentRuntime`'s job, not a `createAgentSession()` option.
+`createAgentSession()` accepts `resources?: AgentHarnessResources` — skills and prompt templates pre-mapped into the harness shapes for explicit invocation (`harness.skill()` / `harness.promptFromTemplate()`). Full discovery (integrations, workflows, hooks, tools, providers, skills, prompt templates) is the `AgentRuntime`'s job, not a `createAgentSession()` option.
 
 Helpers for assembling resources yourself:
 
 ```typescript
-import { loadSkills, BUILTIN_SLASH_COMMANDS, discoverAndLoadExtensions } from "@opsyhq/wolli";
+import { loadSkills, BUILTIN_SLASH_COMMANDS } from "@opsyhq/wolli";
 ```
 
 Over the daemon client, inspect the resolved set with [`listSkills()` / `listContexts()` / `getCommands()` / `listTools()` / `listIntegrations()`](#sessionhandle). See [skills.md](skills.md) and [integrations.md](integrations.md).
@@ -312,7 +312,7 @@ interface CreateAgentSessionResult {
 }
 ```
 
-That is the whole result — no extensions result, no model-fallback message. Everything else (events, model state, the session tree) is reached through the harness and the `session`/`repo` you passed in.
+That is the whole result — no model-fallback message. Everything else (events, model state, the session tree) is reached through the harness and the `session`/`repo` you passed in.
 
 ## Complete Example
 
@@ -441,7 +441,7 @@ GET  /events                  (SSE) root control stream: agent snapshot + sessio
 GET  /sessions                       the session list (DaemonAgentState)
 GET  /sessions/:id/events     (SSE) one session's curated event stream (attaching makes it live)
 POST /sessions/:id/control           a command for that session; its sync response is the body
-POST /sessions/:id/ui-response        a client's answer to that session's parked extension dialog
+POST /sessions/:id/ui-response        a client's answer to that session's parked dialog
 GET  /health                         liveness; the only route with no auth
 ```
 
@@ -468,7 +468,7 @@ Authorization: Bearer <token>
 
 **Correlation id.** Set `id` on a command to match its response; events never carry an `id`.
 
-**Replay ring.** Each session's broadcaster keeps the last **256** events (`RING_SIZE`) with a monotonic sequence id as the SSE `id:`. On reconnect, send `Last-Event-ID: <n>` and the daemon replays buffered frames with `id > n` (bounded by the watermark captured at attach, so live and replayed frames stay disjoint). Extension-UI request frames and control-stream lifecycle frames carry **no** `id` and are not replayable.
+**Replay ring.** Each session's broadcaster keeps the last **256** events (`RING_SIZE`) with a monotonic sequence id as the SSE `id:`. On reconnect, send `Last-Event-ID: <n>` and the daemon replays buffered frames with `id > n` (bounded by the watermark captured at attach, so live and replayed frames stay disjoint). Dialog-UI request frames and control-stream lifecycle frames carry **no** `id` and are not replayable.
 
 ### Commands
 
@@ -483,11 +483,11 @@ Authorization: Bearer <token>
 | | `wait_for_idle` | resolves when the turn loop is idle |
 | | `clear_queue` | returns the cleared `{ steering, followUp }` |
 | Session | `create_session` | additive; returns the new session snapshot |
-| | `reload` | re-discover extensions/skills/prompts and rebuild the runner |
+| | `reload` | re-discover integrations/workflows/hooks/tools/providers/skills/prompts and rebuild the runners |
 | | `shutdown` | ack, then self-exit (frees the fixed port) |
 | State | `get_state` | the session snapshot |
 | | `get_messages` / `get_entries` | conversation messages / tree entries |
-| | `get_commands` | slash commands (extension + prompt + skill) |
+| | `get_commands` | slash commands (prompt + skill) |
 | | `get_resource_summary` | counts + diagnostics |
 | | `get_tool_info` / `get_integration_info` / `get_skills` / `get_plugins` / `get_context_info` | capability reads |
 | Mutation | `seed_assistant_message` / `append_message` | opener seed / resumed-message append |
@@ -524,7 +524,7 @@ Each session streams a **curated subset** of the harness's event surface out of 
 | `thinking_level_update` | thinking level changed (`.level`) |
 | `scoped_models_update` | session model scope changed (`.scopedModels`) — host-originated, not a harness own-event |
 
-> Wolli forwards `model_update`, `thinking_level_update`, and `scoped_models_update` (none of which pi's RPC has) and drops `compaction_*`, `auto_retry_*`, and `extension_error`. `scoped_models_update` is bridged onto the session broadcaster by the runtime after `setScopedModels()` resolves.
+> Wolli forwards `model_update`, `thinking_level_update`, and `scoped_models_update` (none of which pi's RPC has) and drops `compaction_*` and `auto_retry_*`. `scoped_models_update` is bridged onto the session broadcaster by the runtime after `setScopedModels()` resolves.
 
 **Control stream (`GET /events`).** A low-volume root stream whose `hello` frame is the agent snapshot (`DaemonAgentState`) and whose later frames are session-lifecycle events, so a client tracking the open-session list never has to poll:
 
@@ -534,29 +534,29 @@ Each session streams a **curated subset** of the harness's event surface out of 
 { "type": "session_renamed", "sessionId": "abc123", "sessionName": "my-feature-work" }
 ```
 
-### Extension UI Protocol
+### Dialog UI Protocol
 
-When a daemon-side extension calls `ctx.ui.select()`, `ctx.ui.confirm()`, etc., the daemon translates it into a request/response sub-protocol layered on the session stream.
+When a daemon-side workflow or integration calls `ctx.ui.select()`, `ctx.ui.confirm()`, etc., the daemon translates it into a request/response sub-protocol layered on the session stream.
 
-- **Dialog methods** (`select`, `confirm`, `input`, `editor`) push an `extension_ui_request` frame, park a promise keyed by `id`, and block until the client answers with `POST /sessions/:id/ui-response`.
-- **Fire-and-forget methods** (`notify`, `setStatus`, `setWidget`, `setTitle`, `setEditorText`) push a request frame with no expected response.
+- **Awaited dialogs** (`select`, `confirm`, `input`) push a `ui_request` frame, park a promise keyed by `id`, and block until the client answers with `POST /sessions/:id/ui-response`.
+- **The fire-and-forget `notify`** pushes a request frame with no expected response.
 
-Request frames are **not** `AgentHarnessEvent`s: they bypass the curated forwarded set and the replay ring (no SSE `id`, so a reconnect never re-delivers a stale dialog). All nine `method` literals are **camelCase** — `select`, `confirm`, `input`, `editor`, `notify`, `setStatus`, `setWidget`, `setTitle`, `setEditorText`.
+Request frames are **not** `AgentHarnessEvent`s: they bypass the curated forwarded set and the replay ring (no SSE `id`, so a reconnect never re-delivers a stale dialog). All four `method` literals are lowercase — `select`, `confirm`, `input`, `notify`.
 
 ```json
-{ "type": "extension_ui_request", "id": "uuid-1", "method": "select",
+{ "type": "ui_request", "id": "uuid-1", "method": "select",
   "title": "Allow command?", "options": ["Allow", "Block"], "timeout": 10000 }
 ```
 
 Answer (`POST /sessions/:id/ui-response`):
 
 ```json
-{ "type": "extension_ui_response", "id": "uuid-1", "value": "Allow" }
-{ "type": "extension_ui_response", "id": "uuid-2", "confirmed": true }
-{ "type": "extension_ui_response", "id": "uuid-3", "cancelled": true }
+{ "type": "ui_response", "id": "uuid-1", "value": "Allow" }
+{ "type": "ui_response", "id": "uuid-2", "confirmed": true }
+{ "type": "ui_response", "id": "uuid-3", "cancelled": true }
 ```
 
-A dialog with a `timeout` (ms) auto-resolves to its default when it expires. Surfaces that need real TUI access are degraded daemon-side: `custom()` returns `undefined`; `getEditorText()` returns `""`; `getToolsExpanded()` returns `false`; `setWorkingMessage`/`setWorkingIndicator`/`setFooter`/`setHeader`/`setEditorComponent` are no-ops; `pasteToEditor()` delegates to `setEditorText`; the theme family is inert. When the last client detaches, the session's parked dialogs resolve as cancelled (so a signal-less `editor` never hangs forever).
+A dialog with a `timeout` (ms) auto-resolves to its default when it expires. When the last client detaches, the session's parked dialogs resolve as cancelled (so a signal-less dialog never hangs forever).
 
 ### Error Handling
 
@@ -675,7 +675,7 @@ agent.close();                          // close every session stream + the cont
 
 The per-session proxy. Verbs round-trip through `agent.send(sessionId, …)`; the session's SSE feeds the local snapshot/queue caches.
 
-> **Ordering.** Opening a handle (`getSession`/`getLatestSession`) attaches the SSE stream — which is also what makes the session **live** on the daemon (rehydrating it if idle). Call `subscribe(...)` (and set `onUiRequest`) **before** `prompt(...)`, or you miss the leading deltas and any extension dialog that turn raises. `prompt()` resolves on acceptance; await `waitForIdle()` for completion. When the last handle closes, the daemon evicts the session (unless a turn is still streaming) — so keep the handle open for the whole turn, and remember a closed handle's parked dialogs resolve as cancelled.
+> **Ordering.** Opening a handle (`getSession`/`getLatestSession`) attaches the SSE stream — which is also what makes the session **live** on the daemon (rehydrating it if idle). Call `subscribe(...)` (and set `onUiRequest`) **before** `prompt(...)`, or you miss the leading deltas and any dialog that turn raises. `prompt()` resolves on acceptance; await `waitForIdle()` for completion. When the last handle closes, the daemon evicts the session (unless a turn is still streaming) — so keep the handle open for the whole turn, and remember a closed handle's parked dialogs resolve as cancelled.
 
 ```typescript
 const session = await agent.getLatestSession();
@@ -689,7 +689,7 @@ await session.clearQueue();
 
 // Subscribe to the curated session events.
 const unsubscribe = session.subscribe((event) => { /* AgentHarnessEvent */ });
-session.onUiRequest = (req) => { /* extension-UI dialog frame */ };
+session.onUiRequest = (req) => { /* dialog-UI request frame */ };
 await session.respondUi(req.id, { value: "Allow" });
 
 // Reads (cached snapshot vs round-trip).
@@ -719,8 +719,6 @@ await session.onboardPlugin(source);
 
 session.close();
 ```
-
-> The client's extension surface is **inert** — the runner lives server-side: `getShortcuts()` returns an empty map, `getMessageRenderer()` returns `undefined`, `emitUserBash()` resolves `undefined`, and `createShortcutContext()` throws. The only live extension bridge is `onUiRequest` + `respondUi`.
 
 ## Integrations
 

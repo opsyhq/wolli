@@ -112,8 +112,12 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 	});
 
 	it("keeps a local source loadable after its origin is removed (the copy travels)", async () => {
-		const pkgDir = join(tempDir, "local-ext");
+		const pkgDir = join(tempDir, "local-int");
 		mkdirSync(pkgDir, { recursive: true });
+		writeFileSync(
+			join(pkgDir, "package.json"),
+			JSON.stringify({ name: "local-int", wolli: { integrations: ["./index.ts"] } }),
+		);
 		writeFileSync(join(pkgDir, "index.ts"), "export default function () {}");
 
 		const settingsManager = AgentSettingsManager.create("alice");
@@ -129,13 +133,12 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		expect(existsSync(join(installedPath!, "index.ts"))).toBe(true);
 
 		// Delete the origin: a relocated agent has no remote to re-fetch from, so the copy
-		// is the only copy — it must still resolve. A bare directory source surfaces as the
-		// store dir itself (the loader resolves its index.ts entry).
+		// is the only copy — the integration half must still resolve from the managed store.
 		rmSync(pkgDir, { recursive: true, force: true });
 		const result = await pm.resolve();
-		const ext = result.extensions.find((r) => r.path.startsWith(localRoot));
-		expect(ext).toBeDefined();
-		expect(existsSync(join(ext!.path, "index.ts"))).toBe(true);
+		const integration = result.integrations.find((r) => r.path.startsWith(localRoot));
+		expect(integration).toBeDefined();
+		expect(existsSync(integration!.path)).toBe(true);
 	});
 
 	it("getInstalledPath finds a local source installed by a relative path (resolves against cwd, not the agent home)", async () => {

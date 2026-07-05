@@ -5,22 +5,22 @@ import { describe, expect, it } from "vitest";
 import { createApprovalGate, createBypassGate } from "../src/core/approval/approval-gate.ts";
 import { ApprovalStore } from "../src/core/approval/approval-storage.ts";
 import type { ApprovalRequest } from "../src/core/approval/types.ts";
-import type { ExtensionUIContext } from "../src/core/extensions/types.ts";
+import type { DialogUI } from "../src/core/workflows/index.ts";
 
 interface FakeUI {
-	ui: ExtensionUIContext;
+	ui: DialogUI;
 	lastOptions: string[] | undefined;
 }
 
 /** A UI whose `select` always returns `choice` and records the options it was shown. */
 function fakeUI(choice: string | undefined): FakeUI {
-	const state: FakeUI = { ui: undefined as unknown as ExtensionUIContext, lastOptions: undefined };
+	const state: FakeUI = { ui: undefined as unknown as DialogUI, lastOptions: undefined };
 	state.ui = {
 		select: async (_title: string, options: string[]) => {
 			state.lastOptions = options;
 			return choice;
 		},
-	} as unknown as ExtensionUIContext;
+	} as unknown as DialogUI;
 	return state;
 }
 

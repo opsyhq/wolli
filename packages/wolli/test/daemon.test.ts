@@ -108,7 +108,7 @@ async function uiRespond(id: string, answer: Record<string, unknown>): Promise<v
 	await fetch(`${baseUrl()}/sessions/${sessionId}/ui-response`, {
 		method: "POST",
 		headers: { "content-type": "application/json", Authorization: `Bearer ${TOKEN}` },
-		body: JSON.stringify({ type: "extension_ui_response", id, ...answer }),
+		body: JSON.stringify({ type: "ui_response", id, ...answer }),
 	});
 }
 
@@ -481,7 +481,7 @@ describe("daemon client-support verbs (Slice 0)", () => {
 		await startDaemon();
 		const res = await control({ type: "get_resource_summary" });
 		expect(res).toMatchObject({ command: "get_resource_summary", success: true });
-		expect(typeof res.data.extensions).toBe("number");
+		expect(typeof res.data.tools).toBe("number");
 		expect(Array.isArray(res.data.diagnostics)).toBe(true);
 	});
 
@@ -506,22 +506,31 @@ describe("daemon client-support verbs (Slice 0)", () => {
 describe("daemon plugin/onboarding consistency", () => {
 	it("install_plugin is reflected in get_resource_summary with no stale cache; update + remove work", async () => {
 		await startDaemon();
-		const before = (await control({ type: "get_resource_summary" })).data.extensions as number;
+		const before = (await control({ type: "get_resource_summary" })).data.tools as number;
 
-		// A self-contained local plugin contributing one (no-op) extension.
-		const pkg = writePackage(
-			join(home, "ext-pkg"),
-			{ extensions: ["./ext.ts"] },
-			{ "ext.ts": "export default function () {}\n" },
-		);
+		// A self-contained local plugin contributing one tool.
+		const toolSource = [
+			'import { defineTool } from "wolli";',
+			'import { Type } from "typebox";',
+			"",
+			"export default defineTool({",
+			'  name: "echo",',
+			'  label: "Echo",',
+			'  description: "Echoes its input back.",',
+			"  parameters: Type.Object({}),",
+			'  execute: async () => ({ content: [{ type: "text", text: "ok" }] }),',
+			"});",
+			"",
+		].join("\n");
+		const pkg = writePackage(join(home, "tool-pkg"), { tools: ["./echo.ts"] }, { "echo.ts": toolSource });
 		expect(await control({ type: "install_plugin", source: pkg })).toMatchObject({
 			command: "install_plugin",
 			success: true,
 		});
 
-		// Single-writer freshness: the daemon installed + reloaded ITSELF, so the new extension is
+		// Single-writer freshness: the daemon installed + reloaded ITSELF, so the new tool is
 		// already visible — no manual reload, no stale in-memory resources.
-		expect((await control({ type: "get_resource_summary" })).data.extensions).toBe(before + 1);
+		expect((await control({ type: "get_resource_summary" })).data.tools).toBe(before + 1);
 
 		expect(await control({ type: "update_plugins" })).toMatchObject({
 			command: "update_plugins",
@@ -531,8 +540,8 @@ describe("daemon plugin/onboarding consistency", () => {
 		const removed = await control({ type: "remove_plugin", source: pkg });
 		expect(removed).toMatchObject({ command: "remove_plugin", success: true });
 		expect(removed.data).toEqual({ removed: true });
-		// Removal reloaded too — the extension is gone again.
-		expect((await control({ type: "get_resource_summary" })).data.extensions).toBe(before);
+		// Removal reloaded too — the tool is gone again.
+		expect((await control({ type: "get_resource_summary" })).data.tools).toBe(before);
 	});
 
 	it("remove_plugin reports removed:false when nothing matches", async () => {
@@ -574,7 +583,7 @@ describe("daemon plugin/onboarding consistency", () => {
 		// daemon scans the just-installed plugin's integrations for any declaring `onboard`.
 		const onboarding = control({ type: "onboard_plugin", source: pkg });
 
-		const frame = await client.waitFor((e) => dataType(e) === "extension_ui_request");
+		const frame = await client.waitFor((e) => dataType(e) === "ui_request");
 		const req = JSON.parse(frame.data) as { id: string; method: string };
 		expect(req.method).toBe("input");
 		await uiRespond(req.id, { value: "secret-token" });

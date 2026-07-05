@@ -3,10 +3,10 @@ import path from "path";
 import { type Static, Type } from "typebox";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { Environment } from "../environments/types.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
+import type { ExtensionToolDefinition } from "./types.ts";
 
 function toPosixPath(value: string): string {
 	return value.split(path.sep).join("/");
@@ -31,7 +31,7 @@ export interface FindToolDetails {
 
 export function createFindToolDefinition(
 	env: Environment,
-): ToolDefinition<typeof findSchema, FindToolDetails | undefined> {
+): ExtensionToolDefinition<typeof findSchema, FindToolDetails | undefined> {
 	return {
 		name: "find",
 		label: "find",

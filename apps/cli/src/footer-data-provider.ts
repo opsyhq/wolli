@@ -1,12 +1,7 @@
 import { type ExecFileException, execFile, spawnSync } from "child_process";
 import { existsSync, type FSWatcher, readFileSync, type Stats, statSync, unwatchFile, watchFile } from "fs";
 import { dirname, join, resolve } from "path";
-import {
-	closeWatcher,
-	FS_WATCH_RETRY_DELAY_MS,
-	type ReadonlyFooterDataProvider,
-	watchWithErrorHandler,
-} from "@opsyhq/wolli";
+import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "@opsyhq/wolli";
 
 type GitPaths = {
 	repoDir: string;
@@ -98,14 +93,13 @@ function shouldPollGitHead(repoDir: string): boolean {
 }
 
 /**
- * Provides git branch and extension statuses - data not otherwise accessible to extensions.
- * Token stats, model info available via ctx.sessionManager and ctx.model.
+ * Provides git branch and available-provider count for footer display. Token stats and
+ * model info are available via ctx.sessionManager and ctx.model.
  */
-export class FooterDataProvider implements ReadonlyFooterDataProvider {
+export class FooterDataProvider {
 	private cwd: string;
 	private static readonly WATCH_DEBOUNCE_MS = 500;
 
-	private extensionStatuses = new Map<string, string>();
 	private cachedBranch: string | null | undefined = undefined;
 	private gitPaths: GitPaths | null | undefined = undefined;
 	private headWatcher: FSWatcher | null = null;
@@ -136,29 +130,10 @@ export class FooterDataProvider implements ReadonlyFooterDataProvider {
 		return this.cachedBranch;
 	}
 
-	/** Extension status texts set via ctx.ui.setStatus() */
-	getExtensionStatuses(): ReadonlyMap<string, string> {
-		return this.extensionStatuses;
-	}
-
 	/** Subscribe to git branch changes. Returns unsubscribe function. */
 	onBranchChange(callback: () => void): () => void {
 		this.branchChangeCallbacks.add(callback);
 		return () => this.branchChangeCallbacks.delete(callback);
-	}
-
-	/** Internal: set extension status */
-	setExtensionStatus(key: string, text: string | undefined): void {
-		if (text === undefined) {
-			this.extensionStatuses.delete(key);
-		} else {
-			this.extensionStatuses.set(key, text);
-		}
-	}
-
-	/** Internal: clear extension statuses */
-	clearExtensionStatuses(): void {
-		this.extensionStatuses.clear();
 	}
 
 	/** Number of unique providers with available models (for footer display) */

@@ -20,7 +20,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import type { JsonlSessionMetadata, LeafEntry, Session, SessionTreeEntry, TagsEntry } from "@opsyhq/agent";
 
-// The names `extensions/types.ts` imports from "../session-manager.ts".
+// Session-entry aliases consumed by the workflow/hook session types.
 // SessionEntry/CompactionEntry/BranchSummaryEntry are the engine's structurally
 // identical equivalents, re-aliased here.
 export type {

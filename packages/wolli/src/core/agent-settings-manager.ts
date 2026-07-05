@@ -85,12 +85,6 @@ export class AgentSettingsManager {
 	readonly name: string;
 	private _config: AgentConfig;
 	private merged: Settings;
-	/**
-	 * In-memory project-trust flag. Gates project-local extension/SYSTEM.md loading in
-	 * the resource loader; independent of settings storage (the agent home is always
-	 * trusted, so this defaults to true).
-	 */
-	private projectTrusted = true;
 
 	private constructor(name: string, config: AgentConfig) {
 		this.name = name;
@@ -358,16 +352,6 @@ export class AgentSettingsManager {
 		this.updateSettings((settings) => {
 			settings.defaultModel = `${provider}/${modelId}`;
 		});
-	}
-
-	// --- project trust (in-memory, no file) ---------------------------------
-
-	isProjectTrusted(): boolean {
-		return this.projectTrusted;
-	}
-
-	setProjectTrusted(trusted: boolean): void {
-		this.projectTrusted = trusted;
 	}
 
 	// --- reload + persistence ------------------------------------------------

@@ -1,8 +1,8 @@
 /**
  * Public barrel for `@opsyhq/wolli`.
  *
- * Re-exports the agent builder, system prompt, model resolver, the extension
- * subsystem, and key types — the surface an extension or SDK author builds against.
+ * Re-exports the agent builder, system prompt, model resolver, the workflow/hook/tool/
+ * provider subsystems, and key types — the surface an SDK or plugin author builds against.
  */
 
 export { serializeConversation } from "@opsyhq/agent";
@@ -58,94 +58,6 @@ export type { ResourceDiagnostic, ResourceSummary } from "./core/diagnostics.ts"
 // session's instance via ctx.environment; createHostEnvironment builds the unconfined host backend
 // (the CLI `!` path uses it). The agent runtime builds the full target map via createEnvironments.
 export { createHostEnvironment, type Environment, type FileStat } from "./core/environments/index.ts";
-// Extension system
-export type {
-	AgentEndEvent,
-	AgentStartEvent,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	AppKeybinding,
-	AutocompleteProviderFactory,
-	BashToolCallEvent,
-	BeforeAgentStartEvent,
-	BeforeAgentStartEventResult,
-	BeforeProviderRequestEvent,
-	BeforeProviderRequestEventResult,
-	CompactOptions,
-	ContextEvent,
-	ContextUsage,
-	ConversationPromptOptions,
-	CustomToolCallEvent,
-	EditorFactory,
-	EditToolCallEvent,
-	ExecOptions,
-	ExecResult,
-	Extension,
-	ExtensionAPI,
-	ExtensionContext,
-	ExtensionError,
-	ExtensionEvent,
-	ExtensionFactory,
-	ExtensionFlag,
-	ExtensionHandler,
-	ExtensionRuntime,
-	ExtensionShortcut,
-	ExtensionUIContext,
-	ExtensionUIDialogOptions,
-	ExtensionWidgetOptions,
-	FindToolCallEvent,
-	GrepToolCallEvent,
-	InputEvent,
-	InputEventResult,
-	InputSource,
-	LoadExtensionsResult,
-	LsToolCallEvent,
-	MessageRenderer,
-	MessageRenderOptions,
-	NewSessionOptions,
-	ProviderConfig,
-	ProviderModelConfig,
-	ReadToolCallEvent,
-	RegisteredCommand,
-	RegisteredTool,
-	ResolvedCommand,
-	Session,
-	SessionBeforeCompactEvent,
-	SessionShutdownEvent,
-	SessionStartEvent,
-	SlashCommandInfo,
-	SlashCommandSource,
-	SourceInfo,
-	TerminalInputHandler,
-	ToolCallEvent,
-	ToolCallEventResult,
-	ToolExecutionMode,
-	ToolInfo,
-	ToolRenderResultOptions,
-	ToolResultEvent,
-	TurnEndEvent,
-	TurnStartEvent,
-	UserBashEvent,
-	UserBashEventResult,
-	WidgetPlacement,
-	WorkingIndicatorOptions,
-	WriteToolCallEvent,
-} from "./core/extensions/index.ts";
-export {
-	createExtensionRuntime,
-	discoverAndLoadExtensions,
-	ExtensionRunner,
-	isBashToolResult,
-	isEditToolResult,
-	isFindToolResult,
-	isGrepToolResult,
-	isLsToolResult,
-	isReadToolResult,
-	isToolCallEventType,
-	isWriteToolResult,
-} from "./core/extensions/index.ts";
-export type { ToolRenderContext } from "./core/extensions/types.ts";
-export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 // Hook system: the documented authoring surface plus the `HookRunner`/`loadHooks` seams.
 export {
 	defineHook,
@@ -157,6 +69,7 @@ export {
 	type HookEventMap,
 	type HookResultMap,
 	HookRunner,
+	isToolCallEventType,
 	loadHooks,
 } from "./core/hooks/index.ts";
 export { configureHttpDispatcher } from "./core/http-dispatcher.ts";
@@ -191,6 +104,7 @@ export {
 	loadIntegrations,
 } from "./core/integrations/index.ts";
 export {
+	type AppKeybinding,
 	KEYBINDINGS,
 	type Keybinding,
 	type KeybindingsConfig,
@@ -225,6 +139,9 @@ export type {
 	ResolvedPaths,
 	ResolvedResource,
 } from "./core/plugin-manager.ts";
+// Provider authoring surface (docs/providers.md): one defineProvider file per provider under
+// providers/, registered with the model registry at startup.
+export { defineProvider, type ProviderConfig, type ProviderModelConfig } from "./core/providers/types.ts";
 // Config-value resolution (so integration `onboard(ctx)` can type `ctx.resolve`).
 export {
 	resolveConfigValueOrThrow,
@@ -266,7 +183,7 @@ export {
 	type SkillFrontmatter,
 } from "./core/skills.ts";
 export { BUILTIN_SLASH_COMMANDS, HOME_SLASH_COMMANDS } from "./core/slash-commands.ts";
-export { createSyntheticSourceInfo } from "./core/source-info.ts";
+export { createSyntheticSourceInfo, type SourceInfo } from "./core/source-info.ts";
 export { type BuildSystemPromptOptions, buildSystemPrompt } from "./core/system-prompt.ts";
 export { type BashToolDetails, type BashToolInput, createBashTool } from "./core/tools/bash.ts";
 export { createEditTool, type EditToolDetails, type EditToolInput } from "./core/tools/edit.ts";
@@ -281,9 +198,7 @@ export { createFindTool, type FindToolDetails, type FindToolInput } from "./core
 export { createGrepTool, type GrepToolDetails, type GrepToolInput } from "./core/tools/grep.ts";
 export type { ToolName } from "./core/tools/index.ts";
 // The tool authoring surface (docs/tools.md): one defineTool file per tool under tools/,
-// loaded by loadTools. This `defineTool`/`ToolDefinition` pair supersedes the extension
-// system's (still exported from core/extensions/index.ts for internal use until Phase 5).
-// Tool primitives for custom tools and extensions
+// loaded by loadTools. Tool primitives for custom tools.
 export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -294,6 +209,8 @@ export {
 	type Tool,
 	type ToolContext,
 	type ToolDefinition,
+	type ToolRenderContext,
+	type ToolRenderResultOptions,
 	type TruncationOptions,
 	type TruncationResult,
 	truncateHead,
@@ -342,6 +259,15 @@ export {
 	type WorkflowSession,
 	wolli,
 } from "./core/workflows/index.ts";
+// Session facade + dialog options, re-homed from the extension system into workflows/types.ts.
+export type {
+	ConversationPromptOptions,
+	ExtensionUIDialogOptions,
+	InputSource,
+	NewSessionOptions,
+	Session,
+	ToolInfo,
+} from "./core/workflows/types.ts";
 export { type RunDaemonOptions, runDaemon } from "./server.ts";
 export {
 	getAvailableThemesWithPaths,

@@ -12,10 +12,10 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { AgentEnvironments, Environment } from "../environments/types.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.ts";
+import type { ExtensionToolDefinition } from "./types.ts";
 
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
@@ -127,7 +127,7 @@ const BASH_UPDATE_THROTTLE_MS = 100;
 export function createBashToolDefinition(
 	env: Environment,
 	options?: BashToolOptions,
-): ToolDefinition<typeof bashSchema, BashToolDetails | undefined> {
+): ExtensionToolDefinition<typeof bashSchema, BashToolDetails | undefined> {
 	const commandPrefix = options?.commandPrefix;
 	const spawnHook = options?.spawnHook;
 	// Without a target map, the only target is the closure env, so `target:"host"` errors.

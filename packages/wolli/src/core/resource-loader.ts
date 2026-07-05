@@ -10,9 +10,6 @@ export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 
 import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
 import { AgentSettingsManager } from "./agent-settings-manager.ts";
-import { createEventBus, type EventBus } from "./event-bus.ts";
-import { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } from "./extensions/loader.ts";
-import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
 import { loadIntegrations } from "./integrations/loader.ts";
 import type { IntegrationRunner } from "./integrations/runner.ts";
 import type { Integration, LoadIntegrationsResult } from "./integrations/types.ts";
@@ -27,18 +24,10 @@ import type { LoadToolsResult, Tool } from "./tools/types.ts";
 
 const require = createRequire(import.meta.url);
 
-export interface ResourceExtensionPaths {
-	skillPaths?: Array<{ path: string; metadata: PathMetadata }>;
-	promptPaths?: Array<{ path: string; metadata: PathMetadata }>;
-	themePaths?: Array<{ path: string; metadata: PathMetadata }>;
-}
-
 export interface ResourceLoaderReloadOptions {
-	resolveProjectTrust?: (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean>;
 	/**
 	 * Build the integration producer runner from the loaded integrations.
-	 * Injected so the loader can construct the (unbound) runner — and thread it into
-	 * the extension loader so extensions wire `getIntegration` at load time — without
+	 * Injected so the loader can construct the (unbound) runner without
 	 * importing the account store. The caller (agent-runtime) owns the runner's
 	 * bind/start/stop lifecycle.
 	 */
@@ -46,11 +35,11 @@ export interface ResourceLoaderReloadOptions {
 }
 
 export interface ResourceLoader {
-	getExtensions(): LoadExtensionsResult;
 	getIntegrations(): LoadIntegrationsResult;
 	getIntegrationRunner(): IntegrationRunner | undefined;
 	getWorkflowPaths(): string[];
 	getHookPaths(): string[];
+	getProviderPaths(): string[];
 	getTools(): LoadToolsResult;
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
@@ -58,7 +47,6 @@ export interface ResourceLoader {
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };
 	getSystemPrompt(): string | undefined;
 	getAppendSystemPrompt(): string[];
-	extendResources(paths: ResourceExtensionPaths): void;
 	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
 }
 
@@ -141,19 +129,15 @@ export interface DefaultResourceLoaderOptions {
 	cwd: string;
 	agentDir: string;
 	settingsManager?: AgentSettingsManager;
-	eventBus?: EventBus;
 	additionalSkillPaths?: string[];
 	additionalPromptTemplatePaths?: string[];
 	additionalThemePaths?: string[];
-	extensionFactories?: ExtensionFactory[];
-	noExtensions?: boolean;
 	noSkills?: boolean;
 	noPromptTemplates?: boolean;
 	noThemes?: boolean;
 	noContextFiles?: boolean;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
-	extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
 	skillsOverride?: (base: { skills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
 		skills: Skill[];
 		diagnostics: ResourceDiagnostic[];
@@ -177,20 +161,16 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private cwd: string;
 	private agentDir: string;
 	private settingsManager: AgentSettingsManager;
-	private eventBus: EventBus;
 	private pluginManager: DefaultPluginManager;
 	private additionalSkillPaths: string[];
 	private additionalPromptTemplatePaths: string[];
 	private additionalThemePaths: string[];
-	private extensionFactories: ExtensionFactory[];
-	private noExtensions: boolean;
 	private noSkills: boolean;
 	private noPromptTemplates: boolean;
 	private noThemes: boolean;
 	private noContextFiles: boolean;
 	private systemPromptSource?: string;
 	private appendSystemPromptSource?: string[];
-	private extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
 	private skillsOverride?: (base: { skills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
 		skills: Skill[];
 		diagnostics: ResourceDiagnostic[];
@@ -209,7 +189,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private systemPromptOverride?: (base: string | undefined) => string | undefined;
 	private appendSystemPromptOverride?: (base: string[]) => string[];
 
-	private extensionsResult: LoadExtensionsResult;
 	private integrationsResult: LoadIntegrationsResult;
 	/** The (unbound) integration producer runner built this reload; lifecycle is the caller's. */
 	private integrationRunner?: IntegrationRunner;
@@ -217,6 +196,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private workflowPaths: string[];
 	/** Resolved hook file paths; the runtime loads them itself so it owns the per-generation runner swap. */
 	private hookPaths: string[];
+	/** Resolved provider file paths; the runtime loads them itself so it owns model-registry registration. */
+	private providerPaths: string[];
 	/** Loaded tools/ definitions — inert (no runner), merged into session tooling by the runtime. */
 	private toolsResult: LoadToolsResult;
 	private skills: Skill[];
@@ -228,18 +209,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private agentsFiles: Array<{ path: string; content: string }>;
 	private systemPrompt?: string;
 	private appendSystemPrompt: string[];
-	private lastSkillPaths: string[];
-	private extensionSkillSourceInfos: Map<string, SourceInfo>;
-	private extensionPromptSourceInfos: Map<string, SourceInfo>;
-	private extensionThemeSourceInfos: Map<string, SourceInfo>;
-	private lastPromptPaths: string[];
-	private lastThemePaths: string[];
 
 	constructor(options: DefaultResourceLoaderOptions) {
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
 		this.settingsManager = options.settingsManager ?? AgentSettingsManager.create(basename(this.agentDir));
-		this.eventBus = options.eventBus ?? createEventBus();
 		this.pluginManager = new DefaultPluginManager({
 			cwd: this.cwd,
 			agentDir: this.agentDir,
@@ -248,15 +222,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.additionalSkillPaths = options.additionalSkillPaths ?? [];
 		this.additionalPromptTemplatePaths = options.additionalPromptTemplatePaths ?? [];
 		this.additionalThemePaths = options.additionalThemePaths ?? [];
-		this.extensionFactories = options.extensionFactories ?? [];
-		this.noExtensions = options.noExtensions ?? false;
 		this.noSkills = options.noSkills ?? false;
 		this.noPromptTemplates = options.noPromptTemplates ?? false;
 		this.noThemes = options.noThemes ?? false;
 		this.noContextFiles = options.noContextFiles ?? false;
 		this.systemPromptSource = options.systemPrompt;
 		this.appendSystemPromptSource = options.appendSystemPrompt;
-		this.extensionsOverride = options.extensionsOverride;
 		this.skillsOverride = options.skillsOverride;
 		this.promptsOverride = options.promptsOverride;
 		this.themesOverride = options.themesOverride;
@@ -264,10 +235,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.systemPromptOverride = options.systemPromptOverride;
 		this.appendSystemPromptOverride = options.appendSystemPromptOverride;
 
-		this.extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
 		this.integrationsResult = { integrations: [], errors: [] };
 		this.workflowPaths = [];
 		this.hookPaths = [];
+		this.providerPaths = [];
 		this.toolsResult = { tools: [], errors: [] };
 		this.skills = [];
 		this.skillDiagnostics = [];
@@ -277,16 +248,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.themeDiagnostics = [];
 		this.agentsFiles = [];
 		this.appendSystemPrompt = [];
-		this.lastSkillPaths = [];
-		this.extensionSkillSourceInfos = new Map();
-		this.extensionPromptSourceInfos = new Map();
-		this.extensionThemeSourceInfos = new Map();
-		this.lastPromptPaths = [];
-		this.lastThemePaths = [];
-	}
-
-	getExtensions(): LoadExtensionsResult {
-		return this.extensionsResult;
 	}
 
 	getIntegrations(): LoadIntegrationsResult {
@@ -303,6 +264,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getHookPaths(): string[] {
 		return this.hookPaths;
+	}
+
+	getProviderPaths(): string[] {
+		return this.providerPaths;
 	}
 
 	getTools(): LoadToolsResult {
@@ -333,62 +298,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return this.appendSystemPrompt;
 	}
 
-	extendResources(paths: ResourceExtensionPaths): void {
-		const skillPaths = this.normalizeExtensionPaths(paths.skillPaths ?? []);
-		const promptPaths = this.normalizeExtensionPaths(paths.promptPaths ?? []);
-		const themePaths = this.normalizeExtensionPaths(paths.themePaths ?? []);
-
-		for (const entry of skillPaths) {
-			this.extensionSkillSourceInfos.set(entry.path, createSourceInfo(entry.path, entry.metadata));
-		}
-		for (const entry of promptPaths) {
-			this.extensionPromptSourceInfos.set(entry.path, createSourceInfo(entry.path, entry.metadata));
-		}
-		for (const entry of themePaths) {
-			this.extensionThemeSourceInfos.set(entry.path, createSourceInfo(entry.path, entry.metadata));
-		}
-
-		if (skillPaths.length > 0) {
-			this.lastSkillPaths = this.mergePaths(
-				this.lastSkillPaths,
-				skillPaths.map((entry) => entry.path),
-			);
-			this.updateSkillsFromPaths(this.lastSkillPaths);
-		}
-
-		if (promptPaths.length > 0) {
-			this.lastPromptPaths = this.mergePaths(
-				this.lastPromptPaths,
-				promptPaths.map((entry) => entry.path),
-			);
-			this.updatePromptsFromPaths(this.lastPromptPaths);
-		}
-
-		if (themePaths.length > 0) {
-			this.lastThemePaths = this.mergePaths(
-				this.lastThemePaths,
-				themePaths.map((entry) => entry.path),
-			);
-			this.updateThemesFromPaths(this.lastThemePaths);
-		}
-	}
-
-	async loadProjectTrustExtensions(): Promise<LoadExtensionsResult> {
-		// Force untrusted project settings for the bootstrap pass. This keeps project-local
-		// extensions/packages out while still loading user/global and temporary CLI extensions.
-		this.settingsManager.setProjectTrusted(false);
-		await this.settingsManager.reload();
-		return this.loadCurrentExtensionSet({ includeInlineFactories: true });
-	}
-
 	async reload(options?: ResourceLoaderReloadOptions): Promise<void> {
-		let preTrustExtensions: LoadExtensionsResult | undefined;
-		if (options?.resolveProjectTrust) {
-			preTrustExtensions = await this.loadProjectTrustExtensions();
-			const projectTrusted = await options.resolveProjectTrust({ extensionsResult: preTrustExtensions });
-			this.settingsManager.setProjectTrusted(projectTrusted);
-		}
-
 		// New load generation: evict the previous generation's modules under the agent home so
 		// the resource loaders' jiti (moduleCache: true, backed by the process-global CommonJS
 		// cache) re-evaluates edited files. Loaders realpath before importing and jiti resolves
@@ -403,14 +313,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 			}
 		}
 
-		// reload() preserves SettingsManager.projectTrusted and reloads settings for that trust state.
 		await this.settingsManager.reload();
 		const resolvedPaths = await this.pluginManager.resolve();
 		const metadataByPath = new Map<string, PathMetadata>();
-
-		this.extensionSkillSourceInfos = new Map();
-		this.extensionPromptSourceInfos = new Map();
-		this.extensionThemeSourceInfos = new Map();
 
 		// Helper to extract enabled paths and store metadata
 		const getEnabledResources = (resources: ResolvedResource[]): ResolvedResource[] => {
@@ -424,25 +329,23 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		const getEnabledPaths = (resources: ResolvedResource[]): string[] =>
 			getEnabledResources(resources).map((r) => r.path);
-		const enabledExtensions = getEnabledPaths(resolvedPaths.extensions);
 		const enabledIntegrations = getEnabledPaths(resolvedPaths.integrations);
 		const enabledWorkflows = getEnabledPaths(resolvedPaths.workflows);
 		const enabledHooks = getEnabledPaths(resolvedPaths.hooks);
 		const enabledTools = getEnabledPaths(resolvedPaths.tools);
+		const enabledProviders = getEnabledPaths(resolvedPaths.providers);
 		const enabledSkillResources = getEnabledResources(resolvedPaths.skills);
 		const enabledPrompts = getEnabledPaths(resolvedPaths.prompts);
 		const enabledThemes = getEnabledPaths(resolvedPaths.themes);
 
 		const enabledSkills = enabledSkillResources.map((resource) => this.mapSkillPath(resource, metadataByPath));
 
-		// Integration arm — BEFORE the extension arm. Load the integrations resolved in
+		// Integration arm — BEFORE the tools arm. Load the integrations resolved in
 		// place (so a dual-half package's integration resolves from the same install as
-		// its paired extension), overwrite their synthetic source info with the real
-		// resolve() metadata, then build the (unbound) producer runner. The runner is
-		// threaded into the extension loader below so extensions can wire `getIntegration`
-		// at load time. The caller owns its bind/start/stop lifecycle. Integrations
-		// evaluate before the runtime's workflow load, so descriptors are stamped before
-		// workflow triggers are indexed.
+		// its paired workflow), overwrite their synthetic source info with the real
+		// resolve() metadata, then build the (unbound) producer runner. The caller owns
+		// its bind/start/stop lifecycle. Integrations evaluate before the runtime's
+		// workflow load, so descriptors are stamped before workflow triggers are indexed.
 		const integrationsResult = await loadIntegrations(enabledIntegrations, this.cwd);
 		this.applyIntegrationSourceInfo(integrationsResult.integrations, metadataByPath);
 		this.integrationsResult = integrationsResult;
@@ -466,15 +369,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		// so it can stamp the load generation and swap the hook runner.
 		this.hookPaths = enabledHooks;
 
-		const extensionPaths = this.noExtensions ? [] : enabledExtensions;
-
-		const extensionsResult = await this.loadFinalExtensionSet(extensionPaths, preTrustExtensions);
-		this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;
-		this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
+		// Providers arm: resolution only. The runtime runs loadProviders over these paths
+		// itself so it owns model-registry registration.
+		this.providerPaths = enabledProviders;
 
 		const skillPaths = this.mergePaths(this.noSkills ? [] : enabledSkills, this.additionalSkillPaths);
 
-		this.lastSkillPaths = skillPaths;
 		this.updateSkillsFromPaths(skillPaths, metadataByPath);
 		for (const p of this.additionalSkillPaths) {
 			if (isLocalPath(p)) {
@@ -490,7 +390,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 			this.additionalPromptTemplatePaths,
 		);
 
-		this.lastPromptPaths = promptPaths;
 		this.updatePromptsFromPaths(promptPaths, metadataByPath);
 		for (const p of this.additionalPromptTemplatePaths) {
 			if (isLocalPath(p)) {
@@ -507,7 +406,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		const themePaths = this.mergePaths(this.noThemes ? [] : enabledThemes, this.additionalThemePaths);
 
-		this.lastThemePaths = themePaths;
 		this.updateThemesFromPaths(themePaths, metadataByPath);
 		for (const p of this.additionalThemePaths) {
 			const resolved = this.resolveResourcePath(p);
@@ -544,100 +442,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 			: baseAppend;
 	}
 
-	private async loadCurrentExtensionSet(options: { includeInlineFactories: boolean }): Promise<LoadExtensionsResult> {
-		const resolvedPaths = await this.pluginManager.resolve();
-		const enabledExtensions = resolvedPaths.extensions.filter((r) => r.enabled).map((r) => r.path);
-		const extensionPaths = this.noExtensions ? [] : enabledExtensions;
-		const extensionsResult = await loadExtensions(
-			extensionPaths,
-			this.cwd,
-			this.eventBus,
-			undefined,
-			this.integrationRunner,
-		);
-		if (!options.includeInlineFactories) {
-			return extensionsResult;
-		}
-
-		const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime);
-		extensionsResult.extensions.push(...inlineExtensions.extensions);
-		extensionsResult.errors.push(...inlineExtensions.errors);
-		return extensionsResult;
-	}
-
-	private resolveExtensionLoadPath(path: string): string {
-		return resolvePath(path, this.cwd, { normalizeUnicodeSpaces: true });
-	}
-
-	private async loadFinalExtensionSet(
-		extensionPaths: string[],
-		preTrustExtensions: LoadExtensionsResult | undefined,
-	): Promise<LoadExtensionsResult> {
-		if (!preTrustExtensions) {
-			const extensionsResult = await loadExtensions(
-				extensionPaths,
-				this.cwd,
-				this.eventBus,
-				undefined,
-				this.integrationRunner,
-			);
-			const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime);
-			extensionsResult.extensions.push(...inlineExtensions.extensions);
-			extensionsResult.errors.push(...inlineExtensions.errors);
-			this.addExtensionConflictDiagnostics(extensionsResult);
-			return extensionsResult;
-		}
-
-		const preloadedByPath = new Map(
-			preTrustExtensions.extensions
-				.filter((extension) => !extension.path.startsWith("<inline:"))
-				.map((extension) => [extension.resolvedPath, extension]),
-		);
-		const failedPreloadPaths = new Set(
-			preTrustExtensions.errors.map((error) => this.resolveExtensionLoadPath(error.path)),
-		);
-		const remainingPaths = extensionPaths.filter((path) => {
-			const resolvedPath = this.resolveExtensionLoadPath(path);
-			return !preloadedByPath.has(resolvedPath) && !failedPreloadPaths.has(resolvedPath);
-		});
-		const remainingExtensions = await loadExtensions(
-			remainingPaths,
-			this.cwd,
-			this.eventBus,
-			preTrustExtensions.runtime,
-			this.integrationRunner,
-		);
-		const loadedByPath = new Map(preloadedByPath);
-		for (const extension of remainingExtensions.extensions) {
-			loadedByPath.set(extension.resolvedPath, extension);
-		}
-
-		const inlineExtensions = preTrustExtensions.extensions.filter((extension) =>
-			extension.path.startsWith("<inline:"),
-		);
-		const orderedExtensions = extensionPaths
-			.map((path) => loadedByPath.get(this.resolveExtensionLoadPath(path)))
-			.filter((extension): extension is Extension => extension !== undefined);
-		orderedExtensions.push(...inlineExtensions);
-
-		const extensionsResult: LoadExtensionsResult = {
-			extensions: orderedExtensions,
-			errors: [...preTrustExtensions.errors, ...remainingExtensions.errors],
-			runtime: preTrustExtensions.runtime,
-		};
-		this.addExtensionConflictDiagnostics(extensionsResult);
-		return extensionsResult;
-	}
-
-	private addExtensionConflictDiagnostics(extensionsResult: LoadExtensionsResult): void {
-		// Detect extension conflicts (tools, commands, flags with same names from different extensions)
-		// Keep all extensions loaded. Conflicts are reported as diagnostics, and precedence is handled by load order.
-		const conflicts = this.detectExtensionConflicts(extensionsResult.extensions);
-		for (const conflict of conflicts) {
-			extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
-		}
-	}
-
 	private mapSkillPath(resource: ResolvedResource, metadataByPath: Map<string, PathMetadata>): string {
 		if (resource.metadata.source !== "auto" && resource.metadata.origin !== "package") {
 			return resource.path;
@@ -660,20 +464,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return resource.path;
 	}
 
-	private normalizeExtensionPaths(
-		entries: Array<{ path: string; metadata: PathMetadata }>,
-	): Array<{ path: string; metadata: PathMetadata }> {
-		return entries.map((entry) => {
-			const metadata = entry.metadata.baseDir
-				? { ...entry.metadata, baseDir: this.resolveResourcePath(entry.metadata.baseDir) }
-				: entry.metadata;
-			return {
-				path: this.resolveResourcePath(entry.path),
-				metadata,
-			};
-		});
-	}
-
 	private updateSkillsFromPaths(skillPaths: string[], metadataByPath?: Map<string, PathMetadata>): void {
 		let skillsResult: { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 		if (this.noSkills && skillPaths.length === 0) {
@@ -690,7 +480,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.skills = resolvedSkills.skills.map((skill) => ({
 			...skill,
 			sourceInfo:
-				this.findSourceInfoForPath(skill.filePath, this.extensionSkillSourceInfos, metadataByPath) ??
+				this.findSourceInfoForPath(skill.filePath, undefined, metadataByPath) ??
 				skill.sourceInfo ??
 				this.getDefaultSourceInfoForPath(skill.filePath),
 		}));
@@ -714,7 +504,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.prompts = resolvedPrompts.prompts.map((prompt) => ({
 			...prompt,
 			sourceInfo:
-				this.findSourceInfoForPath(prompt.filePath, this.extensionPromptSourceInfos, metadataByPath) ??
+				this.findSourceInfoForPath(prompt.filePath, undefined, metadataByPath) ??
 				prompt.sourceInfo ??
 				this.getDefaultSourceInfoForPath(prompt.filePath),
 		}));
@@ -734,7 +524,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.themes = resolvedThemes.themes.map((theme) => {
 			const sourcePath = theme.sourcePath;
 			theme.sourceInfo = sourcePath
-				? (this.findSourceInfoForPath(sourcePath, this.extensionThemeSourceInfos, metadataByPath) ??
+				? (this.findSourceInfoForPath(sourcePath, undefined, metadataByPath) ??
 					theme.sourceInfo ??
 					this.getDefaultSourceInfoForPath(sourcePath))
 				: theme.sourceInfo;
@@ -743,25 +533,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.themeDiagnostics = resolvedThemes.diagnostics;
 	}
 
-	private applyExtensionSourceInfo(extensions: Extension[], metadataByPath: Map<string, PathMetadata>): void {
-		for (const extension of extensions) {
-			extension.sourceInfo =
-				this.findSourceInfoForPath(extension.path, undefined, metadataByPath) ??
-				this.getDefaultSourceInfoForPath(extension.path);
-			for (const command of extension.commands.values()) {
-				command.sourceInfo = extension.sourceInfo;
-			}
-			for (const tool of extension.tools.values()) {
-				tool.sourceInfo = extension.sourceInfo;
-			}
-		}
-	}
-
 	/**
-	 * Mirror of `applyExtensionSourceInfo` for integrations: overwrite each integration's
-	 * synthetic `local` source info (set at load time by `loadIntegrations`) with the real
-	 * `resolve()` metadata, so a package-resolved integration carries `origin: "package"` +
-	 * the real source spec rather than a synthetic local.
+	 * Overwrite each integration's synthetic `local` source info (set at load time by
+	 * `loadIntegrations`) with the real `resolve()` metadata, so a package-resolved
+	 * integration carries `origin: "package"` + the real source spec rather than a
+	 * synthetic local.
 	 */
 	private applyIntegrationSourceInfo(integrations: Integration[], metadataByPath: Map<string, PathMetadata>): void {
 		for (const integration of integrations) {
@@ -839,17 +615,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 
 		const normalizedPath = resolve(filePath);
-		const agentRoots = [
-			join(this.agentDir, "skills"),
-			join(this.agentDir, "prompts"),
-			join(this.agentDir, "themes"),
-			join(this.agentDir, "extensions"),
-		];
+		const agentRoots = [join(this.agentDir, "skills"), join(this.agentDir, "prompts"), join(this.agentDir, "themes")];
 		const projectRoots = [
 			join(this.cwd, CONFIG_DIR_NAME, "skills"),
 			join(this.cwd, CONFIG_DIR_NAME, "prompts"),
 			join(this.cwd, CONFIG_DIR_NAME, "themes"),
-			join(this.cwd, CONFIG_DIR_NAME, "extensions"),
 		];
 
 		for (const root of agentRoots) {
@@ -973,34 +743,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 	}
 
-	private async loadExtensionFactories(runtime: ExtensionRuntime): Promise<{
-		extensions: Extension[];
-		errors: Array<{ path: string; error: string }>;
-	}> {
-		const extensions: Extension[] = [];
-		const errors: Array<{ path: string; error: string }> = [];
-
-		for (const [index, factory] of this.extensionFactories.entries()) {
-			const extensionPath = `<inline:${index + 1}>`;
-			try {
-				const extension = await loadExtensionFromFactory(
-					factory,
-					this.cwd,
-					this.eventBus,
-					runtime,
-					extensionPath,
-					this.integrationRunner,
-				);
-				extensions.push(extension);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : "failed to load extension";
-				errors.push({ path: extensionPath, error: message });
-			}
-		}
-
-		return { extensions, errors };
-	}
-
 	private dedupePrompts(prompts: PromptTemplate[]): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] } {
 		const seen = new Map<string, PromptTemplate>();
 		const diagnostics: ResourceDiagnostic[] = [];
@@ -1056,7 +798,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	private discoverSystemPromptFile(): string | undefined {
 		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "SYSTEM.md");
-		if (this.settingsManager.isProjectTrusted() && existsSync(projectPath)) {
+		if (existsSync(projectPath)) {
 			return projectPath;
 		}
 
@@ -1070,7 +812,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	private discoverAppendSystemPromptFile(): string | undefined {
 		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "APPEND_SYSTEM.md");
-		if (this.settingsManager.isProjectTrusted() && existsSync(projectPath)) {
+		if (existsSync(projectPath)) {
 			return projectPath;
 		}
 
@@ -1089,43 +831,5 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 		const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
 		return target.startsWith(prefix);
-	}
-
-	private detectExtensionConflicts(extensions: Extension[]): Array<{ path: string; message: string }> {
-		const conflicts: Array<{ path: string; message: string }> = [];
-
-		// Track which extension registered each tool and flag
-		const toolOwners = new Map<string, string>();
-		const flagOwners = new Map<string, string>();
-
-		for (const ext of extensions) {
-			// Check tools
-			for (const toolName of ext.tools.keys()) {
-				const existingOwner = toolOwners.get(toolName);
-				if (existingOwner && existingOwner !== ext.path) {
-					conflicts.push({
-						path: ext.path,
-						message: `Tool "${toolName}" conflicts with ${existingOwner}`,
-					});
-				} else {
-					toolOwners.set(toolName, ext.path);
-				}
-			}
-
-			// Check flags
-			for (const flagName of ext.flags.keys()) {
-				const existingOwner = flagOwners.get(flagName);
-				if (existingOwner && existingOwner !== ext.path) {
-					conflicts.push({
-						path: ext.path,
-						message: `Flag "--${flagName}" conflicts with ${existingOwner}`,
-					});
-				} else {
-					flagOwners.set(flagName, ext.path);
-				}
-			}
-		}
-
-		return conflicts;
 	}
 }

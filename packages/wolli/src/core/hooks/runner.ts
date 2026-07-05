@@ -10,17 +10,21 @@
 
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@opsyhq/agent";
+import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { DialogUI, InputSource, MessageEndEvent, WorkflowSession } from "../workflows/types.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
 	BeforeProviderRequestEvent,
-	BuildSystemPromptOptions,
 	ContextEvent,
 	ContextEventResult,
+	Hook,
+	HookContext,
+	HookError,
+	HookErrorListener,
+	HookEventMap,
 	InputEvent,
 	InputEventResult,
-	InputSource,
-	MessageEndEvent,
 	MessageEndEventResult,
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,
@@ -28,9 +32,7 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 	ToolResultEventResult,
-} from "../extensions/types.ts";
-import type { DialogUI, WorkflowSession } from "../workflows/types.ts";
-import type { Hook, HookContext, HookError, HookErrorListener, HookEventMap } from "./types.ts";
+} from "./types.ts";
 
 /** Combined result from all before_agent_start hooks. */
 interface BeforeAgentStartCombinedResult {

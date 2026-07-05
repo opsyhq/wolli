@@ -109,8 +109,11 @@ describe("always-on guidance", () => {
 
 	it("enumerates the full doc set", () => {
 		const prompt = buildSystemPrompt({ config: AgentSettingsManager.create("scribe").config });
-		expect(prompt).toContain("docs/extensions.md");
+		expect(prompt).toContain("docs/workflows.md");
 		expect(prompt).toContain("docs/integrations.md");
+		expect(prompt).toContain("docs/tools.md");
+		expect(prompt).toContain("docs/providers.md");
+		expect(prompt).toContain("docs/hooks.md");
 		expect(prompt).toContain("docs/skills.md");
 		expect(prompt).toContain("docs/prompt-templates.md");
 		expect(prompt).toContain("docs/themes.md");

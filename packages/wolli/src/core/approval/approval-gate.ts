@@ -4,13 +4,13 @@
  * to a refusal. `getUI` is read lazily so the gate reaches the session's current UI rail.
  */
 
-import type { ExtensionUIContext } from "../extensions/types.ts";
+import type { DialogUI } from "../workflows/types.ts";
 import type { ApprovalStore } from "./approval-storage.ts";
 import type { ApprovalGate } from "./types.ts";
 
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
 
-export function createApprovalGate(getUI: () => ExtensionUIContext, approvals: ApprovalStore): ApprovalGate {
+export function createApprovalGate(getUI: () => DialogUI, approvals: ApprovalStore): ApprovalGate {
 	return async (req, signal) => {
 		if (approvals.isAllowed(req.target, req.command)) {
 			return { allowed: true, scope: "always" };
