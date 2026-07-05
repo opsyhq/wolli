@@ -29,7 +29,6 @@ export type PluginSource =
 	| string
 	| {
 			source: string;
-			extensions?: string[];
 			integrations?: string[];
 			workflows?: string[];
 			hooks?: string[];
@@ -63,7 +62,6 @@ export interface Settings {
 	compaction?: CompactionSettings; // auto-compaction toggle + token thresholds (global defaults)
 	// resource lists (plugin-manager)
 	plugins?: PluginSource[]; // Array of npm/git/local plugin sources (string or object with filtering)
-	extensions?: string[]; // Array of local extension file paths or directories
 	integrations?: string[]; // Array of local integration file paths or directories
 	workflows?: string[]; // Array of local workflow file paths or directories
 	hooks?: string[]; // Array of local hook file paths or directories

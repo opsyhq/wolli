@@ -1,9 +1,9 @@
 import type { AgentTool } from "@opsyhq/agent";
-import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
+import type { ExtensionContext, ExtensionToolDefinition } from "./types.ts";
 
 /** Wrap a ToolDefinition into an AgentTool for the core runtime. */
 export function wrapToolDefinition<TDetails = unknown>(
-	definition: ToolDefinition<any, TDetails>,
+	definition: ExtensionToolDefinition<any, TDetails>,
 	ctxFactory?: () => ExtensionContext,
 ): AgentTool<any, TDetails> {
 	return {

@@ -26,7 +26,6 @@ import { join } from "node:path";
 import { createJiti } from "jiti/static";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
-import { getAliases } from "../src/core/extensions/loader.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { IntegrationStore } from "../src/core/integration-store.ts";
 import {
@@ -38,6 +37,7 @@ import {
 	loadIntegrationFromDefinition,
 	loadIntegrations,
 } from "../src/core/integrations/index.ts";
+import { getAliases } from "../src/core/integrations/loader.ts";
 import { loadWorkflows } from "../src/core/workflows/loader.ts";
 import type { IntegrationWorkflowDefinition } from "../src/core/workflows/types.ts";
 

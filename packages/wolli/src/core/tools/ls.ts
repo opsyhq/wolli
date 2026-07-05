@@ -2,10 +2,10 @@ import type { AgentTool } from "@opsyhq/agent";
 import nodePath from "path";
 import { type Static, Type } from "typebox";
 import type { Environment } from "../environments/types.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
+import type { ExtensionToolDefinition } from "./types.ts";
 
 const lsSchema = Type.Object({
 	path: Type.Optional(Type.String({ description: "Directory to list (default: current directory)" })),
@@ -21,7 +21,9 @@ export interface LsToolDetails {
 	entryLimitReached?: number;
 }
 
-export function createLsToolDefinition(env: Environment): ToolDefinition<typeof lsSchema, LsToolDetails | undefined> {
+export function createLsToolDefinition(
+	env: Environment,
+): ExtensionToolDefinition<typeof lsSchema, LsToolDetails | undefined> {
 	return {
 		name: "ls",
 		label: "ls",

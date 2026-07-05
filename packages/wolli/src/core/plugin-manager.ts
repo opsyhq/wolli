@@ -57,11 +57,11 @@ export interface ResolvedResource {
 }
 
 export interface ResolvedPaths {
-	extensions: ResolvedResource[];
 	integrations: ResolvedResource[];
 	workflows: ResolvedResource[];
 	hooks: ResolvedResource[];
 	tools: ResolvedResource[];
+	providers: ResolvedResource[];
 	skills: ResolvedResource[];
 	prompts: ResolvedResource[];
 	themes: ResolvedResource[];
@@ -144,22 +144,22 @@ interface GitUpdateTarget extends ConfiguredUpdateSource {
 }
 
 interface PluginManifest {
-	extensions?: string[];
 	integrations?: string[];
 	workflows?: string[];
 	hooks?: string[];
 	tools?: string[];
+	providers?: string[];
 	skills?: string[];
 	prompts?: string[];
 	themes?: string[];
 }
 
 interface ResourceAccumulator {
-	extensions: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	integrations: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	workflows: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	hooks: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	tools: Map<string, { metadata: PathMetadata; enabled: boolean }>;
+	providers: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	skills: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	prompts: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	themes: Map<string, { metadata: PathMetadata; enabled: boolean }>;
@@ -184,35 +184,35 @@ function resourcePrecedenceRank(m: PathMetadata): number {
 }
 
 interface PluginFilter {
-	extensions?: string[];
 	integrations?: string[];
 	workflows?: string[];
 	hooks?: string[];
 	tools?: string[];
+	providers?: string[];
 	skills?: string[];
 	prompts?: string[];
 	themes?: string[];
 }
 
-type ResourceType = "extensions" | "integrations" | "workflows" | "hooks" | "tools" | "skills" | "prompts" | "themes";
+type ResourceType = "integrations" | "workflows" | "hooks" | "tools" | "providers" | "skills" | "prompts" | "themes";
 
 const RESOURCE_TYPES: ResourceType[] = [
-	"extensions",
 	"integrations",
 	"workflows",
 	"hooks",
 	"tools",
+	"providers",
 	"skills",
 	"prompts",
 	"themes",
 ];
 
 const FILE_PATTERNS: Record<ResourceType, RegExp> = {
-	extensions: /\.(ts|js)$/,
 	integrations: /\.(ts|js)$/,
 	workflows: /\.(ts|js)$/,
 	hooks: /\.(ts|js)$/,
 	tools: /\.(ts|js)$/,
+	providers: /\.(ts|js)$/,
 	skills: /\.md$/,
 	prompts: /\.md$/,
 	themes: /\.json$/,
@@ -541,34 +541,7 @@ function collectAutoFlatFileEntries(dir: string, pattern: RegExp): string[] {
 	return entries;
 }
 
-function readPluginManifestFile(packageJsonPath: string): PluginManifest | null {
-	try {
-		const content = readFileSync(packageJsonPath, "utf-8");
-		const pkg = JSON.parse(content) as { wolli?: PluginManifest };
-		return pkg.wolli ?? null;
-	} catch {
-		return null;
-	}
-}
-
-function resolveExtensionEntries(dir: string): string[] | null {
-	const packageJsonPath = join(dir, "package.json");
-	if (existsSync(packageJsonPath)) {
-		const manifest = readPluginManifestFile(packageJsonPath);
-		if (manifest?.extensions?.length) {
-			const entries: string[] = [];
-			for (const extPath of manifest.extensions) {
-				const resolvedExtPath = resolve(dir, extPath);
-				if (existsSync(resolvedExtPath)) {
-					entries.push(resolvedExtPath);
-				}
-			}
-			if (entries.length > 0) {
-				return entries;
-			}
-		}
-	}
-
+function resolvePackageEntries(dir: string): string[] | null {
 	const indexTs = join(dir, "index.ts");
 	const indexJs = join(dir, "index.js");
 	if (existsSync(indexTs)) {
@@ -581,17 +554,17 @@ function resolveExtensionEntries(dir: string): string[] | null {
 	return null;
 }
 
-function collectAutoExtensionEntries(dir: string): string[] {
+function collectAutoPackageEntries(dir: string): string[] {
 	const entries: string[] = [];
 	if (!existsSync(dir)) return entries;
 
-	// First check if this directory itself has explicit extension entries (package.json or index)
-	const rootEntries = resolveExtensionEntries(dir);
+	// First check if this directory itself is a package with an index entry
+	const rootEntries = resolvePackageEntries(dir);
 	if (rootEntries) {
 		return rootEntries;
 	}
 
-	// Otherwise, discover extensions from directory contents
+	// Otherwise, discover entries from directory contents
 	const ig = ignore();
 	addIgnoreRules(ig, dir, dir);
 
@@ -622,7 +595,7 @@ function collectAutoExtensionEntries(dir: string): string[] {
 			if (isFile && (entry.name.endsWith(".ts") || entry.name.endsWith(".js"))) {
 				entries.push(fullPath);
 			} else if (isDir) {
-				const resolvedEntries = resolveExtensionEntries(fullPath);
+				const resolvedEntries = resolvePackageEntries(fullPath);
 				if (resolvedEntries) {
 					entries.push(...resolvedEntries);
 				}
@@ -637,17 +610,16 @@ function collectAutoExtensionEntries(dir: string): string[] {
 
 /**
  * Collect resource files from a directory based on resource type.
- * Extensions use smart discovery (index.ts in subdirs), others use recursive collection.
+ * Integrations and tools use package-entry discovery (index.ts in subdirs); others use recursive collection.
  */
 function collectResourceFiles(dir: string, resourceType: ResourceType): string[] {
 	if (resourceType === "skills") {
 		return collectSkillEntries(dir, "wolli");
 	}
-	// Integrations and tools use the same extension-style package discovery as extensions
-	// (index.ts / package.json manifest), NOT recursive file collection — so helper modules
-	// in subdirectories are never loaded as resources of their own.
-	if (resourceType === "extensions" || resourceType === "integrations" || resourceType === "tools") {
-		return collectAutoExtensionEntries(dir);
+	// Integrations and tools use package-entry discovery (index.ts), NOT recursive file
+	// collection — so helper modules in subdirectories are never loaded as resources of their own.
+	if (resourceType === "integrations" || resourceType === "tools") {
+		return collectAutoPackageEntries(dir);
 	}
 	return collectFiles(dir, FILE_PATTERNS[resourceType]);
 }
@@ -894,7 +866,8 @@ export class DefaultPluginManager implements PluginManager {
 
 		for (const resourceType of RESOURCE_TYPES) {
 			const target = this.getTargetMap(accumulator, resourceType);
-			const globalEntries = (globalSettings[resourceType] ?? []) as string[];
+			// `providers` has no Settings key yet, so the cast tolerates its absence (undefined -> []).
+			const globalEntries = (globalSettings[resourceType as keyof typeof globalSettings] ?? []) as string[];
 			this.resolveLocalEntries(
 				globalEntries,
 				resourceType,
@@ -1224,7 +1197,7 @@ export class DefaultPluginManager implements PluginManager {
 		}
 	}
 
-	// Resolve resources from the copied store path; a bare file or manifest-less dir is one extension.
+	// Resolve resources from the copied store path; a bare file or manifest-less dir is one integration.
 	private resolveLocalStore(
 		storePath: string,
 		accumulator: ResourceAccumulator,
@@ -1239,14 +1212,14 @@ export class DefaultPluginManager implements PluginManager {
 			const stats = statSync(storePath);
 			if (stats.isFile()) {
 				metadata.baseDir = dirname(storePath);
-				this.addResource(accumulator.extensions, storePath, metadata, true);
+				this.addResource(accumulator.integrations, storePath, metadata, true);
 				return;
 			}
 			if (stats.isDirectory()) {
 				metadata.baseDir = storePath;
 				const resources = this.collectPackageResources(storePath, accumulator, filter, metadata);
 				if (!resources) {
-					this.addResource(accumulator.extensions, storePath, metadata, true);
+					this.addResource(accumulator.integrations, storePath, metadata, true);
 				}
 			}
 		} catch {
@@ -1657,7 +1630,7 @@ export class DefaultPluginManager implements PluginManager {
 
 	private getNpmInstallArgs(specs: string[], installRoot: string): string[] {
 		const packageManagerName = this.getPackageManagerName();
-		// Extension/integration packages run inside wolli and resolve host APIs through loader
+		// Plugin packages run inside wolli and resolve host APIs through loader
 		// aliases/virtual modules. Disable peer dependency resolution for managed installs (npm's
 		// --legacy-peer-deps, and equivalent bun/pnpm settings) so package managers do not install
 		// or solve host-provided peers. Stale auto-installed peers can otherwise block updates.
@@ -1755,7 +1728,7 @@ export class DefaultPluginManager implements PluginManager {
 
 		await this.runCommand("git", ["reset", "--hard", commitRef], { cwd: targetDir });
 
-		// Clean untracked files (extensions should be pristine)
+		// Clean untracked files (plugins should be pristine)
 		await this.runCommand("git", ["clean", "-fdx"], { cwd: targetDir });
 
 		const packageJsonPath = join(targetDir, "package.json");
@@ -1830,7 +1803,7 @@ export class DefaultPluginManager implements PluginManager {
 		this.ensureGitIgnore(installRoot);
 		const packageJsonPath = join(installRoot, "package.json");
 		if (!existsSync(packageJsonPath)) {
-			const pkgJson = { name: "wolli-extensions", private: true };
+			const pkgJson = { name: "wolli-plugins", private: true };
 			writeFileSync(packageJsonPath, JSON.stringify(pkgJson, null, 2), "utf-8");
 		}
 	}
@@ -2126,7 +2099,6 @@ export class DefaultPluginManager implements PluginManager {
 		};
 
 		const userOverrides = {
-			extensions: (globalSettings.extensions ?? []) as string[],
 			integrations: (globalSettings.integrations ?? []) as string[],
 			workflows: (globalSettings.workflows ?? []) as string[],
 			hooks: (globalSettings.hooks ?? []) as string[],
@@ -2137,11 +2109,11 @@ export class DefaultPluginManager implements PluginManager {
 		};
 
 		const userDirs = {
-			extensions: join(globalBaseDir, "extensions"),
 			integrations: join(globalBaseDir, "integrations"),
 			workflows: join(globalBaseDir, "workflows"),
 			hooks: join(globalBaseDir, "hooks"),
 			tools: join(globalBaseDir, "tools"),
+			providers: join(globalBaseDir, "providers"),
 			skills: join(globalBaseDir, "skills"),
 			prompts: join(globalBaseDir, "prompts"),
 			themes: join(globalBaseDir, "themes"),
@@ -2161,19 +2133,10 @@ export class DefaultPluginManager implements PluginManager {
 			}
 		};
 
-		// User extensions from <agentDir>/extensions/
-		addResources(
-			"extensions",
-			collectAutoExtensionEntries(userDirs.extensions),
-			userMetadata,
-			userOverrides.extensions,
-			globalBaseDir,
-		);
-
-		// User integrations from <agentDir>/integrations/ (extension-style discovery)
+		// User integrations from <agentDir>/integrations/ (package-entry discovery)
 		addResources(
 			"integrations",
-			collectAutoExtensionEntries(userDirs.integrations),
+			collectAutoPackageEntries(userDirs.integrations),
 			userMetadata,
 			userOverrides.integrations,
 			globalBaseDir,
@@ -2197,12 +2160,22 @@ export class DefaultPluginManager implements PluginManager {
 			globalBaseDir,
 		);
 
-		// User tools from <agentDir>/tools/ (extension-style discovery)
+		// User tools from <agentDir>/tools/ (package-entry discovery)
 		addResources(
 			"tools",
-			collectAutoExtensionEntries(userDirs.tools),
+			collectAutoPackageEntries(userDirs.tools),
 			userMetadata,
 			userOverrides.tools,
+			globalBaseDir,
+		);
+
+		// User providers from <agentDir>/providers/ (one flat file per provider). No settings
+		// override list yet (Settings has no `providers` key), so every discovered file is enabled.
+		addResources(
+			"providers",
+			collectAutoFlatFileEntries(userDirs.providers, FILE_PATTERNS.providers),
+			userMetadata,
+			[],
 			globalBaseDir,
 		);
 
@@ -2255,8 +2228,6 @@ export class DefaultPluginManager implements PluginManager {
 		resourceType: ResourceType,
 	): Map<string, { metadata: PathMetadata; enabled: boolean }> {
 		switch (resourceType) {
-			case "extensions":
-				return accumulator.extensions;
 			case "integrations":
 				return accumulator.integrations;
 			case "workflows":
@@ -2265,6 +2236,8 @@ export class DefaultPluginManager implements PluginManager {
 				return accumulator.hooks;
 			case "tools":
 				return accumulator.tools;
+			case "providers":
+				return accumulator.providers;
 			case "skills":
 				return accumulator.skills;
 			case "prompts":
@@ -2290,11 +2263,11 @@ export class DefaultPluginManager implements PluginManager {
 
 	private createAccumulator(): ResourceAccumulator {
 		return {
-			extensions: new Map(),
 			integrations: new Map(),
 			workflows: new Map(),
 			hooks: new Map(),
 			tools: new Map(),
+			providers: new Map(),
 			skills: new Map(),
 			prompts: new Map(),
 			themes: new Map(),
@@ -2322,11 +2295,11 @@ export class DefaultPluginManager implements PluginManager {
 		};
 
 		return {
-			extensions: mapToResolved(accumulator.extensions),
 			integrations: mapToResolved(accumulator.integrations),
 			workflows: mapToResolved(accumulator.workflows),
 			hooks: mapToResolved(accumulator.hooks),
 			tools: mapToResolved(accumulator.tools),
+			providers: mapToResolved(accumulator.providers),
 			skills: mapToResolved(accumulator.skills),
 			prompts: mapToResolved(accumulator.prompts),
 			themes: mapToResolved(accumulator.themes),

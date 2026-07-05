@@ -5,8 +5,6 @@
 import {
 	type AnthropicMessagesCompat,
 	type Api,
-	type AssistantMessageEventStream,
-	type Context,
 	getModels,
 	getProviders,
 	type KnownProvider,
@@ -32,6 +30,7 @@ import { stripJsonComments } from "../utils/json.ts";
 import { normalizePath } from "../utils/paths.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
+import type { ProviderConfig } from "./providers/types.ts";
 import {
 	clearConfigValueCache,
 	getConfigValueEnvVarNames,
@@ -263,16 +262,10 @@ function migrateLegacyRegisterProviderHeaders(
 	return migratedHeaders ?? headers;
 }
 
-function migrateLegacyRegisterProviderConfigValues(
-	providerName: string,
-	config: ProviderConfigInput,
-): ProviderConfigInput {
-	let migratedConfig: ProviderConfigInput | undefined;
+function migrateLegacyRegisterProviderConfigValues(providerName: string, config: ProviderConfig): ProviderConfig {
+	let migratedConfig: ProviderConfig | undefined;
 
-	const setMigratedConfigValue = <TKey extends keyof ProviderConfigInput>(
-		key: TKey,
-		value: ProviderConfigInput[TKey],
-	) => {
+	const setMigratedConfigValue = <TKey extends keyof ProviderConfig>(key: TKey, value: ProviderConfig[TKey]) => {
 		migratedConfig ??= { ...config };
 		migratedConfig[key] = value;
 	};
@@ -290,7 +283,7 @@ function migrateLegacyRegisterProviderConfigValues(
 	}
 
 	if (config.models) {
-		let models: ProviderConfigInput["models"] | undefined;
+		let models: ProviderConfig["models"] | undefined;
 		for (let index = 0; index < config.models.length; index++) {
 			const model = config.models[index];
 			const modelHeaders = migrateLegacyRegisterProviderHeaders(
@@ -425,7 +418,7 @@ export class ModelRegistry {
 	private models: Model<Api>[] = [];
 	private providerRequestConfigs: Map<string, ProviderRequestConfig> = new Map();
 	private modelRequestHeaders: Map<string, Record<string, string>> = new Map();
-	private registeredProviders: Map<string, ProviderConfigInput> = new Map();
+	private registeredProviders: Map<string, ProviderConfig> = new Map();
 	private loadError: string | undefined = undefined;
 	readonly authStorage: AuthStorage;
 	private modelsJsonPath: string | undefined;
@@ -886,7 +879,7 @@ export class ModelRegistry {
 	 * If provider has only baseUrl/headers: overrides existing models' URLs.
 	 * If provider has oauth: registers OAuth provider for /login support.
 	 */
-	registerProvider(providerName: string, config: ProviderConfigInput): void {
+	registerProvider(providerName: string, config: ProviderConfig): void {
 		const migratedConfig = migrateLegacyRegisterProviderConfigValues(providerName, config);
 		this.validateProviderConfig(providerName, migratedConfig);
 		this.applyProviderConfig(providerName, migratedConfig);
@@ -914,20 +907,20 @@ export class ModelRegistry {
 	 * override existing ones; undefined values are preserved from the stored config.
 	 * If the provider is not registered, the incoming config is stored as-is.
 	 */
-	private upsertRegisteredProvider(providerName: string, config: ProviderConfigInput): void {
+	private upsertRegisteredProvider(providerName: string, config: ProviderConfig): void {
 		const existing = this.registeredProviders.get(providerName);
 		if (!existing) {
 			this.registeredProviders.set(providerName, config);
 			return;
 		}
-		for (const k of Object.keys(config) as (keyof ProviderConfigInput)[]) {
+		for (const k of Object.keys(config) as (keyof ProviderConfig)[]) {
 			if (config[k] !== undefined) {
 				(existing as Record<string, unknown>)[k] = config[k];
 			}
 		}
 	}
 
-	private validateProviderConfig(providerName: string, config: ProviderConfigInput): void {
+	private validateProviderConfig(providerName: string, config: ProviderConfig): void {
 		if (config.streamSimple && !config.api) {
 			throw new Error(`Provider ${providerName}: "api" is required when registering streamSimple.`);
 		}
@@ -951,7 +944,7 @@ export class ModelRegistry {
 		}
 	}
 
-	private applyProviderConfig(providerName: string, config: ProviderConfigInput): void {
+	private applyProviderConfig(providerName: string, config: ProviderConfig): void {
 		// Register OAuth provider if provided
 		if (config.oauth) {
 			// Ensure the OAuth provider ID matches the provider name
@@ -1020,33 +1013,4 @@ export class ModelRegistry {
 			});
 		}
 	}
-}
-
-/**
- * Input type for registerProvider API.
- */
-export interface ProviderConfigInput {
-	name?: string;
-	baseUrl?: string;
-	apiKey?: string;
-	api?: Api;
-	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
-	headers?: Record<string, string>;
-	authHeader?: boolean;
-	/** OAuth provider for /login support */
-	oauth?: Omit<OAuthProviderInterface, "id">;
-	models?: Array<{
-		id: string;
-		name: string;
-		api?: Api;
-		baseUrl?: string;
-		reasoning: boolean;
-		thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
-		input: ("text" | "image")[];
-		cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
-		contextWindow: number;
-		maxTokens: number;
-		headers?: Record<string, string>;
-		compat?: Model<Api>["compat"];
-	}>;
 }

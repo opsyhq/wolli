@@ -15,4 +15,5 @@ export {
 	type HookErrorListener,
 	type HookEventMap,
 	type HookResultMap,
+	isToolCallEventType,
 } from "./types.ts";

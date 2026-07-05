@@ -4,10 +4,10 @@ import { constants } from "fs";
 import { type Static, Type } from "typebox";
 import { formatDimensionNote, resizeImage } from "../../utils/image-resize.ts";
 import type { Environment } from "../environments/types.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
 import { resolveReadPathAsync } from "./path-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
+import type { ExtensionToolDefinition } from "./types.ts";
 
 const readSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
@@ -36,7 +36,7 @@ function getNonVisionImageNote(model: Model<Api> | undefined): string | undefine
 export function createReadToolDefinition(
 	env: Environment,
 	options?: ReadToolOptions,
-): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
+): ExtensionToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	return {
 		name: "read",

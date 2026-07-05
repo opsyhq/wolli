@@ -2,10 +2,10 @@ import type { AgentTool } from "@opsyhq/agent";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
 import type { Environment } from "../environments/types.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
+import type { ExtensionToolDefinition } from "./types.ts";
 
 const writeSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
@@ -14,7 +14,7 @@ const writeSchema = Type.Object({
 
 export type WriteToolInput = Static<typeof writeSchema>;
 
-export function createWriteToolDefinition(env: Environment): ToolDefinition<typeof writeSchema, undefined> {
+export function createWriteToolDefinition(env: Environment): ExtensionToolDefinition<typeof writeSchema, undefined> {
 	return {
 		name: "write",
 		label: "write",

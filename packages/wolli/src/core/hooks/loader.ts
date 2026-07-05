@@ -9,7 +9,7 @@ import * as path from "node:path";
 import { createJiti } from "jiti/static";
 import { isBunBinary, isBundled } from "../../config.ts";
 import { canonicalizePath, resolvePath } from "../../utils/paths.ts";
-import { getAliases, VIRTUAL_MODULES } from "../extensions/loader.ts";
+import { getAliases, VIRTUAL_MODULES } from "../integrations/loader.ts";
 import { HOOK_EVENTS, type Hook, type HookDefinition, type HookEventMap } from "./types.ts";
 
 export async function loadHooks(

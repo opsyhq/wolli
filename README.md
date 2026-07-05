@@ -46,7 +46,7 @@ and state live under `~/.wolli`.
   conversation and records it as the first line of its `SOUL.md`. It decides what
   the agent stores, when it speaks up, and what it does unattended.
 - **Self-extending.** The agent builds itself out for its purpose. It curates its
-  own memory and authors and installs its own skills, tools, extensions and integrations; they
+  own memory and authors and installs its own skills, tools, workflows, and integrations; they
   live in its home and load on reload. The agent grows more capable at its job
   instead of staying a fixed tool.
 - **Persistent.** Sessions are an append-only JSONL tree, the agent's lifetime
@@ -84,8 +84,10 @@ removes them with it:
 
 | Type | What it adds |
 | --- | --- |
-| **Integrations** | TypeScript modules: tools, commands, events, UI. |
-| **Extensions** | TypeScript modules: tools, commands, events, UI. |
+| **Integrations** | Transports that connect external services and message channels. |
+| **Workflows** | Route events into sessions and automate the agent. |
+| **Tools** | Typed actions the model calls during a turn. |
+| **Providers** | Model providers beyond the built-in catalog. |
 | **Skills** | The Agent Skills standard. |
 | **Prompt templates** | `/name` slash commands. |
 | **Themes** | TUI appearance. |
@@ -109,7 +111,7 @@ Two integrations ship bundled: **Telegram** (bidirectional chat) and a
 ## Documentation
 
 Full documentation is in [`packages/wolli/docs`](packages/wolli/docs/index.md):
-extensions, skills, prompt templates, themes, integrations, plugins, and the SDK.
+workflows, integrations, tools, providers, hooks, skills, prompt templates, themes, plugins, and the SDK.
 
 ## Roadmap
 

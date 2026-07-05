@@ -18,25 +18,26 @@
  */
 
 import type { Static, TSchema } from "typebox";
-// Type-only imports — erased at compile time, so the extensions↔integrations
-// type cycle (extensions/types.ts already imports this file) has no runtime edge.
-import type { ExtensionUIContext } from "../extensions/types.ts";
 import type { IntegrationAccountRecord } from "../integration-account-storage.ts";
 import type { resolveConfigValueUncached } from "../resolve-config-value.ts";
 import type { SourceInfo } from "../source-info.ts";
 // Value import: `.on` funnels through defineWorkflow. The reverse edge (workflows importing
 // this file's descriptor types) is type-only, so the runtime dependency stays one-directional.
-import { defineWorkflow, type IntegrationWorkflowDefinition, type WorkflowContext } from "../workflows/types.ts";
+import {
+	type DialogUI,
+	defineWorkflow,
+	type IntegrationWorkflowDefinition,
+	type WorkflowContext,
+} from "../workflows/types.ts";
 
 /**
- * The narrowed UI surface an integration's `onboard(ctx)` may use — the dialog
- * primitives only, no chat chrome (editor/widgets/footer/theme). Mirrors
- * `ProjectTrustContext.ui` (a `Pick` of `ExtensionUIContext`). `custom` is excluded:
- * onboarding dialogs are serialized to attached clients, and a component factory can't
- * cross that boundary. Calling anything outside this set is a compile error rather than a
- * silent no-op.
+ * The narrowed UI surface an integration's `onboard(ctx)` may use — the dialog primitives
+ * only, no chat chrome (editor/widgets/footer/theme). This is the shared `DialogUI`: `custom`
+ * is excluded because onboarding dialogs are serialized to attached clients, and a component
+ * factory can't cross that boundary. Calling anything outside this set is a compile error
+ * rather than a silent no-op.
  */
-export type IntegrationOnboardUI = Pick<ExtensionUIContext, "select" | "confirm" | "input" | "notify">;
+export type IntegrationOnboardUI = DialogUI;
 
 /**
  * Context handed to an integration's `onboard(ctx)` during guided setup: the narrowed

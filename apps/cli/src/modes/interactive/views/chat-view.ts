@@ -28,9 +28,6 @@ import {
 	type EditorComponent,
 	Loader,
 	type MarkdownTheme,
-	matchesKey,
-	type OverlayHandle,
-	type OverlayOptions,
 	type SlashCommand,
 	Spacer,
 	Text,
@@ -39,44 +36,29 @@ import {
 } from "@opsyhq/tui";
 import {
 	type AuthSelectorProvider,
-	type AutocompleteProviderFactory,
 	BUILTIN_SLASH_COMMANDS,
 	createBashExecutionMessage,
 	createCompactionSummaryMessage,
 	createHostEnvironment,
-	type EditorFactory,
 	ensureTool,
 	executeBash,
-	type ExtensionShortcut,
-	type ExtensionUIContext,
 	type ExtensionUIDialogOptions,
 	type ExtensionUIRequest,
-	type ExtensionWidgetOptions,
 	findExactModelReferenceMatch,
-	getAvailableThemesWithPaths,
 	getEditorTheme,
 	getMarkdownTheme,
-	getThemeByName,
 	isValidThinkingLevel,
 	keyDisplayText,
-	type KeyId,
 	LoginDialogComponent,
 	type LoginUIRequest,
 	parseSkillBlock,
 	rawKeyHint,
-	type ReadonlyFooterDataProvider,
 	type ResourceDiagnostic,
 	type SessionHandle,
-	setTheme,
-	setThemeInstance,
 	type SourceInfo,
-	type TerminalInputHandler,
-	Theme,
 	theme,
 	type TruncationResult,
-	type WorkingIndicatorOptions,
 } from "@opsyhq/wolli";
-import { FooterDataProvider } from "../../../footer-data-provider.ts";
 import { KeybindingsManager } from "../../../keybindings-manager.ts";
 import type { AppView, ViewContext } from "../app.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
@@ -85,7 +67,6 @@ import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
 import { CustomMessageComponent } from "./components/custom-message.ts";
-import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
@@ -102,14 +83,8 @@ const CTRL_C_EXIT_WINDOW_MS = 500;
 /** Window (ms) within which a second left-arrow (at the start of the input) navigates back. */
 const BACK_ARROW_WINDOW_MS = 2000;
 
-/** Default streaming loader message, restored when an extension clears its override. */
-const DEFAULT_WORKING_MESSAGE = "Working...";
-
-/** Default label for collapsed thinking blocks, restored when an extension clears its override. */
+/** Label for collapsed thinking blocks. */
 const DEFAULT_HIDDEN_THINKING_LABEL = "Thinking...";
-
-/** Cap on total widget lines so an extension widget can't push the editor off-screen. */
-const MAX_WIDGET_LINES = 10;
 
 /**
  * Constructor opts decided by the CLI/main layer and read in the startup method.
@@ -161,34 +136,10 @@ export class ChatView extends Container implements AppView {
 	private defaultEditor!: CustomEditor;
 	private loader!: Loader;
 	private readonly markdownTheme: MarkdownTheme;
-	// Extension UI chrome. The header/footer containers hold extension-supplied components
-	// (empty otherwise — wolli has no built-in header/footer rows); the widget containers
-	// frame the editor above and below. `footerDataProvider` backs custom footers and the
-	// `setStatus`/git-branch data they read.
-	private readonly headerContainer: Container;
-	private readonly widgetContainerAbove: Container;
-	private readonly widgetContainerBelow: Container;
-	private readonly footerContainer: Container;
-	private readonly footerDataProvider: FooterDataProvider;
-	// Extension dialogs swapped into editorContainer, the widgets rendered around the
-	// editor, and the custom header/footer currently installed.
+	// The single-line text-input dialog swapped into editorContainer while open (raised by the daemon
+	// dialog rail — see showExtensionInput).
 	private extensionInput?: ExtensionInputComponent;
-	private extensionEditor?: ExtensionEditorComponent;
-	private readonly extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
-	private readonly extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
-	private customFooter?: Component & { dispose?(): void };
-	private customHeader?: Component & { dispose?(): void };
-	// Extension keyboard shortcuts, matched by the editor's onExtensionShortcut hook; terminal-input
-	// listeners, tracked so reload can drop them; the custom editor factory and last composed provider.
-	private extensionShortcuts = new Map<KeyId, ExtensionShortcut>();
-	private readonly extensionTerminalInputUnsubscribers = new Set<() => void>();
-	private editorComponentFactory?: EditorFactory;
 	private autocompleteProvider?: AutocompleteProvider;
-	// Streaming working-indicator state, configurable by extensions via ctx.ui.
-	private workingMessage?: string;
-	private workingVisible = true;
-	private workingIndicatorOptions?: WorkingIndicatorOptions;
-	private hiddenThinkingLabel = DEFAULT_HIDDEN_THINKING_LABEL;
 	// The last status line + its leading spacer, reused so repeated `showStatus` calls
 	// update in place instead of stacking identical lines.
 	private lastStatusText?: Text;
@@ -219,41 +170,33 @@ export class ChatView extends Container implements AppView {
 	private isBashMode = false;
 	private bashComponent?: BashExecutionComponent;
 	private bashAbortController?: AbortController;
-	// The selector dialog extensions raise (select/confirm), swapped into editorContainer
-	// while open — see showExtensionSelector/showExtensionConfirm.
+	// The selector dialog the daemon dialog rail raises (select/confirm), swapped into editorContainer
+	// while open — see showExtensionSelector.
 	private extensionSelector?: ExtensionSelectorComponent;
-	// Editor autocomplete (the slash-command menu). The engine —
-	// `CombinedAutocompleteProvider` plus the SelectList dropdown — lives in
-	// `@opsyhq/tui`; this layer only builds the provider from the live command set and
-	// pushes it into the editor. `autocompleteProviderWrappers` holds extension-supplied
-	// wrappers (via `ctx.ui.addAutocompleteProvider`), stacked over the base provider.
-	// `fdPath` is resolved lazily (initAutocompleteFd) and only powers `@`-fuzzy file
-	// search; slash-command and directory (readdir) completion work without it.
-	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
+	// Editor autocomplete (the slash-command menu). The engine — `CombinedAutocompleteProvider` plus
+	// the SelectList dropdown — lives in `@opsyhq/tui`; this layer only builds the provider from the
+	// live command set and pushes it into the editor. `fdPath` is resolved lazily (initAutocompleteFd)
+	// and only powers `@`-fuzzy file search; slash-command and directory (readdir) completion work
+	// without it.
 	private fdPath: string | undefined;
 
 	constructor(session: SessionHandle, options: ChatViewOptions = {}, keybindings: KeybindingsManager) {
 		super();
 		this.session = session;
 		this.options = options;
-		// `App` owns the TUI and global init; the keybindings handle is threaded in for extensions.
+		// `App` owns the TUI and global init; the keybindings handle is threaded in.
 		this.keybindings = keybindings;
 		this.chatContainer = new Container();
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.editorContainer = new Container();
 		this.statusContainerBelow = new Container();
-		this.headerContainer = new Container();
-		this.widgetContainerAbove = new Container();
-		this.widgetContainerBelow = new Container();
-		this.footerContainer = new Container();
-		this.footerDataProvider = new FooterDataProvider(this.session.getCwd());
 		this.markdownTheme = getMarkdownTheme();
 	}
 
 	/**
-	 * Mount the chat onto `App`'s terminal: build the editor + loader, wire the session/extension
-	 * plumbing, mount the region containers, then paint the transcript and seed the opener. `App` owns
+	 * Mount the chat onto `App`'s terminal: build the editor + loader, wire the session plumbing,
+	 * mount the region containers, then paint the transcript and seed the opener. `App` owns
 	 * `tui.start()` and focus.
 	 */
 	async onMount(ctx: ViewContext): Promise<void> {
@@ -271,14 +214,13 @@ export class ChatView extends Container implements AppView {
 		this.loader.stop();
 
 		// App keybindings dispatch from the editor (the release-filtered focused path), not a raw input
-		// listener. On defaultEditor so a swapped-in extension editor inherits them.
+		// listener.
 		this.defaultEditor.onAction("app.clear", () => void this.handleCtrlC());
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.model.select", () => void this.showModelSelector());
 		this.defaultEditor.onAction("app.message.followUp", () => void this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => void this.handleDequeue());
 		this.defaultEditor.onLeftAtStart = () => this.handleBackArrow();
-		this.defaultEditor.onExtensionShortcut = (data) => this.handleExtensionShortcut(data);
 
 		this.editor.onSubmit = (text) => {
 			void this.handleSubmit(text);
@@ -297,21 +239,16 @@ export class ChatView extends Container implements AppView {
 		this.setupAutocompleteProvider();
 		void this.initAutocompleteFd();
 		this.subscribeToHost();
-		// The extension runner lives server-side, so its UI requests arrive over the wire: route
-		// the daemon's extension_ui_request stream to the client dialogs.
+		// Dialogs run daemon-side, so their UI requests arrive over the wire: route the daemon's
+		// ui_request stream to the client dialogs.
 		this.session.onUiRequest = (req) => void this.dispatchUiRequest(req);
-		this.setupExtensionShortcuts();
 
 		// Mount the region containers onto this view (itself a Container on `App`'s root).
-		this.addChild(this.headerContainer);
 		this.addChild(this.chatContainer);
 		this.addChild(this.pendingMessagesContainer);
-		this.addChild(this.widgetContainerAbove);
 		this.addChild(this.statusContainer);
 		this.addChild(this.editorContainer);
 		this.addChild(this.statusContainerBelow);
-		this.addChild(this.widgetContainerBelow);
-		this.addChild(this.footerContainer);
 		this.editorContainer.addChild(this.editor);
 
 		this.appendHeader();
@@ -339,8 +276,8 @@ export class ChatView extends Container implements AppView {
 
 	/**
 	 * Build the base autocomplete provider from the live command set. The daemon merges prompt
-	 * templates, extension commands, and skills into one `SlashCommandInfo[]` (cached client-side),
-	 * so a single loop here covers all of them.
+	 * templates and skills into one `SlashCommandInfo[]` (cached client-side), so a single loop here
+	 * covers all of them.
 	 */
 	private createBaseAutocompleteProvider(): AutocompleteProvider {
 		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
@@ -364,22 +301,9 @@ export class ChatView extends Container implements AppView {
 		);
 	}
 
-	/**
-	 * Compose the base provider with any extension wrapper factories and push it into the
-	 * active editor. The composed provider is retained so a custom editor swapped in later
-	 * (via `setEditorComponent`) can be seeded with it.
-	 */
+	/** Build the base provider from the live command set and push it into the active editor. */
 	private setupAutocompleteProvider(): void {
-		let provider = this.createBaseAutocompleteProvider();
-		const triggerCharacters: string[] = [];
-		for (const wrapProvider of this.autocompleteProviderWrappers) {
-			provider = wrapProvider(provider);
-			triggerCharacters.push(...(provider.triggerCharacters ?? []));
-		}
-		if (triggerCharacters.length > 0) {
-			provider.triggerCharacters = [...new Set(triggerCharacters)];
-		}
-
+		const provider = this.createBaseAutocompleteProvider();
 		this.autocompleteProvider = provider;
 		this.editor.setAutocompleteProvider?.(provider);
 	}
@@ -445,7 +369,7 @@ export class ChatView extends Container implements AppView {
 				undefined,
 				false,
 				this.markdownTheme,
-				this.hiddenThinkingLabel,
+				DEFAULT_HIDDEN_THINKING_LABEL,
 			);
 			component.updateContent(message);
 			this.chatContainer.addChild(component);
@@ -493,7 +417,6 @@ export class ChatView extends Container implements AppView {
 	private showResourceSummary(): void {
 		const summary = this.session.getResourceSummary();
 		const parts: string[] = [];
-		if (summary.extensions > 0) parts.push(`${summary.extensions} extension${summary.extensions === 1 ? "" : "s"}`);
 		if (summary.skills > 0) parts.push(`${summary.skills} skill${summary.skills === 1 ? "" : "s"}`);
 		if (summary.prompts > 0) parts.push(`${summary.prompts} prompt${summary.prompts === 1 ? "" : "s"}`);
 		if (summary.commands > 0) parts.push(`${summary.commands} command${summary.commands === 1 ? "" : "s"}`);
@@ -610,15 +533,9 @@ export class ChatView extends Container implements AppView {
 			}
 		}
 
-		// Queue input typed during a compaction (extension commands still run immediately).
+		// Queue input typed during a compaction.
 		if (this.session.isCompacting) {
-			if (this.isExtensionCommand(trimmed)) {
-				this.editor.addToHistory?.(trimmed);
-				this.editor.setText("");
-				await this.session.prompt(trimmed);
-			} else {
-				this.queueCompactionMessage(trimmed, "steer");
-			}
+			this.queueCompactionMessage(trimmed, "steer");
 			return;
 		}
 
@@ -1188,16 +1105,6 @@ export class ChatView extends Container implements AppView {
 		this.ui.requestRender();
 	}
 
-	/** Yes/No confirm built on the selector. */
-	private async showExtensionConfirm(
-		title: string,
-		message: string,
-		opts?: ExtensionUIDialogOptions,
-	): Promise<boolean> {
-		const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts);
-		return result === "Yes";
-	}
-
 	/** Show a single-line text input dialog, swapped into `editorContainer` like the selector. */
 	private showExtensionInput(
 		title: string,
@@ -1248,83 +1155,7 @@ export class ChatView extends Container implements AppView {
 		this.ui.requestRender();
 	}
 
-	/** Show a multi-line editor dialog (with Ctrl+G external-editor support). */
-	private showExtensionEditor(title: string, prefill?: string): Promise<string | undefined> {
-		return new Promise((resolve) => {
-			this.extensionEditor = new ExtensionEditorComponent(
-				this.ui,
-				this.keybindings,
-				title,
-				prefill,
-				(value) => {
-					this.hideExtensionEditor();
-					resolve(value);
-				},
-				() => {
-					this.hideExtensionEditor();
-					resolve(undefined);
-				},
-			);
-
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.extensionEditor);
-			this.ui.setFocus(this.extensionEditor);
-			this.ui.requestRender();
-		});
-	}
-
-	private hideExtensionEditor(): void {
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.extensionEditor = undefined;
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
-	}
-
-	/**
-	 * Swap in an extension-supplied editor (or restore the default on undefined). The new
-	 * editor inherits the default's submit/change callbacks, current text, and appearance,
-	 * so `handleSubmit` and bash-mode coloring keep working against `this.editor`.
-	 */
-	private setCustomEditorComponent(factory: EditorFactory | undefined): void {
-		this.editorComponentFactory = factory;
-		const currentText = this.editor.getText();
-		this.editorContainer.clear();
-
-		if (factory) {
-			const newEditor = factory(this.ui, getEditorTheme(), this.keybindings);
-			newEditor.onSubmit = this.defaultEditor.onSubmit;
-			newEditor.onChange = this.defaultEditor.onChange;
-			newEditor.setText(currentText);
-			if (newEditor.borderColor !== undefined) {
-				newEditor.borderColor = this.defaultEditor.borderColor;
-			}
-			newEditor.setPaddingX?.(this.defaultEditor.getPaddingX());
-			if (newEditor.setAutocompleteProvider && this.autocompleteProvider) {
-				newEditor.setAutocompleteProvider(this.autocompleteProvider);
-			}
-			// If the swapped-in editor extends CustomEditor, copy the app actions/hooks onto it.
-			// Duck-typed because `instanceof` is unreliable across module boundaries.
-			const candidate = newEditor as unknown as Record<string, unknown>;
-			if (candidate.actionHandlers instanceof Map) {
-				candidate.onLeftAtStart ??= () => this.defaultEditor.onLeftAtStart?.();
-				candidate.onExtensionShortcut ??= (data: string) => this.defaultEditor.onExtensionShortcut?.(data);
-				for (const [action, handler] of this.defaultEditor.actionHandlers) {
-					(candidate.actionHandlers as Map<string, () => void>).set(action, handler);
-				}
-			}
-			this.editor = newEditor;
-		} else {
-			this.defaultEditor.setText(currentText);
-			this.editor = this.defaultEditor;
-		}
-
-		this.editorContainer.addChild(this.editor);
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
-	}
-
-	/** Route an extension notification to the matching chat-log line. */
+	/** Route a dialog notification to the matching chat-log line. */
 	private showExtensionNotify(message: string, type?: "info" | "warning" | "error"): void {
 		if (type === "error") {
 			this.showError(message);
@@ -1335,305 +1166,26 @@ export class ChatView extends Container implements AppView {
 		}
 	}
 
-	/**
-	 * Show a custom component with keyboard focus. Overlay mode renders on top of existing
-	 * content; otherwise the component takes over `editorContainer` until `done` is called.
-	 */
-	private async showExtensionCustom<T>(
-		factory: (
-			tui: TUI,
-			thm: Theme,
-			keybindings: KeybindingsManager,
-			done: (result: T) => void,
-		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
-		options?: {
-			overlay?: boolean;
-			overlayOptions?: OverlayOptions | (() => OverlayOptions);
-			onHandle?: (handle: OverlayHandle) => void;
-		},
-	): Promise<T> {
-		const savedText = this.editor.getText();
-		const isOverlay = options?.overlay ?? false;
-
-		const restoreEditor = () => {
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.editor);
-			this.editor.setText(savedText);
-			this.ui.setFocus(this.editor);
-			this.ui.requestRender();
-		};
-
-		return new Promise((resolve, reject) => {
-			let component: Component & { dispose?(): void };
-			let closed = false;
-
-			const close = (result: T) => {
-				if (closed) return;
-				closed = true;
-				if (isOverlay) this.ui.hideOverlay();
-				else restoreEditor();
-				resolve(result);
-				try {
-					component?.dispose?.();
-				} catch {
-					// Ignore dispose errors.
-				}
-			};
-
-			Promise.resolve(factory(this.ui, theme, this.keybindings, close))
-				.then((c) => {
-					if (closed) return;
-					component = c;
-					if (isOverlay) {
-						const resolveOptions = (): OverlayOptions | undefined => {
-							if (options?.overlayOptions) {
-								return typeof options.overlayOptions === "function"
-									? options.overlayOptions()
-									: options.overlayOptions;
-							}
-							const w = (component as { width?: number }).width;
-							return w ? { width: w } : undefined;
-						};
-						const handle = this.ui.showOverlay(component, resolveOptions());
-						options?.onHandle?.(handle);
-					} else {
-						this.editorContainer.clear();
-						this.editorContainer.addChild(component);
-						this.ui.setFocus(component);
-						this.ui.requestRender();
-					}
-				})
-				.catch((err) => {
-					if (closed) return;
-					if (!isOverlay) restoreEditor();
-					reject(err);
-				});
-		});
-	}
-
-	/** Surface an extension error (message plus indented stack) in the chat log. */
-	private showExtensionError(extensionPath: string, error: string, stack?: string): void {
-		const errorMsg = `Extension "${extensionPath}" error: ${error}`;
-		this.chatContainer.addChild(new Text(theme.fg("error", errorMsg), 1, 0));
-		if (stack) {
-			const stackLines = stack
-				.split("\n")
-				.slice(1)
-				.map((line) => theme.fg("dim", `  ${line.trim()}`))
-				.join("\n");
-			if (stackLines) {
-				this.chatContainer.addChild(new Text(stackLines, 1, 0));
-			}
-		}
-		this.ui.requestRender();
-	}
-
-	/** Set extension status text in the footer data provider (read by custom footers). */
-	private setExtensionStatus(key: string, text: string | undefined): void {
-		this.footerDataProvider.setExtensionStatus(key, text);
-		this.ui.requestRender();
-	}
-
-	/** Show the streaming loader with the current working message/indicator. */
+	/** Show the streaming loader in the status row. */
 	private showWorkingLoader(): void {
 		this.statusContainer.clear();
-		if (!this.workingVisible) return;
-		this.loader.setMessage(this.workingMessage ?? DEFAULT_WORKING_MESSAGE);
-		this.loader.setIndicator(this.workingIndicatorOptions);
 		this.statusContainer.addChild(this.loader);
 		this.loader.start();
 	}
 
-	private setWorkingVisible(visible: boolean): void {
-		this.workingVisible = visible;
-		if (!visible) {
-			this.loader.stop();
-			this.statusContainer.clear();
-		} else if (this.busy) {
-			this.showWorkingLoader();
-		}
-		this.ui.requestRender();
-	}
-
-	private setWorkingIndicator(options?: WorkingIndicatorOptions): void {
-		this.workingIndicatorOptions = options;
-		if (this.busy && this.workingVisible) {
-			this.loader.setIndicator(options);
-		}
-		this.ui.requestRender();
-	}
-
-	private setHiddenThinkingLabel(label?: string): void {
-		this.hiddenThinkingLabel = label ?? DEFAULT_HIDDEN_THINKING_LABEL;
-		for (const child of this.chatContainer.children) {
-			if (child instanceof AssistantMessageComponent) {
-				child.setHiddenThinkingLabel(this.hiddenThinkingLabel);
-			}
-		}
-		this.streamingComponent?.setHiddenThinkingLabel(this.hiddenThinkingLabel);
-		this.ui.requestRender();
-	}
-
-	/** Set or clear an extension widget (string array or component factory), then re-render. */
-	private setExtensionWidget(
-		key: string,
-		content: string[] | ((tui: TUI, thm: Theme) => Component & { dispose?(): void }) | undefined,
-		options?: ExtensionWidgetOptions,
-	): void {
-		const placement = options?.placement ?? "aboveEditor";
-		const removeExisting = (map: Map<string, Component & { dispose?(): void }>) => {
-			const existing = map.get(key);
-			if (existing?.dispose) existing.dispose();
-			map.delete(key);
-		};
-
-		removeExisting(this.extensionWidgetsAbove);
-		removeExisting(this.extensionWidgetsBelow);
-
-		if (content === undefined) {
-			this.renderWidgets();
-			return;
-		}
-
-		let component: Component & { dispose?(): void };
-		if (Array.isArray(content)) {
-			const container = new Container();
-			for (const line of content.slice(0, MAX_WIDGET_LINES)) {
-				container.addChild(new Text(line, 1, 0));
-			}
-			if (content.length > MAX_WIDGET_LINES) {
-				container.addChild(new Text(theme.fg("muted", "... (widget truncated)"), 1, 0));
-			}
-			component = container;
-		} else {
-			component = content(this.ui, theme);
-		}
-
-		const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
-		targetMap.set(key, component);
-		this.renderWidgets();
-	}
-
-	private clearExtensionWidgets(): void {
-		for (const widget of this.extensionWidgetsAbove.values()) {
-			widget.dispose?.();
-		}
-		for (const widget of this.extensionWidgetsBelow.values()) {
-			widget.dispose?.();
-		}
-		this.extensionWidgetsAbove.clear();
-		this.extensionWidgetsBelow.clear();
-		this.renderWidgets();
-	}
-
-	private renderWidgets(): void {
-		this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, true);
-		this.renderWidgetContainer(this.widgetContainerBelow, this.extensionWidgetsBelow, false);
-		this.ui.requestRender();
-	}
-
-	private renderWidgetContainer(
-		container: Container,
-		widgets: Map<string, Component & { dispose?(): void }>,
-		leadingSpacer: boolean,
-	): void {
-		container.clear();
-		if (widgets.size === 0) return;
-		if (leadingSpacer) {
-			container.addChild(new Spacer(1));
-		}
-		for (const component of widgets.values()) {
-			container.addChild(component);
-		}
-	}
-
-	/** Install a custom footer component, or clear it (wolli has no built-in footer row). */
-	private setExtensionFooter(
-		factory:
-			| ((tui: TUI, thm: Theme, footerData: ReadonlyFooterDataProvider) => Component & { dispose?(): void })
-			| undefined,
-	): void {
-		if (this.customFooter?.dispose) {
-			this.customFooter.dispose();
-		}
-		this.footerContainer.clear();
-		if (factory) {
-			this.customFooter = factory(this.ui, theme, this.footerDataProvider);
-			this.footerContainer.addChild(this.customFooter);
-		} else {
-			this.customFooter = undefined;
-		}
-		this.ui.requestRender();
-	}
-
-	/** Install a custom header component, or clear it (wolli's built-in header is in the chat log). */
-	private setExtensionHeader(factory: ((tui: TUI, thm: Theme) => Component & { dispose?(): void }) | undefined): void {
-		if (this.customHeader?.dispose) {
-			this.customHeader.dispose();
-		}
-		this.headerContainer.clear();
-		if (factory) {
-			this.customHeader = factory(this.ui, theme);
-			if (isExpandable(this.customHeader)) {
-				this.customHeader.setExpanded(this.toolOutputExpanded);
-			}
-			this.headerContainer.addChild(this.customHeader);
-		} else {
-			this.customHeader = undefined;
-		}
-		this.ui.requestRender();
-	}
-
-	private addExtensionTerminalInputListener(handler: TerminalInputHandler): () => void {
-		const unsubscribe = this.ui.addInputListener(handler);
-		this.extensionTerminalInputUnsubscribers.add(unsubscribe);
-		return () => {
-			unsubscribe();
-			this.extensionTerminalInputUnsubscribers.delete(unsubscribe);
-		};
-	}
-
-	private clearExtensionTerminalInputListeners(): void {
-		for (const unsubscribe of this.extensionTerminalInputUnsubscribers) {
-			unsubscribe();
-		}
-		this.extensionTerminalInputUnsubscribers.clear();
-	}
-
-	/**
-	 * Snapshot the extension keyboard shortcuts; handleExtensionShortcut matches against them. The
-	 * runner is server-side and shortcuts aren't wired over the daemon, so this stays empty.
-	 */
-	private setupExtensionShortcuts(): void {
-		this.extensionShortcuts = this.session.getShortcuts();
-	}
-
-	/** Reset all extension-owned UI back to defaults (before a reload rebuilds it). */
+	/** Reset any open dialogs and rebuild autocomplete before a reload rebuilds resources. */
 	private resetExtensionUI(): void {
 		if (this.extensionSelector) this.hideExtensionSelector();
 		if (this.extensionInput) this.hideExtensionInput();
-		if (this.extensionEditor) this.hideExtensionEditor();
 		this.ui.hideOverlay();
-		this.clearExtensionTerminalInputListeners();
-		this.extensionShortcuts = new Map();
-		this.setExtensionFooter(undefined);
-		this.setExtensionHeader(undefined);
-		this.clearExtensionWidgets();
-		this.footerDataProvider.clearExtensionStatuses();
-		this.autocompleteProviderWrappers = [];
-		this.setCustomEditorComponent(undefined);
 		this.setupAutocompleteProvider();
-		this.workingMessage = undefined;
-		this.workingVisible = true;
-		this.setWorkingIndicator();
-		this.setHiddenThinkingLabel();
 	}
 
 	/**
-	 * Client half of the extension-UI round-trip: a daemon `extension_ui_request` arrives over SSE.
-	 * The four awaited dialogs (`select`/`confirm`/`input`/`editor`) are shown locally and the user's
-	 * answer is POSTed back via `this.session.respondUi`, resolving the parked daemon-side promise.
-	 * The five fire-and-forget methods apply to this client's TUI with no response.
+	 * Client half of the dialog round-trip: a daemon `ui_request` arrives over SSE. The three awaited
+	 * dialogs (`select`/`confirm`/`input`) are shown locally and the user's answer is POSTed back via
+	 * `this.session.respondUi`, resolving the parked daemon-side promise. `notify` applies to this
+	 * client's TUI with no response.
 	 */
 	private async dispatchUiRequest(req: ExtensionUIRequest): Promise<void> {
 		switch (req.method) {
@@ -1644,7 +1196,7 @@ export class ChatView extends Container implements AppView {
 				return;
 			}
 			case "confirm": {
-				// Drive the selector directly (not showExtensionConfirm) so cancel stays distinct from "No".
+				// Drive the selector directly so cancel stays distinct from "No".
 				const value = await this.showExtensionSelector(`${req.title}\n${req.message}`, ["Yes", "No"], {
 					timeout: req.timeout,
 				});
@@ -1656,84 +1208,12 @@ export class ChatView extends Container implements AppView {
 				void this.session.respondUi(req.id, value === undefined ? { cancelled: true } : { value });
 				return;
 			}
-			case "editor": {
-				const value = await this.showExtensionEditor(req.title, req.prefill);
-				void this.session.respondUi(req.id, value === undefined ? { cancelled: true } : { value });
-				return;
-			}
 
 			// —— Fire-and-forget: apply to this client's TUI, no response ——
 			case "notify":
 				this.showExtensionNotify(req.message, req.notifyType);
 				return;
-			case "setStatus":
-				this.setExtensionStatus(req.statusKey, req.statusText);
-				return;
-			case "setWidget":
-				this.setExtensionWidget(req.widgetKey, req.widgetLines, { placement: req.widgetPlacement });
-				return;
-			case "setTitle":
-				this.ui.terminal.setTitle(req.title);
-				return;
-			case "setEditorText":
-				this.editor.setText(req.text);
-				return;
 		}
-	}
-
-	/** The UI surface handed to extensions via `ctx.ui`. */
-	private createExtensionUIContext(): ExtensionUIContext {
-		return {
-			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
-			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
-			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
-			notify: (message, type) => this.showExtensionNotify(message, type),
-			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
-			setStatus: (key, text) => this.setExtensionStatus(key, text),
-			setWorkingMessage: (message) => {
-				this.workingMessage = message;
-				if (this.busy && this.workingVisible) {
-					this.loader.setMessage(message ?? DEFAULT_WORKING_MESSAGE);
-				}
-			},
-			setWorkingVisible: (visible) => this.setWorkingVisible(visible),
-			setWorkingIndicator: (options) => this.setWorkingIndicator(options),
-			setHiddenThinkingLabel: (label) => this.setHiddenThinkingLabel(label),
-			setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
-			setFooter: (factory) => this.setExtensionFooter(factory),
-			setHeader: (factory) => this.setExtensionHeader(factory),
-			setTitle: (title) => this.ui.terminal.setTitle(title),
-			custom: (factory, options) => this.showExtensionCustom(factory, options),
-			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
-			setEditorText: (text) => this.editor.setText(text),
-			getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
-			editor: (title, prefill) => this.showExtensionEditor(title, prefill),
-			addAutocompleteProvider: (factory) => {
-				this.autocompleteProviderWrappers.push(factory);
-				this.setupAutocompleteProvider();
-			},
-			setEditorComponent: (factory) => this.setCustomEditorComponent(factory),
-			getEditorComponent: () => this.editorComponentFactory,
-			get theme() {
-				return theme;
-			},
-			getAllThemes: () => getAvailableThemesWithPaths(),
-			getTheme: (name) => getThemeByName(name),
-			setTheme: (themeOrName) => {
-				if (themeOrName instanceof Theme) {
-					setThemeInstance(themeOrName);
-					this.ui.requestRender();
-					return { success: true };
-				}
-				const result = setTheme(themeOrName, true);
-				if (result.success) {
-					this.ui.requestRender();
-				}
-				return result;
-			},
-			getToolsExpanded: () => this.toolOutputExpanded,
-			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
-		};
 	}
 
 	/**
@@ -1963,8 +1443,7 @@ export class ChatView extends Container implements AppView {
 			}
 			case "custom": {
 				if (message.display) {
-					const renderer = this.session.getMessageRenderer();
-					const component = new CustomMessageComponent(message, renderer, this.markdownTheme);
+					const component = new CustomMessageComponent(message, this.markdownTheme);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
 				}
@@ -2016,7 +1495,7 @@ export class ChatView extends Container implements AppView {
 					message,
 					false,
 					this.markdownTheme,
-					this.hiddenThinkingLabel,
+					DEFAULT_HIDDEN_THINKING_LABEL,
 				);
 				this.chatContainer.addChild(assistantComponent);
 				break;
@@ -2182,15 +1661,9 @@ export class ChatView extends Container implements AppView {
 		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
 		if (!text) return;
 
-		// Queue input typed during a compaction (extension commands still run immediately).
+		// Queue input typed during a compaction.
 		if (this.session.isCompacting) {
-			if (this.isExtensionCommand(text)) {
-				this.editor.addToHistory?.(text);
-				this.editor.setText("");
-				await this.session.prompt(text);
-			} else {
-				this.queueCompactionMessage(text, "followUp");
-			}
+			this.queueCompactionMessage(text, "followUp");
 			return;
 		}
 
@@ -2234,14 +1707,6 @@ export class ChatView extends Container implements AppView {
 		return allQueued.length;
 	}
 
-	/** Whether `text` is a registered extension command (run immediately even during compaction). */
-	private isExtensionCommand(text: string): boolean {
-		if (!text.startsWith("/")) return false;
-		const spaceIndex = text.indexOf(" ");
-		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		return this.session.getCommands().some((command) => command.name === commandName && command.source === "extension");
-	}
-
 	/** Hold a message typed during a compaction; it is flushed when the compaction ends. */
 	private queueCompactionMessage(text: string, mode: "steer" | "followUp"): void {
 		this.compactionQueuedMessages.push({ text, mode });
@@ -2280,9 +1745,7 @@ export class ChatView extends Container implements AppView {
 			if (options?.willRetry) {
 				// A retry is pending: queue the messages for the retry turn.
 				for (const message of queuedMessages) {
-					if (this.isExtensionCommand(message.text)) {
-						await this.session.prompt(message.text);
-					} else if (message.mode === "followUp") {
+					if (message.mode === "followUp") {
 						await this.session.prompt(message.text, { streamingBehavior: "followUp" });
 					} else {
 						await this.session.prompt(message.text, { streamingBehavior: "steer" });
@@ -2292,23 +1755,9 @@ export class ChatView extends Container implements AppView {
 				return;
 			}
 
-			// Find the first non-extension-command message to use as the prompt that starts the turn.
-			const firstPromptIndex = queuedMessages.findIndex((message) => !this.isExtensionCommand(message.text));
-			if (firstPromptIndex === -1) {
-				// All extension commands - execute them all.
-				for (const message of queuedMessages) {
-					await this.session.prompt(message.text);
-				}
-				return;
-			}
-
-			const preCommands = queuedMessages.slice(0, firstPromptIndex);
-			const firstPrompt = queuedMessages[firstPromptIndex]!;
-			const rest = queuedMessages.slice(firstPromptIndex + 1);
-
-			for (const message of preCommands) {
-				await this.session.prompt(message.text);
-			}
+			// The first queued message starts the turn; the rest queue behind it.
+			const firstPrompt = queuedMessages[0]!;
+			const rest = queuedMessages.slice(1);
 
 			// Send the first prompt (starts streaming).
 			const promptPromise = this.session.prompt(firstPrompt.text).catch((error) => {
@@ -2317,9 +1766,7 @@ export class ChatView extends Container implements AppView {
 
 			// Queue the remaining messages behind it.
 			for (const message of rest) {
-				if (this.isExtensionCommand(message.text)) {
-					await this.session.prompt(message.text);
-				} else if (message.mode === "followUp") {
+				if (message.mode === "followUp") {
 					await this.session.prompt(message.text, { streamingBehavior: "followUp" });
 				} else {
 					await this.session.prompt(message.text, { streamingBehavior: "steer" });
@@ -2344,7 +1791,7 @@ export class ChatView extends Container implements AppView {
 			undefined,
 			false,
 			this.markdownTheme,
-			this.hiddenThinkingLabel,
+			DEFAULT_HIDDEN_THINKING_LABEL,
 		);
 		this.chatContainer.addChild(this.streamingComponent);
 	}
@@ -2459,8 +1906,8 @@ export class ChatView extends Container implements AppView {
 	}
 
 	/**
-	 * `/reload` — the daemon rebuilds extensions, skills, prompts, and keybindings in place. Guards
-	 * against running mid-stream, resets extension-owned UI, then re-wires autocomplete + shortcuts
+	 * `/reload` — the daemon rebuilds the capability folders, skills, prompts, and keybindings in
+	 * place. Guards against running mid-stream, resets any open dialogs, then re-wires autocomplete
 	 * from the refreshed snapshot. The conversation is kept.
 	 */
 	private async handleReloadCommand(): Promise<void> {
@@ -2474,10 +1921,9 @@ export class ChatView extends Container implements AppView {
 			await this.session.reload();
 			this.keybindings.reload();
 			this.setupAutocompleteProvider();
-			this.setupExtensionShortcuts();
 			const summary = this.session.getResourceSummary();
 			this.showStatus(
-				`Reloaded: ${summary.extensions} extensions, ${summary.skills} skills, ${summary.prompts} prompts, ${summary.commands} commands.`,
+				`Reloaded: ${summary.tools} tools, ${summary.skills} skills, ${summary.prompts} prompts.`,
 			);
 			this.appendResourceDiagnostics(summary.diagnostics);
 		} catch (error) {
@@ -2518,19 +1964,6 @@ export class ChatView extends Container implements AppView {
 			}
 		}
 		this.ui.requestRender();
-	}
-
-	/** Match a key against the extension shortcuts (wired to the editor's `onExtensionShortcut`). */
-	private handleExtensionShortcut(data: string): boolean {
-		for (const [shortcut, registered] of this.extensionShortcuts) {
-			if (matchesKey(data, shortcut)) {
-				Promise.resolve(registered.handler(this.session.createShortcutContext())).catch((err) => {
-					this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
-				});
-				return true;
-			}
-		}
-		return false;
 	}
 
 	/** Left-arrow at the input start: two-press (hint, then navigate) back to the dashboard. */

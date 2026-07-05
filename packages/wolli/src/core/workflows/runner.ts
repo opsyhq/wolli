@@ -12,7 +12,6 @@
 
 import type { TSchema } from "typebox";
 import { Compile } from "typebox/compile";
-import type { NewSessionOptions } from "../extensions/types.ts";
 import type { IntegrationRunner } from "../integrations/runner.ts";
 import type { SessionInfo } from "../session.ts";
 import { RunJournal } from "./journal.ts";
@@ -24,6 +23,7 @@ import type {
 	IntegrationKey,
 	IntegrationWorkflowDefinition,
 	LifecycleWorkflowDefinition,
+	NewSessionOptions,
 	RunStatus,
 	RunTrigger,
 	Workflow,

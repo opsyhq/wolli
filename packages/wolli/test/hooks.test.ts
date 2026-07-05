@@ -11,7 +11,7 @@
  * literals, mirroring the AgentEventMap pin in workflows.test.ts.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,12 +22,6 @@ import { getAgentDir } from "../src/config.ts";
 import { AgentRuntime } from "../src/core/agent-runtime.ts";
 import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import type {
-	CustomToolCallEvent,
-	CustomToolResultEvent,
-	MessageEndEvent,
-	SessionBeforeCompactEvent,
-} from "../src/core/extensions/types.ts";
 import {
 	defineHook,
 	type Hook,
@@ -39,10 +33,12 @@ import {
 	HookRunner,
 	loadHooks,
 } from "../src/core/hooks/index.ts";
+import type { CustomToolCallEvent, CustomToolResultEvent, SessionBeforeCompactEvent } from "../src/core/hooks/types.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { IntegrationStore } from "../src/core/integration-store.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import type { DialogUI, WorkflowSession } from "../src/core/workflows/index.ts";
+import type { MessageEndEvent } from "../src/core/workflows/types.ts";
 
 describe("defineHook", () => {
 	it("is identity at runtime", () => {
@@ -641,11 +637,10 @@ export default { before: "tool_calls", run() {} };
 // Runtime wiring (the interception seam over a REAL AgentRuntime)
 // ============================================================================
 //
-// The wiring proof, in the extensions/workflows-suite stance: a REAL AgentRuntime in a temp
-// agent home with a faux pi-ai provider. Hooks auto-discover from <agentDir>/hooks/, the
-// eight interception sites consult HOOKS before EXTENSIONS (order pinned by the input site: an
-// extension input handler sees the hook-transformed text), a tool_call hook block short-circuits
-// the extension tool_call handler, and hook load errors ride the resource summary.
+// The wiring proof: a REAL AgentRuntime in a temp agent home with a faux pi-ai provider. Hooks
+// auto-discover from <agentDir>/hooks/, the interception sites feed hook transforms into the turn
+// (the input hook's transform reaches the model), a tool_call hook block short-circuits the tool
+// call so the underlying tool never runs, and hook load errors ride the resource summary.
 
 /** Flatten a message content union (string | content blocks) to its text. */
 function messageText(content: unknown): string {
@@ -691,7 +686,6 @@ describe("AgentRuntime hook wiring", () => {
 		process.env.WOLLI_TEST_MARKER_DIR = markerDir;
 		AgentSettingsManager.createAgent({ name: AGENT });
 		mkdirSync(join(getAgentDir(AGENT), "hooks"), { recursive: true });
-		mkdirSync(join(getAgentDir(AGENT), "extensions"), { recursive: true });
 	});
 
 	afterEach(() => {
@@ -726,8 +720,8 @@ export default defineHook({
 		await runtime.cleanup();
 	});
 
-	it("runs the input hook before the extension handler: the extension sees the hook-transformed text", async () => {
-		// Hook transforms the raw text first; the extension records what it saw and transforms again.
+	it("runs the input hook: the model sees the hook-transformed text", async () => {
+		// The hook transforms the raw text; the transform must reach the model.
 		writeFileSync(
 			join(getAgentDir(AGENT), "hooks", "tag-input.ts"),
 			`
@@ -739,22 +733,6 @@ export default defineHook({
 		return { action: "transform", text: evt.text + "-hook" };
 	},
 });
-`,
-			"utf-8",
-		);
-		writeFileSync(
-			join(getAgentDir(AGENT), "extensions", "tag-input-ext.ts"),
-			`
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-
-export default function inputExtension(pi) {
-	pi.on("input", (event) => {
-		const dir = process.env.WOLLI_TEST_MARKER_DIR;
-		if (dir) writeFileSync(join(dir, "ext-input.json"), JSON.stringify({ seen: event.text }));
-		return { action: "transform", text: event.text + "-ext" };
-	});
-}
 `,
 			"utf-8",
 		);
@@ -772,14 +750,12 @@ export default function inputExtension(pi) {
 		const session = await runtime.createSession();
 		await session.prompt("raw");
 
-		// Order proof: the extension handler ran AFTER the hook, so it saw the hook's "-hook" suffix.
-		expect(JSON.parse(readFileSync(join(markerDir, "ext-input.json"), "utf-8"))).toEqual({ seen: "raw-hook" });
-		// Both transforms landed on the text the model finally saw.
-		expect(capturedUserText).toBe("raw-hook-ext");
+		// The hook transform landed on the text the model finally saw.
+		expect(capturedUserText).toBe("raw-hook");
 		await runtime.cleanup();
 	});
 
-	it("lets a tool_call hook block short-circuit the extension tool_call handler", async () => {
+	it("lets a tool_call hook block short-circuit the tool call", async () => {
 		writeFileSync(
 			join(getAgentDir(AGENT), "hooks", "guard-tool.ts"),
 			`
@@ -794,36 +770,21 @@ export default defineHook({
 `,
 			"utf-8",
 		);
-		writeFileSync(
-			join(getAgentDir(AGENT), "extensions", "watch-tool-ext.ts"),
-			`
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-
-export default function toolCallExtension(pi) {
-	pi.on("tool_call", () => {
-		const dir = process.env.WOLLI_TEST_MARKER_DIR;
-		if (dir) writeFileSync(join(dir, "ext-toolcall.json"), JSON.stringify({ ran: true }));
-		return undefined;
-	});
-}
-`,
-			"utf-8",
-		);
+		const marker = join(markerDir, "bash-ran");
 		const { runtime, registration } = makeRuntime();
 		await runtime.start();
-		// First turn: the model calls bash; the hook blocks it (the tool never runs). The blocked
-		// tool result feeds back and the second response ends the turn.
+		// First turn: the model calls bash (which would touch a marker); the hook blocks it so the
+		// tool never runs. The blocked tool result feeds back and the second response ends the turn.
 		registration.setResponses([
-			() => fauxAssistantMessage(fauxToolCall("bash", { command: "echo hi" }), { stopReason: "toolUse" }),
+			() => fauxAssistantMessage(fauxToolCall("bash", { command: `touch ${marker}` }), { stopReason: "toolUse" }),
 			() => fauxAssistantMessage("done"),
 		]);
 
 		const session = await runtime.createSession();
 		await session.harness.prompt("go");
 
-		// The hook blocked before the extension chain, so the extension tool_call handler never ran.
-		expect(existsSync(join(markerDir, "ext-toolcall.json"))).toBe(false);
+		// The hook blocked the call, so the bash tool never executed and left no marker behind.
+		expect(existsSync(marker)).toBe(false);
 		await runtime.cleanup();
 	});
 

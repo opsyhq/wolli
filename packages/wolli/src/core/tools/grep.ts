@@ -3,7 +3,6 @@ import path from "path";
 import { type Static, Type } from "typebox";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { Environment } from "../environments/types.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import {
@@ -14,6 +13,7 @@ import {
 	truncateHead,
 	truncateLine,
 } from "./truncate.ts";
+import type { ExtensionToolDefinition } from "./types.ts";
 
 const grepSchema = Type.Object({
 	pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
@@ -52,7 +52,7 @@ interface RgEvent {
 
 export function createGrepToolDefinition(
 	env: Environment,
-): ToolDefinition<typeof grepSchema, GrepToolDetails | undefined> {
+): ExtensionToolDefinition<typeof grepSchema, GrepToolDetails | undefined> {
 	return {
 		name: "grep",
 		label: "grep",

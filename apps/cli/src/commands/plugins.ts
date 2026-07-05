@@ -3,7 +3,7 @@
  *
  * install/remove/update route to the agent's daemon (the single writer, which reloads itself);
  * list reads disk locally. If a plugin's integration declares `onboard`, install/configure run
- * that guided setup over the daemon's `extension_ui_request` round-trip, rendered in a startup TUI.
+ * that guided setup over the daemon's `ui_request` round-trip, rendered in a startup TUI.
  */
 
 import {

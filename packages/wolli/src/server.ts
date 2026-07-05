@@ -9,7 +9,7 @@
  *   - `GET /sessions`                  — the session list;
  *   - `GET /sessions/:id/events` (SSE) — one session's curated event stream (subscribing makes it live);
  *   - `POST /sessions/:id/control`     — a command for that session, whose sync response is the body;
- *   - `POST /sessions/:id/ui-response` — a client's answer to that session's parked extension dialog;
+ *   - `POST /sessions/:id/ui-response` — a client's answer to that session's parked dialog;
  *   - `POST /sessions/:id/login-response` — a client's answer to that session's parked login dialog;
  *   - `GET /health`                    — liveness, no auth.
  *
@@ -31,12 +31,6 @@ import { createAgentPluginManager } from "./core/agent-plugin-manager.ts";
 import { AgentRuntime, type AgentSession } from "./core/agent-runtime.ts";
 import { AgentSettingsManager } from "./core/agent-settings-manager.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
-import type {
-	ExtensionUIContext,
-	ExtensionUIDialogOptions,
-	ExtensionWidgetOptions,
-	WorkingIndicatorOptions,
-} from "./core/extensions/index.ts";
 import { IntegrationAccountStorage } from "./core/integration-account-storage.ts";
 import { IntegrationStore } from "./core/integration-store.ts";
 import { loadIntegrations } from "./core/integrations/loader.ts";
@@ -45,7 +39,7 @@ import type { Integration, IntegrationOnboardUI } from "./core/integrations/type
 import { ModelRegistry } from "./core/model-registry.ts";
 import { findInitialModel } from "./core/model-resolver.ts";
 import type { DefaultPluginManager } from "./core/plugin-manager.ts";
-import { type Theme, theme } from "./theme/theme.ts";
+import type { DialogUI, ExtensionUIDialogOptions } from "./core/workflows/types.ts";
 import {
 	type DaemonAgentState,
 	type DaemonCommand,
@@ -179,7 +173,7 @@ function pluginRootForSpec(pluginManager: DefaultPluginManager, spec: string): s
  */
 async function runDaemonOnboarding(
 	runtime: AgentRuntime,
-	ui: ExtensionUIContext,
+	ui: DialogUI,
 	selectServices: (input: { integrations: Integration[]; pluginManager: DefaultPluginManager }) => string[],
 ): Promise<OnboardServiceResult[]> {
 	const name = runtime.config.name;
@@ -573,11 +567,11 @@ export async function runDaemonMode(
 	};
 
 	/**
-	 * Build the per-session UI rail bound to `sessionId`: its four awaited dialogs (select/confirm/
-	 * input/editor) park a promise in the session's pending map and emit a request frame to the
-	 * session's clients; the fire-and-forget methods just emit; unserializable surfaces are stubbed.
+	 * Build the per-session UI rail bound to `sessionId`: its three awaited dialogs (select/confirm/
+	 * input) park a promise in the session's pending map and emit a request frame to the session's
+	 * clients; the fire-and-forget `notify` just emits.
 	 */
-	const createSessionUI = (sessionId: string): ExtensionUIContext => {
+	const createSessionUI = (sessionId: string): DialogUI => {
 		const pending = (): Map<string, { resolve: (r: ExtensionUIResponse) => void; reject: (e: Error) => void }> => {
 			let map = sessionPending.get(sessionId);
 			if (!map) {
@@ -626,11 +620,11 @@ export async function runDaemonMode(
 					},
 					reject,
 				});
-				output(sessionId, { type: "extension_ui_request", id: requestId, ...request } as ExtensionUIRequest);
+				output(sessionId, { type: "ui_request", id: requestId, ...request } as ExtensionUIRequest);
 			});
 		};
 
-		const ui: ExtensionUIContext = {
+		const ui: DialogUI = {
 			select: (title, options, opts) =>
 				createDialogPromise<string | undefined>(
 					opts,
@@ -657,142 +651,12 @@ export async function runDaemonMode(
 
 			notify(message: string, type?: "info" | "warning" | "error"): void {
 				output(sessionId, {
-					type: "extension_ui_request",
+					type: "ui_request",
 					id: randomUUID(),
 					method: "notify",
 					message,
 					notifyType: type,
 				});
-			},
-
-			onTerminalInput(): () => void {
-				// Raw terminal input is a client-only concern; the daemon has no terminal.
-				return () => {};
-			},
-
-			setStatus(key: string, text: string | undefined): void {
-				output(sessionId, {
-					type: "extension_ui_request",
-					id: randomUUID(),
-					method: "setStatus",
-					statusKey: key,
-					statusText: text,
-				});
-			},
-
-			setWorkingMessage(_message?: string): void {
-				// Requires TUI loader access — client-only.
-			},
-
-			setWorkingVisible(_visible: boolean): void {
-				// Requires TUI loader access — client-only.
-			},
-
-			setWorkingIndicator(_options?: WorkingIndicatorOptions): void {
-				// Requires TUI loader access — client-only.
-			},
-
-			setHiddenThinkingLabel(_label?: string): void {
-				// Requires TUI message rendering — client-only.
-			},
-
-			setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {
-				// Only string arrays cross the wire; component factories can't be serialized.
-				if (content === undefined || Array.isArray(content)) {
-					output(sessionId, {
-						type: "extension_ui_request",
-						id: randomUUID(),
-						method: "setWidget",
-						widgetKey: key,
-						widgetLines: content as string[] | undefined,
-						widgetPlacement: options?.placement,
-					});
-				}
-			},
-
-			setFooter(_factory: unknown): void {
-				// Custom footer is a component factory — can't serialize.
-			},
-
-			setHeader(_factory: unknown): void {
-				// Custom header is a component factory — can't serialize.
-			},
-
-			setTitle(title: string): void {
-				output(sessionId, { type: "extension_ui_request", id: randomUUID(), method: "setTitle", title });
-			},
-
-			async custom() {
-				// Custom components can't cross the wire.
-				return undefined as never;
-			},
-
-			pasteToEditor(text: string): void {
-				// No paste semantics over the wire — falls back to setEditorText.
-				this.setEditorText(text);
-			},
-
-			setEditorText(text: string): void {
-				output(sessionId, { type: "extension_ui_request", id: randomUUID(), method: "setEditorText", text });
-			},
-
-			getEditorText(): string {
-				// Synchronous read can't round-trip; the client tracks editor state locally.
-				return "";
-			},
-
-			async editor(title: string, prefill?: string): Promise<string | undefined> {
-				// Parked directly — `editor` has no signal/timeout in the extension API, so the
-				// last-client-gone cancel below is its only escape from hanging forever.
-				const requestId = randomUUID();
-				return new Promise((resolve, reject) => {
-					pending().set(requestId, {
-						resolve: (response: ExtensionUIResponse) => {
-							if ("cancelled" in response && response.cancelled) resolve(undefined);
-							else if ("value" in response) resolve(response.value);
-							else resolve(undefined);
-						},
-						reject,
-					});
-					output(sessionId, { type: "extension_ui_request", id: requestId, method: "editor", title, prefill });
-				});
-			},
-
-			addAutocompleteProvider(): void {
-				// Autocomplete composition is a client-only concern.
-			},
-
-			setEditorComponent(): void {
-				// Custom editor components can't be serialized.
-			},
-
-			getEditorComponent() {
-				return undefined;
-			},
-
-			// —— theme family: data-only / inert (theme rendering is a client concern) ——
-			get theme() {
-				return theme;
-			},
-
-			getAllThemes() {
-				return [];
-			},
-
-			getTheme(_name: string) {
-				return undefined;
-			},
-
-			setTheme(_theme: string | Theme) {
-				return { success: false, error: "UI not available" };
-			},
-
-			getToolsExpanded() {
-				return false;
-			},
-
-			setToolsExpanded(_expanded: boolean) {
-				// Tool expansion is client TUI state.
 			},
 		};
 		return ui;
@@ -959,11 +823,11 @@ export async function runDaemonMode(
 				clients.delete(stream);
 				if (clients.size === 0) {
 					// No client left to answer this session's parked dialogs — resolve them to cancel
-					// (notably `editor`, which has no signal/timeout, would otherwise hang forever).
+					// so an awaited dialog never hangs forever.
 					const pending = sessionPending.get(id);
 					if (pending) {
 						for (const [requestId, p] of [...pending]) {
-							p.resolve({ type: "extension_ui_response", id: requestId, cancelled: true });
+							p.resolve({ type: "ui_response", id: requestId, cancelled: true });
 						}
 						pending.clear();
 					}

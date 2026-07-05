@@ -52,7 +52,14 @@ export {
 	truncateLine,
 	truncateTail,
 } from "./truncate.ts";
-export type { LoadToolsResult, Tool, ToolContext, ToolDefinition } from "./types.ts";
+export type {
+	LoadToolsResult,
+	Tool,
+	ToolContext,
+	ToolDefinition,
+	ToolRenderContext,
+	ToolRenderResultOptions,
+} from "./types.ts";
 export { defineTool } from "./types.ts";
 export {
 	createWriteTool,
@@ -62,17 +69,17 @@ export {
 
 import type { AgentTool } from "@opsyhq/agent";
 import type { Environment } from "../environments/types.ts";
-// Aliased: the unqualified `ToolDefinition` export above is the authored (tools/) type;
-// the built-in suite still types against the extension one until Phase 5.
-import type { ToolDefinition as ExtensionToolDefinition } from "../extensions/types.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition } from "./edit.ts";
 import { createFindTool, createFindToolDefinition } from "./find.ts";
 import { createGrepTool, createGrepToolDefinition } from "./grep.ts";
 import { createLsTool, createLsToolDefinition } from "./ls.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
+import type { ExtensionToolDefinition } from "./types.ts";
 import { createWriteTool, createWriteToolDefinition } from "./write.ts";
 
+// `ToolDef` is the render-capable built-in tool contract; the unqualified `ToolDefinition`
+// re-exported above is the authored (tools/) type.
 export type ToolDef = ExtensionToolDefinition<any, any>;
 export type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
 export const allToolNames: Set<ToolName> = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);

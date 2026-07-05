@@ -12,31 +12,212 @@
  * its own capability folder.
  */
 
+import type { AssistantMessageEvent, ImageContent, Model, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { AbortResult, AgentMessage, ThinkingLevel } from "@opsyhq/agent";
 import type { Static, TSchema } from "typebox";
-// Type-only imports: the lifecycle event interfaces, session facade, and UI context still
-// live in the extension system until Phase 5 relocates them; importing types only keeps
-// the workflow subsystem additive while both coexist.
-import type {
-	AgentEndEvent,
-	AgentStartEvent,
-	ExtensionError,
-	MessageEndEvent,
-	MessageStartEvent,
-	MessageUpdateEvent,
-	ModelSelectEvent,
-	NewSessionOptions,
-	Session,
-	SessionShutdownEvent,
-	SessionStartEvent,
-	ThinkingLevelSelectEvent,
-	ToolExecutionEndEvent,
-	ToolExecutionStartEvent,
-	ToolExecutionUpdateEvent,
-	TurnEndEvent,
-	TurnStartEvent,
-} from "../extensions/types.ts";
-import type { IntegrationEventDescriptor, IntegrationOnboardUI } from "../integrations/types.ts";
+import type { IntegrationEventDescriptor } from "../integrations/types.ts";
+import type { CustomMessage } from "../messages.ts";
 import type { SessionInfo } from "../session.ts";
+import type { ReadonlySessionManager, SessionManager } from "../session-manager.ts";
+import type { SlashCommandInfo } from "../slash-commands.ts";
+import type { SourceInfo } from "../source-info.ts";
+import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+// Type-only: `ToolInfo` picks the shape of a tool definition, re-homed alongside the built-in
+// tool contract in the tools subsystem.
+import type { ExtensionToolDefinition } from "../tools/types.ts";
+
+// ============================================================================
+// Session facade + dialog UI (re-homed from the extension system)
+// ============================================================================
+
+// `@opsyhq/agent` defines but does not re-export `CompactionResult`, so it is defined
+// here, structurally identical to the engine's `harness/compaction/compaction.ts`.
+interface CompactionResult<T = unknown> {
+	summary: string;
+	firstKeptEntryId: string;
+	tokensBefore: number;
+	/** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
+	details?: T;
+}
+
+export interface ContextUsage {
+	/** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */
+	tokens: number | null;
+	contextWindow: number;
+	/** Context usage as percentage of context window, or null if tokens is unknown. */
+	percent: number | null;
+}
+
+export interface CompactOptions {
+	customInstructions?: string;
+	onComplete?: (result: CompactionResult) => void;
+	onError?: (error: Error) => void;
+}
+
+/** Run mode the agent is hosted in. Use "tui" to guard terminal-only UI such as custom components. */
+export type SessionMode = "tui" | "rpc" | "json" | "print";
+
+/** Source of a `Session.prompt()` submission. */
+export type InputSource = "interactive" | "rpc" | "workflow";
+
+/** Options for the session dispatch pipeline (`Session.prompt()`). */
+export interface ConversationPromptOptions {
+	/** Images to attach to the user turn. An `input` transform may also inject these. */
+	images?: ImageContent[];
+	/** Where the input came from. Default: `"interactive"`. */
+	source?: InputSource;
+	/** How to deliver the message while a turn is already streaming. */
+	streamingBehavior?: "steer" | "followUp";
+	/** When false, skip extension-command + skill/template dispatch (extension-driven sends). Default true. */
+	expandPromptTemplates?: boolean;
+	/**
+	 * Fired once the prompt is accepted (handled, queued, or about to run) with `true`, or
+	 * with `false` when it is rejected before any work. Lets a headless caller ack acceptance
+	 * without waiting for the whole turn — `prompt()` itself only resolves at turn end.
+	 */
+	preflightResult?: (success: boolean) => void;
+}
+
+/** Options for `Session.newSession()` / `wolli.createSession()`. */
+export interface NewSessionOptions {
+	/** Initialize the fresh session before it goes live (seed entries, etc.). */
+	setup?: (sessionManager: SessionManager) => Promise<void>;
+	/** Run against the new session once it is wired and live. */
+	withSession?: (session: Session) => Promise<void>;
+}
+
+/**
+ * A live session — the per-session conversation surface extensions act on. Handed (as `ctx.session`)
+ * to every event, command, shortcut, and custom-tool handler, and returned from `wolli.getSession()`.
+ *
+ * Holds session/harness state plus the actions that operate on a single running conversation. The
+ * presentation channel (`ui`/`mode`) is lifted onto `ExtensionContext`, not here; agent-global
+ * capabilities (cwd, environments, model registry, integrations, reload, shutdown) live on
+ * `ExtensionAPI`.
+ */
+export interface Session {
+	/** Session manager (read-only). */
+	readonly sessionManager: ReadonlySessionManager;
+	/** Current model (may be undefined). */
+	readonly model: Model<any> | undefined;
+	/** The current run's abort signal, or undefined when the agent is not streaming. */
+	readonly signal: AbortSignal | undefined;
+
+	/** Submit user input through the full command/skill/prompt pipeline, then hand off to the harness. */
+	prompt(text: string, options?: ConversationPromptOptions): Promise<void>;
+
+	/** Send a custom message to the conversation. */
+	sendMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+	): Promise<void>;
+
+	/**
+	 * Send a user message to the agent. Always triggers a turn. When the agent is streaming,
+	 * use `deliverAs` to specify how to queue the message.
+	 */
+	sendUserMessage(
+		content: string | (TextContent | ImageContent)[],
+		options?: { deliverAs?: "steer" | "followUp" },
+	): Promise<void>;
+
+	/** Append a custom entry to the session for state persistence (not sent to the LLM). */
+	appendEntry<T = unknown>(customType: string, data?: T): void;
+
+	/** Whether the agent is idle (not streaming). */
+	isIdle(): boolean;
+	/** Wait for the agent to finish streaming. */
+	waitForIdle(): Promise<void>;
+	/** Abort the current agent operation. */
+	abort(): Promise<AbortResult>;
+	/** Number of queued messages (steer + follow-up + next-turn). */
+	getPendingMessageCount(): number;
+	/** Whether there are queued messages waiting. */
+	hasPendingMessages(): boolean;
+
+	/** Trigger compaction without awaiting completion. */
+	compact(options?: CompactOptions): void;
+	/** Get current context usage for the active model. */
+	getContextUsage(): ContextUsage | undefined;
+	/** Get the current effective system prompt. */
+	getSystemPrompt(): string;
+	/** Get the base system-prompt construction options. */
+	getSystemPromptOptions(): BuildSystemPromptOptions;
+
+	/** Get the list of currently active tool names. */
+	getActiveTools(): string[];
+	/** Set the active tools by name. */
+	setActiveTools(names: string[]): void;
+	/** Get all configured tools with parameter schema, prompt guidelines, and source metadata. */
+	getAllTools(): ToolInfo[];
+	/** Get available slash commands in the current session. */
+	getCommands(): SlashCommandInfo[];
+	/** Re-apply the base + extension tool set (picks up tools registered mid-session). */
+	refreshTools(): void;
+
+	/** Set the current model. Returns false if no API key is available. */
+	setModel(model: Model<any>): Promise<boolean>;
+	/** Resolve a model by `{provider, modelId}` and switch to it. Throws if unknown/unauthenticated. */
+	setModelById(provider: string, modelId: string): Promise<Model<any>>;
+	/** Get current thinking level. */
+	getThinkingLevel(): ThinkingLevel;
+	/** Set thinking level (clamped to model capabilities). */
+	setThinkingLevel(level: ThinkingLevel): Promise<void>;
+
+	/** Get the current session name, if set. */
+	getSessionName(): string | undefined;
+	/** Set the session display name (shown in the session selector). */
+	setSessionName(name: string): void;
+	/** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
+	setLabel(entryId: string, label: string | undefined): void;
+
+	/**
+	 * The session's folded tags — a durable, append-only k/v binding an extension owns (e.g. to an
+	 * external chat). Core never interprets the keys; query across sessions via `wolli.findSessions`.
+	 */
+	getTags(): Record<string, string>;
+	/** Merge tags into this session (later writes win per key). */
+	setTags(tags: Record<string, string>): void;
+
+	/** Start a new session, optionally with initialization. Additive — other sessions stay live. */
+	newSession(options?: NewSessionOptions): Promise<{ cancelled: boolean }>;
+
+	/** Reload extensions, skills, prompts, and themes. */
+	reload(): Promise<void>;
+}
+
+/** Tool info with name, description, parameter schema, prompt guidelines, and source metadata. */
+export type ToolInfo = Pick<ExtensionToolDefinition, "name" | "description" | "parameters" | "promptGuidelines"> & {
+	sourceInfo: SourceInfo;
+};
+
+/** Options for a dialog UI primitive. */
+export interface ExtensionUIDialogOptions {
+	/** AbortSignal to programmatically dismiss the dialog. */
+	signal?: AbortSignal;
+	/** Timeout in milliseconds. Dialog auto-dismisses with live countdown display. */
+	timeout?: number;
+}
+
+/**
+ * The narrowed UI surface a dialog caller may use — the dialog primitives only, no chat chrome
+ * (editor/widgets/footer/theme). `custom` is excluded: onboarding/hook dialogs are serialized to
+ * attached clients, and a component factory can't cross that boundary. Calling anything outside
+ * this set is a compile error rather than a silent no-op.
+ */
+export interface DialogUI {
+	/** Show a selector and return the user's choice. */
+	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+
+	/** Show a confirmation dialog. */
+	confirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;
+
+	/** Show a text input dialog. */
+	input(title: string, placeholder?: string, opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+
+	/** Show a notification to the user. */
+	notify(message: string, type?: "info" | "warning" | "error"): void;
+}
 
 // ============================================================================
 // Triggers
@@ -45,6 +226,115 @@ import type { SessionInfo } from "../session.ts";
 // The descriptor trigger lives with `defineIntegration`, which mints it; re-exported here
 // because it is equally the workflow-side `on:` type.
 export type { IntegrationEventDescriptor };
+
+// ============================================================================
+// Agent lifecycle events
+// ============================================================================
+
+/** Fired when a session is started, loaded, or reloaded */
+export interface SessionStartEvent {
+	type: "session_start";
+	/** Why this session start happened. */
+	reason: "startup" | "reload" | "new" | "resume" | "fork";
+	/** Previously active session file. Present for "new", "resume", and "fork". */
+	previousSessionFile?: string;
+}
+
+/** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
+export interface SessionShutdownEvent {
+	type: "session_shutdown";
+	reason: "quit" | "reload" | "new" | "resume" | "fork";
+	/** Destination session file when shutting down due to session replacement. */
+	targetSessionFile?: string;
+}
+
+/** Fired when an agent loop starts */
+export interface AgentStartEvent {
+	type: "agent_start";
+}
+
+/** Fired when an agent loop ends */
+export interface AgentEndEvent {
+	type: "agent_end";
+	messages: AgentMessage[];
+}
+
+/** Fired at the start of each turn */
+export interface TurnStartEvent {
+	type: "turn_start";
+	turnIndex: number;
+	timestamp: number;
+}
+
+/** Fired at the end of each turn */
+export interface TurnEndEvent {
+	type: "turn_end";
+	turnIndex: number;
+	message: AgentMessage;
+	toolResults: ToolResultMessage[];
+}
+
+/** Fired when a message starts (user, assistant, or toolResult) */
+export interface MessageStartEvent {
+	type: "message_start";
+	message: AgentMessage;
+}
+
+/** Fired during assistant message streaming with token-by-token updates */
+export interface MessageUpdateEvent {
+	type: "message_update";
+	message: AgentMessage;
+	assistantMessageEvent: AssistantMessageEvent;
+}
+
+/** Fired when a message ends */
+export interface MessageEndEvent {
+	type: "message_end";
+	message: AgentMessage;
+}
+
+/** Fired when a tool starts executing */
+export interface ToolExecutionStartEvent {
+	type: "tool_execution_start";
+	toolCallId: string;
+	toolName: string;
+	args: any;
+}
+
+/** Fired during tool execution with partial/streaming output */
+export interface ToolExecutionUpdateEvent {
+	type: "tool_execution_update";
+	toolCallId: string;
+	toolName: string;
+	args: any;
+	partialResult: any;
+}
+
+/** Fired when a tool finishes executing */
+export interface ToolExecutionEndEvent {
+	type: "tool_execution_end";
+	toolCallId: string;
+	toolName: string;
+	result: any;
+	isError: boolean;
+}
+
+export type ModelSelectSource = "set" | "cycle" | "restore";
+
+/** Fired when a new model is selected */
+export interface ModelSelectEvent {
+	type: "model_select";
+	model: Model<any>;
+	previousModel: Model<any> | undefined;
+	source: ModelSelectSource;
+}
+
+/** Fired when a new thinking level is selected */
+export interface ThinkingLevelSelectEvent {
+	type: "thinking_level_select";
+	level: ThinkingLevel;
+	previousLevel: ThinkingLevel;
+}
 
 /**
  * The agent lifecycle events a workflow can bind with `on:`. This is the complete,
@@ -104,12 +394,6 @@ export interface WorkflowSession
 	extends Pick<Session, "prompt" | "sendUserMessage" | "getTags" | "setTags" | "getSessionName" | "model"> {
 	readonly id: string;
 }
-
-/**
- * The four serializable dialog primitives — the one dialog-UI shape, shared with
- * integration onboarding. Present on a workflow ctx only when `ctx.session` exists.
- */
-export type DialogUI = IntegrationOnboardUI;
 
 /** The this-agent surface on `ctx.agent`. Every call is recorded as a step of the run. */
 export interface WorkflowAgent {
@@ -242,7 +526,15 @@ export interface LoadWorkflowsResult {
 	errors: Array<{ path: string; error: string }>;
 }
 
-/** Workflow errors reuse the extension error shape so they ride the existing error sink unchanged. */
+/** The shape carried on the load/runtime error sink shared by workflows, hooks, and integrations. */
+export interface ExtensionError {
+	path: string;
+	event: string;
+	error: string;
+	stack?: string;
+}
+
+/** Workflow errors reuse the shared error shape so they ride the existing error sink unchanged. */
 export type WorkflowError = ExtensionError;
 
 export type WorkflowErrorListener = (error: WorkflowError) => void;

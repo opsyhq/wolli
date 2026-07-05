@@ -2,21 +2,21 @@
  * Agent runtime + live sessions — an agent's durable/shared state and its N live per-session engines.
  *
  * `AgentRuntime` owns the durable, agent-global half: auth, the model registry, integration accounts,
- * the single extension + integration runners (Option A — built once, rebuilt on reload), the sandbox,
+ * the integration/workflow/hook runners (Option A — built once, rebuilt on reload), the sandbox,
  * the approval policy, and the resource-derived defs (skills, prompts). It creates, rehydrates, drops,
  * and reloads sessions, holding the resident ones in `_sessions` keyed by id. `AgentSession` owns the
  * per-session half: the live `AgentHarness`, `SessionManager`, env, frozen system prompt, the per-
- * session presentation channel (`ui`/`mode`), turn state, the dispatch pipeline, and the
- * harness↔extension event wiring. Every event/tool/command is threaded the originating `AgentSession`,
- * so the shared runner serves all sessions without an ambient "current".
+ * session presentation channel (`ui`/`mode`), turn state, the dispatch pipeline, and the harness event
+ * wiring. Every event is threaded the originating `AgentSession`, so the shared runners serve all
+ * sessions without an ambient "current".
  *
  * The system prompt is frozen for a session's lifetime, so changing it (the onboarding block dropping
  * once SOUL.md has content) needs a fresh session.
  *
  * The harness event mechanism is split three ways:
- *  (a) `harness.on(type)` native mutating hooks — tool_call, tool_result, context,
- *      before_agent_start, before_provider_payload, session_before_compact;
- *  (b) `harness.subscribe()` — translates AgentEvent/own-events to lifecycle ExtensionEvents;
+ *  (a) `harness.on(type)` native mutating interceptors, consulted by the hook runner — tool_call,
+ *      tool_result, context, before_agent_start, before_provider_payload, session_before_compact;
+ *  (b) `harness.subscribe()` — translates AgentEvent/own-events to lifecycle events for workflows;
  *  (c) `harness.onMessageEnd()` — the message_end interceptor (subscribe/on return values are
  *      discarded for message_end; persistence rides the interceptor, so a mutating message_end uses it).
  */
@@ -66,26 +66,8 @@ import type { AuthStorage } from "./auth-storage.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ResourceDiagnostic, ResourceSummary } from "./diagnostics.ts";
 import { type AgentEnvironments, createEnvironments, resetSandbox, stopContainer } from "./environments/index.ts";
-import {
-	type ExtensionErrorListener,
-	ExtensionRunner,
-	emitSessionShutdownEvent,
-	type NewSessionHandler,
-	noOpUIContext,
-} from "./extensions/runner.ts";
-import type {
-	ContextUsage,
-	ConversationPromptOptions,
-	ExtensionMode,
-	ExtensionUIContext,
-	NewSessionOptions,
-	Session as SessionApi,
-	SessionBeforeCompactEvent,
-	ToolCallEvent,
-	ToolInfo,
-	ToolResultEvent,
-} from "./extensions/types.ts";
 import { HookRunner, loadHooks } from "./hooks/index.ts";
+import type { SessionBeforeCompactEvent, ToolCallEvent, ToolResultEvent } from "./hooks/types.ts";
 import type { IntegrationAccountStorage } from "./integration-account-storage.ts";
 import type { IntegrationStore } from "./integration-store.ts";
 import { IntegrationRunner } from "./integrations/runner.ts";
@@ -96,6 +78,7 @@ import { resolveModelScope, type ScopedModel } from "./model-resolver.ts";
 import type { ConfiguredPlugin } from "./plugin-manager.ts";
 import { type PromptTemplate, parseCommandArgs } from "./prompt-templates.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
+import { loadProviders } from "./providers/loader.ts";
 import { DefaultResourceLoader, loadProjectContextFiles } from "./resource-loader.ts";
 import {
 	deleteAgentSession,
@@ -118,7 +101,20 @@ import { wrapToolDefinition } from "./tools/tool-definition-wrapper.ts";
 import type { Tool, ToolContext } from "./tools/types.ts";
 import { loadWorkflows } from "./workflows/loader.ts";
 import { WorkflowRunner } from "./workflows/runner.ts";
-import type { AgentEventMap, IntegrationHandleOf, IntegrationKey, WorkflowSession } from "./workflows/types.ts";
+import type {
+	AgentEventMap,
+	ContextUsage,
+	ConversationPromptOptions,
+	DialogUI,
+	ExtensionError,
+	IntegrationHandleOf,
+	IntegrationKey,
+	NewSessionOptions,
+	Session as SessionApi,
+	SessionMode,
+	ToolInfo,
+	WorkflowSession,
+} from "./workflows/types.ts";
 
 /**
  * Placeholder model handed to the engine when the agent has none configured yet (fresh agent / logged
@@ -151,6 +147,20 @@ const noOpLoginCallbacks: OAuthLoginCallbacks = {
 	onSelect: async () => undefined,
 };
 
+/** The inert UI rail a session falls back to when it has no live presentation channel. */
+const noOpUIContext: DialogUI = {
+	select: async () => undefined,
+	confirm: async () => false,
+	input: async () => undefined,
+	notify: () => {},
+};
+
+/** Listener for the agent's load/runtime error sink (workflow, hook, and integration errors). */
+type ExtensionErrorListener = (error: ExtensionError) => void;
+
+/** Host-provided handler backing `session.newSession()` — creates a fresh session. */
+type NewSessionHandler = (options?: NewSessionOptions) => Promise<{ cancelled: boolean }>;
+
 export interface AgentRuntimeOptions {
 	name: string;
 	/** The agent's configured model, or undefined when none is set yet (fresh agent / logged out). */
@@ -177,18 +187,18 @@ export interface AgentRuntimeOptions {
 
 /**
  * The daemon's host surface, handed to the runtime once and applied to every session it builds.
- * Under Option A the runner is agent-global, so the per-session UI rail is built by `createSessionUI`
+ * Under Option A the runners are agent-global, so the per-session UI rail is built by `createSessionUI`
  * (one per session id) rather than a single shared context.
  */
 export interface InteractiveContextBindings {
 	/** Build the per-session UI rail bound to `sessionId` — its dialogs route to that session's clients. */
-	createSessionUI: (sessionId: string) => ExtensionUIContext;
+	createSessionUI: (sessionId: string) => DialogUI;
 	/**
 	 * Build the per-session login callbacks bound to `sessionId` + a login-cancel `signal` — the
-	 * daemon→client login seam, mirroring `createSessionUI` but separate from the extension-UI rail.
+	 * daemon→client login seam, mirroring `createSessionUI` but separate from the dialog rail.
 	 */
 	createLoginCallbacks: (sessionId: string, signal: AbortSignal) => OAuthLoginCallbacks;
-	mode: ExtensionMode;
+	mode: SessionMode;
 	/**
 	 * Host-provided new-session handler backing `session.newSession()` — creates a fresh session.
 	 * Optional: non-interactive hosts leave it unset and `newSession()` is a no-op that reports
@@ -202,8 +212,8 @@ export interface InteractiveContextBindings {
 /**
  * Replace every own-key of `target` with `replacement`'s in place.
  *
- * The message_end interceptor hands extensions the same object agent-core holds in
- * its in-memory state and is about to persist. When an extension returns a replaced
+ * The message_end interceptor hands hooks the same object agent-core holds in
+ * its in-memory state and is about to persist. When a hook returns a replaced
  * message, mutating in place (rather than swapping the reference) keeps agent state,
  * the persisted copy, and later turn/agent events all pointing at one object.
  */
@@ -289,7 +299,7 @@ export type SessionLifecycleEvent =
 interface SessionTooling {
 	/** The built-in suite; on reload these keep their prior active state. */
 	baseTools: AgentTool[];
-	/** Loaded tools/ definitions plus extension-registered tools; these auto-activate on reload. */
+	/** Loaded tools/ definitions; these auto-activate on reload. */
 	tools: AgentTool[];
 	/** Representative prompt (all tools active), backing ctx.getSystemPrompt(); model prompt is per-turn. */
 	systemPrompt: string;
@@ -305,18 +315,17 @@ interface AgentSessionInit {
 	/** The per-session run-target map (sandbox/host) backing the file + bash tools. */
 	environments: AgentEnvironments;
 	/** This session's UI rail — dialogs raised in its turns route only to its subscribers. */
-	ui: ExtensionUIContext;
+	ui: DialogUI;
 	/** Build this session's login callbacks for a given cancel `signal` (the daemon→client login seam). */
 	createLoginCallbacks: (signal: AbortSignal) => OAuthLoginCallbacks;
-	mode: ExtensionMode;
+	mode: SessionMode;
 }
 
 export class AgentRuntime {
 	private readonly options: AgentRuntimeOptions;
 	private _config?: AgentConfig;
 
-	// Agent-global extension subsystem state. Each is built once (and rebuilt on `reload`).
-	private _extensionRunner?: ExtensionRunner;
+	// Agent-global capability runners. Each is built once (and rebuilt on `reload`).
 	/** Integration producer runner. Built once; stopped before the new one starts on reload. */
 	private _integrationRunner?: IntegrationRunner;
 	/** Workflow runner for the current load generation. The outgoing one is stopped before the new one is built. */
@@ -337,10 +346,6 @@ export class AgentRuntime {
 	private _skills: Skill[] = [];
 	/** Prompt templates discovered — surfaced as prompt-source commands. */
 	private _promptTemplates: PromptTemplate[] = [];
-	/** Extensions loaded, kept for the resource summary. */
-	private _extensionCount = 0;
-	/** Extension load failures from the last build, surfaced in the resource summary. */
-	private _loadErrors: { path: string; error: string }[] = [];
 	/** Integration load + account-store parse failures from the last build, surfaced in the resource summary. */
 	private _integrationLoadErrors: { path: string; error: string }[] = [];
 	/** Workflow load failures from the last build, surfaced in the resource summary. */
@@ -351,6 +356,10 @@ export class AgentRuntime {
 	private _tools: Tool[] = [];
 	/** Tool load failures from the last build, surfaced in the resource summary. */
 	private _toolLoadErrors: { path: string; error: string }[] = [];
+	/** Providers registered with the model registry from the last build, kept for the resource summary. */
+	private _providerCount = 0;
+	/** Provider load failures from the last build, surfaced in the resource summary. */
+	private _providerLoadErrors: { path: string; error: string }[] = [];
 	/** Skill name collisions from the last build, surfaced in the resource summary. */
 	private _skillDiagnostics: ResourceDiagnostic[] = [];
 	/** Graceful-shutdown handler installed by the host mode (default no-op). */
@@ -360,8 +369,6 @@ export class AgentRuntime {
 	 * Undefined until `bindInteractiveContext()` runs — non-interactive hosts (print) never call it.
 	 */
 	private _interactiveBindings?: InteractiveContextBindings;
-	/** Teardown for the current runner's error listener, dropped before re-binding. */
-	private _extensionErrorUnsubscriber?: () => void;
 	/** Teardown for the integration runner's error listener, dropped before re-binding. */
 	private _integrationErrorUnsubscriber?: () => void;
 	/** Teardown for the workflow runner's error listener, dropped before re-binding. */
@@ -369,12 +376,12 @@ export class AgentRuntime {
 	/** Teardown for the hook runner's error listener, dropped before re-binding. */
 	private _hookErrorUnsubscriber?: () => void;
 	/** Build the per-session UI rail bound to a session id; default inert until the host binds. */
-	private _createSessionUI: (sessionId: string) => ExtensionUIContext = () => noOpUIContext;
+	private _createSessionUI: (sessionId: string) => DialogUI = () => noOpUIContext;
 	/** Build the per-session login callbacks bound to a session id + signal; default inert until bound. */
 	private _createLoginCallbacks: (sessionId: string, signal: AbortSignal) => OAuthLoginCallbacks = () =>
 		noOpLoginCallbacks;
 	/** The run mode applied to every session (default print; the daemon sets "rpc"). */
-	private _mode: ExtensionMode = "print";
+	private _mode: SessionMode = "print";
 
 	/** Durable per-agent model registry — built once, shared across every session build/reload. */
 	private readonly _modelRegistry: ModelRegistry;
@@ -389,9 +396,9 @@ export class AgentRuntime {
 	private readonly _sessions = new Map<string, AgentSession>();
 
 	/**
-	 * The shared run-target map exposed to extensions via `wolli.environments`. Built once in
-	 * `buildSharedResources`; undefined until the first build. Per-session tools use their own gated
-	 * map (over the same memoized sandbox) so a host-escalation dialog routes to that session.
+	 * The shared run-target map. Built once in `buildSharedResources`; undefined until the first build.
+	 * Per-session tools use their own gated map (over the same memoized sandbox) so a host-escalation
+	 * dialog routes to that session.
 	 */
 	private _environments?: AgentEnvironments;
 
@@ -417,10 +424,7 @@ export class AgentRuntime {
 		return [...this._sessions.values()];
 	}
 
-	/**
-	 * The shared run-target map (backs `wolli.environments`). Throws before the first
-	 * `buildSharedResources`.
-	 */
+	/** The shared run-target map. Throws before the first `buildSharedResources`. */
 	get environments(): AgentEnvironments {
 		if (!this._environments) throw new Error("AgentRuntime not started.");
 		return this._environments;
@@ -438,12 +442,6 @@ export class AgentRuntime {
 	 */
 	get integrationAccounts(): IntegrationAccountStorage {
 		return this.options.integrationAccounts;
-	}
-
-	/** The live extension runner. Throws if accessed before `start()`. */
-	get extensionRunner(): ExtensionRunner {
-		if (!this._extensionRunner) throw new Error("AgentRuntime not started.");
-		return this._extensionRunner;
 	}
 
 	/** The workflow runner for the current load generation, or undefined before `start()`. */
@@ -469,12 +467,12 @@ export class AgentRuntime {
 		return this._promptTemplates;
 	}
 
-	/** Install the graceful-shutdown handler exposed to extensions via `wolli.shutdown()`. */
+	/** Install the graceful-shutdown handler the host mode provides. */
 	setShutdownHandler(handler: () => void): void {
 		this._shutdownHandler = handler;
 	}
 
-	/** Fire the graceful-shutdown handler (backs `wolli.shutdown()`). */
+	/** Fire the graceful-shutdown handler. */
 	shutdown(): void {
 		this._shutdownHandler();
 	}
@@ -519,17 +517,13 @@ export class AgentRuntime {
 		this._mode = bindings.mode;
 		this._newSessionHandler = bindings.newSession ?? (async () => ({ cancelled: false }));
 		if (bindings.shutdownHandler) this.setShutdownHandler(bindings.shutdownHandler);
-		if (this._extensionRunner) this._applyInteractiveContext();
+		if (this._hookRunner) this._applyInteractiveContext();
 	}
 
-	/** (Re)install the host error listener on the live runner + integration runner. */
+	/** (Re)install the host error listener on the integration + workflow + hook runners. */
 	private _applyInteractiveContext(): void {
 		const bindings = this._interactiveBindings;
 		if (!bindings) return;
-		this._extensionErrorUnsubscriber?.();
-		this._extensionErrorUnsubscriber =
-			bindings.onError && this._extensionRunner ? this._extensionRunner.onError(bindings.onError) : undefined;
-
 		this._integrationErrorUnsubscriber?.();
 		this._integrationErrorUnsubscriber = bindings.onError
 			? this._integrationRunner?.onError(bindings.onError)
@@ -556,19 +550,11 @@ export class AgentRuntime {
 	}
 
 	/**
-	 * Live slash-command metadata — extension + prompt + skill commands, read-only. Built-in
+	 * Live slash-command metadata — prompt + skill commands, read-only. Built-in
 	 * interactive commands (`BUILTIN_SLASH_COMMANDS`) are layered in by the caller.
 	 */
 	getCommands(): SlashCommandInfo[] {
 		const commands: SlashCommandInfo[] = [];
-		for (const command of this.extensionRunner.getRegisteredCommands()) {
-			commands.push({
-				name: command.invocationName,
-				description: command.description,
-				source: "extension",
-				sourceInfo: command.sourceInfo,
-			});
-		}
 		for (const template of this._promptTemplates) {
 			commands.push({
 				name: template.name,
@@ -594,9 +580,7 @@ export class AgentRuntime {
 	 * reload. The interactive mode prints this at startup and after `/reload`.
 	 */
 	getResourceSummary(): ResourceSummary {
-		const runner = this.extensionRunner;
 		const diagnostics: ResourceDiagnostic[] = [
-			...this._loadErrors.map(({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path })),
 			...this._integrationLoadErrors.map(
 				({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path }),
 			),
@@ -609,15 +593,17 @@ export class AgentRuntime {
 			...this._toolLoadErrors.map(
 				({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path }),
 			),
+			...this._providerLoadErrors.map(
+				({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path }),
+			),
 			...this._skillDiagnostics,
-			...runner.getCommandDiagnostics(),
 		];
 		return {
-			extensions: this._extensionCount,
 			tools: this._tools.length,
+			providers: this._providerCount,
 			skills: this._skills.length,
 			prompts: this._promptTemplates.length,
-			commands: runner.getRegisteredCommands().length,
+			commands: 0,
 			diagnostics,
 		};
 	}
@@ -683,28 +669,22 @@ export class AgentRuntime {
 	}
 
 	/**
-	 * Re-discover extensions, skills, and prompt templates and rebuild the agent-global runner +
-	 * integration runner in place, then re-point every resident session's harness at the rebuilt
-	 * resources and tool set — no new harness, so each session is preserved.
+	 * Re-discover integrations, workflows, hooks, tools, providers, skills, and prompt templates and
+	 * rebuild the agent-global runners in place, then re-point every resident session's harness at the
+	 * rebuilt resources and tool set — no new harness, so each session is preserved.
 	 *
-	 * The outgoing runner's extension flag values carry into the new one so a reload does not reset
-	 * extension state. The system prompt is frozen for a session's lifetime: the rebuilt prompt backs
+	 * The system prompt is frozen for a session's lifetime: the rebuilt prompt backs
 	 * `ctx.getSystemPrompt()`, but the model-facing prompt only changes on the next session.
 	 */
 	async reload(): Promise<void> {
-		const previousRunner = this.extensionRunner;
-
-		// Shut the outgoing runner down (per resident session) while its ctx is still valid, so
-		// extensions can clean up before the new runner takes over. The outgoing workflow
-		// generation observes the same shutdown before buildSharedResources swaps it.
+		// Dispatch shutdown to the outgoing workflow generation (per resident session) before
+		// buildSharedResources swaps it, so signal-respecting handlers stop acting on sessions.
 		const shutdownEvent: AgentEventMap["session_shutdown"] = { type: "session_shutdown", reason: "reload" };
 		for (const session of this._sessions.values()) {
-			await emitSessionShutdownEvent(previousRunner, shutdownEvent, session);
 			await this._workflowRunner?.dispatchLifecycle(shutdownEvent, session.workflowSession, session.ui);
 		}
 
 		await this.buildSharedResources();
-		const runner = this.extensionRunner;
 
 		// Re-point every resident session's harness at the rebuilt resources + tools — no new harness, so
 		// the session is preserved. The model-facing prompt stays frozen; the rebuilt prompt refreshes the
@@ -730,13 +710,10 @@ export class AgentRuntime {
 			await harness.setTools([...tooling.baseTools, ...tooling.tools], activeToolNames);
 		}
 
-		previousRunner.invalidate();
-
-		if (runner.hasHandlers("session_start") || this._workflowRunner?.hasTriggers("session_start")) {
+		if (this._workflowRunner?.hasTriggers("session_start")) {
 			const event: AgentEventMap["session_start"] = { type: "session_start", reason: "reload" };
 			for (const session of this._sessions.values()) {
-				if (runner.hasHandlers("session_start")) await runner.emit(event, session);
-				await this._workflowRunner?.dispatchLifecycle(event, session.workflowSession, session.ui);
+				await this._workflowRunner.dispatchLifecycle(event, session.workflowSession, session.ui);
 			}
 		}
 	}
@@ -851,7 +828,7 @@ export class AgentRuntime {
 	/**
 	 * Build the agent-global shared resources (Option A). The daemon (and tests) call this once before
 	 * opening any session; `reload()` calls it again to rebuild. Session ops require it to have run —
-	 * `extensionRunner` throws otherwise.
+	 * `hookRunner`/`environments` throw otherwise.
 	 */
 	async start(): Promise<void> {
 		await this.buildSharedResources();
@@ -888,11 +865,9 @@ export class AgentRuntime {
 			thinkingLevel,
 		});
 
-		const runner = this.extensionRunner;
-		if (runner.hasHandlers("session_start") || this._workflowRunner?.hasTriggers("session_start")) {
+		if (this._workflowRunner?.hasTriggers("session_start")) {
 			const event: AgentEventMap["session_start"] = { type: "session_start", reason: "new" };
-			if (runner.hasHandlers("session_start")) await runner.emit(event, agentSession);
-			await this._workflowRunner?.dispatchLifecycle(event, agentSession.workflowSession, agentSession.ui);
+			await this._workflowRunner.dispatchLifecycle(event, agentSession.workflowSession, agentSession.ui);
 		}
 
 		// Re-seed model scope from the merged `enabledModels` (agent override over shared default).
@@ -951,11 +926,9 @@ export class AgentRuntime {
 			thinkingLevel,
 		});
 
-		const runner = this.extensionRunner;
-		if (runner.hasHandlers("session_start") || this._workflowRunner?.hasTriggers("session_start")) {
+		if (this._workflowRunner?.hasTriggers("session_start")) {
 			const event: AgentEventMap["session_start"] = { type: "session_start", reason: id ? "resume" : "startup" };
-			if (runner.hasHandlers("session_start")) await runner.emit(event, agentSession);
-			await this._workflowRunner?.dispatchLifecycle(event, agentSession.workflowSession, agentSession.ui);
+			await this._workflowRunner.dispatchLifecycle(event, agentSession.workflowSession, agentSession.ui);
 		}
 
 		const enabledModelIds = this._settingsManager.getEnabledModels();
@@ -1048,14 +1021,12 @@ export class AgentRuntime {
 	}
 
 	/**
-	 * Discover + load extensions, build the agent-global runner + integration runner, surface
-	 * discovered skill/prompt paths, and build the shared run-target map. Called once (lazily) and on
-	 * every `reload()`. Mutates the shared runtime state and wires the `wolli.*` runtime delegates.
+	 * Discover + load integrations, workflows, hooks, tools, and providers, build the agent-global
+	 * runners, surface discovered skill/prompt paths, and build the shared run-target map. Called once
+	 * (lazily) and on every `reload()`. Mutates the shared runtime state.
 	 */
 	private async buildSharedResources(): Promise<void> {
-		const previousRunner = this._extensionRunner;
 		const previousIntegrationRunner = this._integrationRunner;
-		const seedFlagValues = previousRunner?.getFlagValues();
 
 		// Re-read settings + agent.json from disk so a `/reload` picks up settings.json changes
 		// (plugin sources, local resource paths) — the manager is otherwise frozen since the last build.
@@ -1067,16 +1038,15 @@ export class AgentRuntime {
 		const integrationAccounts = this.options.integrationAccounts;
 		const integrationStore = this.options.integrationStore;
 
-		// One resource loader owns npm/git/local install + resolution and resolves extensions AND
-		// integrations in place from the same per-agent home. It builds the *unbound* IntegrationRunner
-		// via the hook below (threaded into the extension loader so extensions wire `getIntegration` at
-		// load time); this runtime keeps the runner's stop-before-start lifecycle.
+		// One resource loader owns npm/git/local install + resolution and resolves every capability
+		// in place from the same per-agent home. It builds the *unbound* IntegrationRunner via the hook
+		// below; this runtime keeps the runner's stop-before-start lifecycle.
 		const loader = new DefaultResourceLoader({
 			cwd: agentDir,
 			agentDir,
 			settingsManager: this._settingsManager,
-			// The interactive mode owns theme + context-file loading; the runtime only needs
-			// extensions/integrations/skills/prompts from the loader.
+			// The interactive mode owns theme + context-file loading; the runtime only needs the
+			// capability folders + skills/prompts from the loader.
 			noThemes: true,
 			noContextFiles: true,
 		});
@@ -1132,8 +1102,27 @@ export class AgentRuntime {
 		this._tools = toolsResult.tools;
 		this._toolLoadErrors = toolsResult.errors;
 
+		// Providers (providers/): one file per provider, registered with the model registry so a custom
+		// endpoint's models become selectable. Registered here in buildSharedResources, after initial
+		// model resolution in createAgentRuntime, so a custom provider is not visible to the boot model
+		// pick; a config that fails validation surfaces as a load error instead of aborting the build.
+		const providersResult = await loadProviders(loader.getProviderPaths(), agentDir);
+		this._providerLoadErrors = [...providersResult.errors];
+		this._providerCount = 0;
+		for (const provider of providersResult.providers) {
+			try {
+				this._modelRegistry.registerProvider(provider.name, provider.config);
+				this._providerCount++;
+			} catch (err) {
+				this._providerLoadErrors.push({
+					path: provider.path,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
 		// This runtime owns the approval policy (store + gate). The shared run-target map's gate routes
-		// host-escalation dialogs raised through `wolli.environments` to a live session's UI (best-
+		// host-escalation dialogs raised through the shared environments to a live session's UI (best-
 		// effort — per-session tools use their own gate over their own session). The approval store is
 		// shared across sessions and survives reload. Daemon-owned control state is write-denied.
 		this._approvals ??= ApprovalStore.create(name);
@@ -1146,47 +1135,13 @@ export class AgentRuntime {
 				}, this._approvals);
 		this._environments = await createEnvironments(agentDir, { gate: sharedGate, denyWrite: controlState });
 
-		const { extensions, errors, runtime } = loader.getExtensions();
-		// Wire the agent-global `wolli.*` delegates onto the shared extension runtime. Closures over
-		// `this` (the durable AgentRuntime) — set here where `this` is in scope. The session methods
-		// expose the public `Session` facade (held by each `AgentSession`), not the internal class.
-		runtime.getSession = (sessionId) => this.getSession(sessionId)?.facade;
-		runtime.openSession = async (sessionId) => (await this.openSession(sessionId)).facade;
-		runtime.createSession = async (opts) => (await this.createSession(opts)).facade;
-		runtime.listSessions = () => this.listSessions();
-		runtime.findSessions = (filter) => this.findSessions(filter);
-		runtime.reload = () => this.reload();
-		runtime.shutdown = () => this.shutdown();
-		runtime.getModelRegistry = () => this._modelRegistry;
-		runtime.getEnvironments = () => this.environments;
-		// A post-bind `wolli.registerTool()` refreshes every resident session's tools immediately (the
-		// loader fires `runtime.refreshTools()` after such a call) — no `/reload` required.
-		runtime.refreshTools = () => {
-			for (const session of this._sessions.values()) this.refreshSessionTools(session);
-		};
-
-		const runner = new ExtensionRunner(extensions, runtime, this._modelRegistry);
-		this._extensionRunner = runner;
-		this._extensionCount = extensions.length;
-		this._loadErrors = errors;
-		// Carry an outgoing runner's flag values into the new runner (reload only).
-		if (seedFlagValues) {
-			for (const [flag, value] of seedFlagValues) runner.setFlagValue(flag, value);
-		}
-		// Surface load errors through the runner's error channel (no listeners yet at build time →
-		// silent: the host mode attaches a listener later).
-		for (const { path, error } of errors) {
-			runner.emitError({ path, event: "load", error });
-		}
-
 		const { skills, diagnostics: skillDiagnostics } = loader.getSkills();
 		this._skillDiagnostics = skillDiagnostics;
 		this._skills = skills;
 		this._promptTemplates = loader.getPrompts().prompts;
 
-		// Bind the runner core (flush queued provider registrations) and (re)start the integration
-		// producer — stop the previous producer first, since producers hold exclusive connections.
-		runner.bindCore();
+		// (Re)start the integration producer — stop the previous producer first, since producers hold
+		// exclusive connections.
 		await previousIntegrationRunner?.stop();
 		integrationRunner.bindCore();
 		// Every validated integration event fans out to this generation's workflow triggers.
@@ -1201,7 +1156,7 @@ export class AgentRuntime {
 
 	/**
 	 * Build the live `AgentSession`: its per-session gated environments, tools, frozen prompt, and
-	 * harness, all wired to the shared runner. Registers it in the resident map and returns it.
+	 * harness, all wired to the shared runners. Registers it in the resident map and returns it.
 	 */
 	private async instantiateSession(args: {
 		session: EngineSession<JsonlSessionMetadata>;
@@ -1272,7 +1227,7 @@ export class AgentRuntime {
 
 	/**
 	 * Build a session's tool set + frozen prompt. The base tools route through the session's gated
-	 * default target; each extension tool resolves its context lazily against the session (so the
+	 * default target; each authored tool resolves its context lazily against the session (so the
 	 * dialog UI it raises routes to that session). The prompt reads curated memory ONCE and freezes it.
 	 */
 	private buildSessionTooling(session: AgentSession): SessionTooling {
@@ -1397,7 +1352,7 @@ export class AgentRuntime {
 		return actions as IntegrationHandleOf<TActions>;
 	}
 
-	/** Re-apply a session's base + extension + authored tool set — backs the facade's `refreshTools()`. */
+	/** Re-apply a session's base + authored tool set — backs the facade's `refreshTools()`. */
 	refreshSessionTools(session: AgentSession): void {
 		const tooling = this.buildSessionTooling(session);
 		const active = session.harness.getActiveTools().map((tool) => tool.name);
@@ -1428,9 +1383,9 @@ export class AgentRuntime {
  * A single live session: the per-session half of an agent's runtime. Owns the `AgentHarness`, the
  * `SessionManager`, the execution env, the per-session run-target map, the per-session presentation
  * channel (`ui`/`mode`), the frozen system prompt, and the transient turn state, plus the dispatch
- * pipeline and the harness↔extension event wiring. Reads the durable/shared half (runner, registry)
- * off its `AgentRuntime`. The shared runner reads its `facade`/`ui`/`mode` to build an
- * `ExtensionContext` scoped to this session.
+ * pipeline and the harness event wiring. Reads the durable/shared half (runners, registry) off its
+ * `AgentRuntime`. The hook + workflow runners read its `workflowSession`/`ui` to scope their contexts
+ * to this session.
  */
 export class AgentSession {
 	readonly sessionManager: SessionManager;
@@ -1438,14 +1393,14 @@ export class AgentSession {
 	/** The per-session run-target map (sandbox/host) backing the file + bash tools. */
 	readonly environments: AgentEnvironments;
 	/** This session's UI rail — dialogs raised in its turns route only to its subscribers. */
-	readonly ui: ExtensionUIContext;
+	readonly ui: DialogUI;
 	/** Build this session's login callbacks for a given cancel `signal` (the daemon→client login seam). */
 	readonly createLoginCallbacks: (signal: AbortSignal) => OAuthLoginCallbacks;
 	/** Aborts the in-flight `/login` flow when set (the `login_cancel` command fires it); cleared on completion. */
 	loginAbortController?: AbortController;
 	/** This session's run mode. */
-	readonly mode: ExtensionMode;
-	/** The session facade handed to extensions as `ctx.session` / returned from `wolli.getSession`. */
+	readonly mode: SessionMode;
+	/** The session facade backing `ctx.session` and the workflow session surface. */
 	readonly facade: SessionApi;
 	/** The facade narrowed to the workflow-session surface — `ctx.session` on this session's lifecycle runs. */
 	readonly workflowSession: WorkflowSession;
@@ -1535,32 +1490,22 @@ export class AgentSession {
 	}
 
 	/**
-	 * Submit user input through the full command pipeline, then hand off to the harness.
+	 * Submit user input through the full pipeline, then hand off to the harness.
 	 *
 	 * Ordering:
-	 *  1. extension command (`/name args`) — runs immediately, even mid-stream;
-	 *  2. `input` hook — extensions may intercept (`handled`) or rewrite (`transform`);
-	 *  3. skill / prompt-template dispatch — routed through `AgentHarness` resources;
-	 *  4. plain prompt — or `steer`/`followUp` when a turn is already streaming.
+	 *  1. `input` hook — hooks may intercept (`handled`) or rewrite (`transform`);
+	 *  2. skill / prompt-template dispatch — routed through `AgentHarness` resources;
+	 *  3. plain prompt — or `steer`/`followUp` when a turn is already streaming.
 	 *
 	 * `images` stays plumbed through (default undefined) so an `input` transform can inject images even
 	 * though the interactive caller passes none.
 	 */
 	async prompt(text: string, options?: ConversationPromptOptions): Promise<void> {
-		const runner = this.runtime.extensionRunner;
 		const harness = this.harness;
 		const expandPromptTemplates = options?.expandPromptTemplates !== false;
 		const preflight = options?.preflightResult;
 
-		// 1. Extension command — manages its own LLM interaction via wolli.sendMessage().
-		if (expandPromptTemplates && text.startsWith("/") && (await this.tryExecuteExtensionCommand(text))) {
-			preflight?.(true);
-			return;
-		}
-
-		// 2. `input` hook — interception/transform before skill/template expansion. Hooks run first
-		//    (so their behavior does not change when the extension emit is later removed), then
-		//    extensions see the hook-transformed text/images.
+		// 1. `input` hook — interception/transform before skill/template expansion.
 		let currentText = text;
 		let currentImages = options?.images;
 		const hookRunner = this.runtime.hookRunner;
@@ -1584,19 +1529,8 @@ export class AgentSession {
 				currentImages = hookResult.images ?? currentImages;
 			}
 		}
-		if (runner.hasHandlers("input")) {
-			const result = await runner.emitInput(currentText, currentImages, source, streamingBehavior, this);
-			if (result.action === "handled") {
-				preflight?.(true);
-				return;
-			}
-			if (result.action === "transform") {
-				currentText = result.text;
-				currentImages = result.images ?? currentImages;
-			}
-		}
 
-		// 3. Skill / prompt-template dispatch. `/skill:<name> [args]` → harness.skill;
+		// 2. Skill / prompt-template dispatch. `/skill:<name> [args]` → harness.skill;
 		//    `/<name> [args]` matching a loaded template → harness.promptFromTemplate.
 		if (expandPromptTemplates && currentText.startsWith("/skill:")) {
 			const spaceIndex = currentText.indexOf(" ");
@@ -1618,7 +1552,7 @@ export class AgentSession {
 			}
 		}
 
-		// 4. Plain prompt — or queue via steer()/followUp() when a turn is streaming.
+		// 3. Plain prompt — or queue via steer()/followUp() when a turn is streaming.
 		//    An ambiguous mid-stream submit (no streamingBehavior) is rejected rather than steered.
 		if (!harness.isIdle) {
 			if (!options?.streamingBehavior) {
@@ -1642,9 +1576,9 @@ export class AgentSession {
 	}
 
 	/**
-	 * Send a user message to the agent (extension-driven). Always triggers a turn; while a turn is
-	 * streaming, `deliverAs` selects the queue. Routes through `prompt` with command + skill/template
-	 * dispatch skipped (`expandPromptTemplates: false`).
+	 * Send a user message to the agent. Always triggers a turn; while a turn is streaming, `deliverAs`
+	 * selects the queue. Routes through `prompt` with skill/template dispatch skipped
+	 * (`expandPromptTemplates: false`).
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
@@ -1656,18 +1590,17 @@ export class AgentSession {
 			expandPromptTemplates: false,
 			streamingBehavior: options?.deliverAs,
 			images,
-			source: "extension",
+			source: "workflow",
 		});
 	}
 
 	/**
-	 * Deliver an extension custom-message:
+	 * Deliver a custom message:
 	 *  - `deliverAs: "nextTurn"` → queue for the next turn;
 	 *  - else streaming (`!harness.isIdle`) → steer/followUp by `deliverAs`;
 	 *  - else `triggerTurn` → drive a fresh turn (delivered as a user-role turn exactly once;
-	 *    the customType/details/renderer are not applied on this path);
-	 *  - else → persist a custom_message entry, which both delivers it into the next turn's context and
-	 *    renders it via a registered message renderer.
+	 *    the customType/details are not applied on this path);
+	 *  - else → persist a custom_message entry, which delivers it into the next turn's context.
 	 */
 	async sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
@@ -1682,7 +1615,7 @@ export class AgentSession {
 			if (options?.deliverAs === "steer") await harness.steer(text, { images });
 			else await harness.followUp(text, { images });
 		} else if (options?.triggerTurn) {
-			await this.prompt(text, { expandPromptTemplates: false, images, source: "extension" });
+			await this.prompt(text, { expandPromptTemplates: false, images, source: "workflow" });
 		} else {
 			await this.sessionManager.appendCustomMessageEntry(
 				message.customType,
@@ -1797,33 +1730,6 @@ export class AgentSession {
 	}
 
 	/**
-	 * Run a leading-slash extension command if one matches. Returns true when a command handled the
-	 * input (so the caller sends nothing to the model).
-	 */
-	private async tryExecuteExtensionCommand(text: string): Promise<boolean> {
-		const runner = this.runtime.extensionRunner;
-		const spaceIndex = text.indexOf(" ");
-		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
-
-		const command = runner.getCommand(commandName);
-		if (!command) return false;
-
-		const ctx = runner.createContext(this);
-		try {
-			await command.handler(args, ctx);
-			return true;
-		} catch (err) {
-			runner.emitError({
-				path: `command:${commandName}`,
-				event: "command",
-				error: err instanceof Error ? err.message : String(err),
-			});
-			return true;
-		}
-	}
-
-	/**
 	 * Derive context-window usage for the active model from the engine's branch entries + the
 	 * `@opsyhq/agent` compaction helpers. Returns `{tokens:null,...}` right after a compaction (before
 	 * the next assistant response re-establishes a usage figure).
@@ -1865,11 +1771,11 @@ export class AgentSession {
 	}
 
 	/**
-	 * Construct the public `Session` facade handed to every handler/tool/command (as `ctx.session`) and
-	 * returned from `wolli.getSession()`. The object is a curated facade over this session: closures/
-	 * getters close over `this` (the explicit target session) plus the captured harness / runtime-shared
-	 * resources, so a `reload()` stays tied to this session with no ambient "current". `model`/`signal`
-	 * are getters so they read live through the harness rather than freezing at bind time.
+	 * Construct the public `Session` facade backing `ctx.session` on tools and the workflow session
+	 * surface. The object is a curated facade over this session: closures/getters close over `this`
+	 * (the explicit target session) plus the captured harness / runtime-shared resources, so a
+	 * `reload()` stays tied to this session with no ambient "current". `model`/`signal` are getters so
+	 * they read live through the harness rather than freezing at bind time.
 	 */
 	private buildFacade(): SessionApi {
 		const self = this;
@@ -1945,13 +1851,13 @@ export class AgentSession {
 	}
 
 	/**
-	 * Translate this session's harness events into extension `ExtensionEvent`s, storing the teardown fns
-	 * on `this._unsubscribe`. See the three-way split documented at the top of the file. Every emit is
-	 * threaded `this` (the session) so the shared runner builds a ctx scoped to this session.
+	 * Wire this session's harness events to the hook + workflow runners, storing the teardown fns on
+	 * `this._unsubscribe`. See the three-way split documented at the top of the file. The workflow
+	 * session + dialog UI are threaded through so each runner is scoped to this session.
 	 *
-	 * Each handler reads `runtime.extensionRunner` (the live getter) rather than capturing a `runner`
-	 * argument: the harness outlives a reload but the runner is swapped in `buildSharedResources`, so
-	 * reading it at event time re-points wiring at the fresh runner without re-subscribing.
+	 * Each handler reads the live `runtime.workflowRunner`/`runtime.hookRunner` getters rather than
+	 * capturing them: the harness outlives a reload but the runners are swapped in `buildSharedResources`,
+	 * so reading them at event time re-points wiring at the fresh runners without re-subscribing.
 	 */
 	wireExtensionEvents(): void {
 		const harness = this.harness;
@@ -1959,83 +1865,74 @@ export class AgentSession {
 		const unsubscribe: (() => void)[] = [];
 
 		// (b) subscribe() — receives ALL events (AgentEvent + harness own-events). It keeps session
-		// streaming/turn/queue state in sync and emits the lifecycle ExtensionEvents. message_end is
-		// intentionally skipped (see (c)).
+		// streaming/turn/queue state in sync and dispatches the lifecycle events to workflows. The
+		// dispatch no-ops per event type when nothing is bound. message_end is intentionally skipped
+		// (see (c)).
 		unsubscribe.push(
 			harness.subscribe(async (event, signal) => {
-				const runner = runtime.extensionRunner;
-				// Workflows consume the same translated lifecycle events as extensions — one event
-				// object per emit, two consumers. The extension emit stays gated on hasHandlers;
-				// the workflow dispatch no-ops per event type when nothing is bound.
 				const workflowRunner = runtime.workflowRunner;
 				switch (event.type) {
 					case "agent_start": {
 						// The run's abort signal rides every dispatch — capture it for ctx.signal.
 						this._currentSignal = signal;
 						this._turnIndex = 0;
-						if (runner.hasHandlers("agent_start") || workflowRunner?.hasTriggers("agent_start")) {
+						if (workflowRunner?.hasTriggers("agent_start")) {
 							const lifecycleEvent: AgentEventMap["agent_start"] = { type: "agent_start" };
-							if (runner.hasHandlers("agent_start")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "agent_end": {
 						this._currentSignal = undefined;
-						if (runner.hasHandlers("agent_end") || workflowRunner?.hasTriggers("agent_end")) {
+						if (workflowRunner?.hasTriggers("agent_end")) {
 							const lifecycleEvent: AgentEventMap["agent_end"] = { type: "agent_end", messages: event.messages };
-							if (runner.hasHandlers("agent_end")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "turn_start": {
 						// The engine's turn_start carries no index/timestamp — synthesize both.
-						if (runner.hasHandlers("turn_start") || workflowRunner?.hasTriggers("turn_start")) {
+						if (workflowRunner?.hasTriggers("turn_start")) {
 							const lifecycleEvent: AgentEventMap["turn_start"] = {
 								type: "turn_start",
 								turnIndex: this._turnIndex,
 								timestamp: Date.now(),
 							};
-							if (runner.hasHandlers("turn_start")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "turn_end": {
-						if (runner.hasHandlers("turn_end") || workflowRunner?.hasTriggers("turn_end")) {
+						if (workflowRunner?.hasTriggers("turn_end")) {
 							const lifecycleEvent: AgentEventMap["turn_end"] = {
 								type: "turn_end",
 								turnIndex: this._turnIndex,
 								message: event.message,
 								toolResults: event.toolResults,
 							};
-							if (runner.hasHandlers("turn_end")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						this._turnIndex++;
 						return;
 					}
 					case "message_start": {
-						if (runner.hasHandlers("message_start") || workflowRunner?.hasTriggers("message_start")) {
+						if (workflowRunner?.hasTriggers("message_start")) {
 							const lifecycleEvent: AgentEventMap["message_start"] = {
 								type: "message_start",
 								message: event.message,
 							};
-							if (runner.hasHandlers("message_start")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "message_update": {
-						if (runner.hasHandlers("message_update") || workflowRunner?.hasTriggers("message_update")) {
+						if (workflowRunner?.hasTriggers("message_update")) {
 							const lifecycleEvent: AgentEventMap["message_update"] = {
 								type: "message_update",
 								message: event.message,
 								assistantMessageEvent: event.assistantMessageEvent,
 							};
-							if (runner.hasHandlers("message_update")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
@@ -2043,26 +1940,19 @@ export class AgentSession {
 						// Handled on the onMessageEnd() interceptor (c) so mutations persist.
 						return;
 					case "tool_execution_start": {
-						if (
-							runner.hasHandlers("tool_execution_start") ||
-							workflowRunner?.hasTriggers("tool_execution_start")
-						) {
+						if (workflowRunner?.hasTriggers("tool_execution_start")) {
 							const lifecycleEvent: AgentEventMap["tool_execution_start"] = {
 								type: "tool_execution_start",
 								toolCallId: event.toolCallId,
 								toolName: event.toolName,
 								args: event.args,
 							};
-							if (runner.hasHandlers("tool_execution_start")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "tool_execution_update": {
-						if (
-							runner.hasHandlers("tool_execution_update") ||
-							workflowRunner?.hasTriggers("tool_execution_update")
-						) {
+						if (workflowRunner?.hasTriggers("tool_execution_update")) {
 							const lifecycleEvent: AgentEventMap["tool_execution_update"] = {
 								type: "tool_execution_update",
 								toolCallId: event.toolCallId,
@@ -2070,13 +1960,12 @@ export class AgentSession {
 								args: event.args,
 								partialResult: event.partialResult,
 							};
-							if (runner.hasHandlers("tool_execution_update")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "tool_execution_end": {
-						if (runner.hasHandlers("tool_execution_end") || workflowRunner?.hasTriggers("tool_execution_end")) {
+						if (workflowRunner?.hasTriggers("tool_execution_end")) {
 							const lifecycleEvent: AgentEventMap["tool_execution_end"] = {
 								type: "tool_execution_end",
 								toolCallId: event.toolCallId,
@@ -2084,8 +1973,7 @@ export class AgentSession {
 								result: event.result,
 								isError: event.isError,
 							};
-							if (runner.hasHandlers("tool_execution_end")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
@@ -2095,160 +1983,100 @@ export class AgentSession {
 						return;
 					}
 					case "model_update": {
-						if (runner.hasHandlers("model_select") || workflowRunner?.hasTriggers("model_select")) {
+						if (workflowRunner?.hasTriggers("model_select")) {
 							const lifecycleEvent: AgentEventMap["model_select"] = {
 								type: "model_select",
 								model: event.model,
 								previousModel: event.previousModel,
 								source: event.source,
 							};
-							if (runner.hasHandlers("model_select")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					case "thinking_level_update": {
-						if (
-							runner.hasHandlers("thinking_level_select") ||
-							workflowRunner?.hasTriggers("thinking_level_select")
-						) {
+						if (workflowRunner?.hasTriggers("thinking_level_select")) {
 							const lifecycleEvent: AgentEventMap["thinking_level_select"] = {
 								type: "thinking_level_select",
 								level: event.level,
 								previousLevel: event.previousLevel,
 							};
-							if (runner.hasHandlers("thinking_level_select")) await runner.emit(lifecycleEvent, this);
-							await workflowRunner?.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
+							await workflowRunner.dispatchLifecycle(lifecycleEvent, this.workflowSession, this.ui);
 						}
 						return;
 					}
 					default:
 						// Other own-events (save_point, settled, abort, tools_update, resources_update,
-						// before_*) have no lifecycle ExtensionEvent or are delivered via native on() hooks.
+						// before_*) have no lifecycle event or are delivered via native on() interceptors.
 						return;
 				}
 			}),
 		);
 
-		// (a) Native mutating hooks. Registered unconditionally; each guards on hasHandlers() at call
-		// time. Casts bridge the engine event objects to the extension event unions (structurally
-		// identical; identity preserved so in-place input mutations on tool_call propagate back).
+		// (a) Native mutating interceptors, consulted by the hook runner. Registered unconditionally;
+		// each guards on hasHooks() at call time. Casts bridge the engine event objects to the hook
+		// event unions (structurally identical; identity preserved so in-place input mutations on
+		// tool_call propagate back).
 		unsubscribe.push(
 			harness.on("tool_call", async (event) => {
-				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
-				const hasExtension = runner.hasHandlers("tool_call");
-				const hasHooks = hookRunner.hasHooks("tool_call");
-				if (!hasExtension && !hasHooks) return undefined;
-				// Hooks see the raw event first (so a hook's behavior is unchanged when the extension emit
-				// is removed); a block short-circuits before any extension runs. Event identity is
-				// preserved so in-place input mutations propagate back to the caller.
-				const hookResult = hasHooks
-					? await hookRunner.dispatchToolCall(event as unknown as ToolCallEvent, this.workflowSession, this.ui)
-					: undefined;
-				if (hookResult?.block) return hookResult;
-				const extensionResult = hasExtension
-					? await runner.emitToolCall(event as unknown as ToolCallEvent, this)
-					: undefined;
-				return extensionResult ?? hookResult;
+				if (!hookRunner.hasHooks("tool_call")) return undefined;
+				// Event identity is preserved so in-place input mutations propagate back to the caller.
+				return hookRunner.dispatchToolCall(event as unknown as ToolCallEvent, this.workflowSession, this.ui);
 			}),
 		);
 		unsubscribe.push(
 			harness.on("tool_result", async (event) => {
-				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
-				const hasExtension = runner.hasHandlers("tool_result");
-				const hasHooks = hookRunner.hasHooks("tool_result");
-				if (!hasExtension && !hasHooks) return undefined;
-				// Hooks first; their patch feeds the extension chain. Both runners copy the event
-				// internally, so the extension sees a shallow copy carrying the hook patches — an
-				// extension result therefore already folds the hook patches in and wins outright.
-				const hookResult = hasHooks
-					? await hookRunner.dispatchToolResult(event as unknown as ToolResultEvent, this.workflowSession, this.ui)
-					: undefined;
-				const extensionEvent = hookResult
-					? { ...(event as unknown as ToolResultEvent), ...hookResult }
-					: (event as unknown as ToolResultEvent);
-				const extensionResult = hasExtension ? await runner.emitToolResult(extensionEvent, this) : undefined;
-				return extensionResult ?? hookResult;
+				if (!hookRunner.hasHooks("tool_result")) return undefined;
+				return hookRunner.dispatchToolResult(event as unknown as ToolResultEvent, this.workflowSession, this.ui);
 			}),
 		);
 		unsubscribe.push(
 			harness.on("context", async (event) => {
-				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
-				const hasExtension = runner.hasHandlers("context");
-				const hasHooks = hookRunner.hasHooks("context");
-				if (!hasExtension && !hasHooks) return undefined;
-				// Hooks first, then extensions see the hook-adjusted messages. dispatchContext returns
-				// its input untouched when nothing is bound, so the hasHooks guard keeps the clone off
-				// the hot path.
-				const hooked = hasHooks
-					? await hookRunner.dispatchContext(event.messages, this.workflowSession, this.ui)
-					: event.messages;
-				const messages = hasExtension ? await runner.emitContext(hooked, this) : hooked;
+				if (!hookRunner.hasHooks("context")) return undefined;
+				const messages = await hookRunner.dispatchContext(event.messages, this.workflowSession, this.ui);
 				return { messages };
 			}),
 		);
 		unsubscribe.push(
 			harness.on("before_provider_payload", async (event) => {
-				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
-				// Maps to the extension `before_provider_request` event / the `provider_request` hook.
-				const hasExtension = runner.hasHandlers("before_provider_request");
-				const hasHooks = hookRunner.hasHooks("provider_request");
-				if (!hasExtension && !hasHooks) return undefined;
-				// Hooks first, then the extension chain threads the hook-adjusted payload.
-				const hooked = hasHooks
-					? await hookRunner.dispatchProviderRequest(event.payload, this.workflowSession, this.ui)
-					: event.payload;
-				const payload = hasExtension ? await runner.emitBeforeProviderRequest(hooked, this) : hooked;
+				// Maps to the `provider_request` hook.
+				if (!hookRunner.hasHooks("provider_request")) return undefined;
+				const payload = await hookRunner.dispatchProviderRequest(event.payload, this.workflowSession, this.ui);
 				return { payload };
 			}),
 		);
 		unsubscribe.push(
 			harness.on("before_agent_start", async (event) => {
-				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
-				const hasExtension = runner.hasHandlers("before_agent_start");
-				const hasHooks = hookRunner.hasHooks("agent_start");
-				if (!hasExtension && !hasHooks) return undefined;
-				// Hooks first: they get systemPromptOptions explicitly (the workflow session facade does not
-				// expose it the way the extension ctx.session does), and their systemPrompt threads into the
-				// extension chain. Hook messages precede extension messages in the returned array.
-				const hookResult = hasHooks
-					? await hookRunner.dispatchAgentStart(
-							event.prompt,
-							event.images,
-							event.systemPrompt,
-							this.facade.getSystemPromptOptions(),
-							this.workflowSession,
-							this.ui,
-						)
-					: undefined;
-				const systemPrompt = hookResult?.systemPrompt ?? event.systemPrompt;
-				const extensionResult = hasExtension
-					? await runner.emitBeforeAgentStart(event.prompt, event.images, systemPrompt, this)
-					: undefined;
-				if (!hookResult && !extensionResult) return undefined;
-				// Convert both chains' returned Pick<CustomMessage,...>[] into AgentMessage[], hooks first.
-				const combined = [...(hookResult?.messages ?? []), ...(extensionResult?.messages ?? [])];
+				if (!hookRunner.hasHooks("agent_start")) return undefined;
+				// Hooks get systemPromptOptions explicitly (the workflow session facade does not expose it).
+				const hookResult = await hookRunner.dispatchAgentStart(
+					event.prompt,
+					event.images,
+					event.systemPrompt,
+					this.facade.getSystemPromptOptions(),
+					this.workflowSession,
+					this.ui,
+				);
+				if (!hookResult) return undefined;
+				// Convert the returned Pick<CustomMessage,...>[] into AgentMessage[].
 				const messages =
-					combined.length > 0
-						? combined.map((m) =>
+					hookResult.messages && hookResult.messages.length > 0
+						? hookResult.messages.map((m) =>
 								createCustomMessage(m.customType, m.content, m.display, m.details, new Date().toISOString()),
 							)
 						: undefined;
-				return { messages, systemPrompt: extensionResult?.systemPrompt ?? hookResult?.systemPrompt };
+				return { messages, systemPrompt: hookResult.systemPrompt };
 			}),
 		);
 		unsubscribe.push(
 			harness.on("session_before_compact", async (event) => {
-				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
-				const hasExtension = runner.hasHandlers("session_before_compact");
-				const hasHooks = hookRunner.hasHooks("compact");
-				if (!hasExtension && !hasHooks) return undefined;
+				if (!hookRunner.hasHooks("compact")) return undefined;
 				const compactEvent: SessionBeforeCompactEvent = {
 					type: "session_before_compact",
 					preparation: event.preparation,
@@ -2256,43 +2084,21 @@ export class AgentSession {
 					customInstructions: event.customInstructions,
 					signal: event.signal,
 				};
-				// Hooks first; a `{ cancel }` returns immediately. Otherwise extensions run after and win by
-				// last-writer semantics — a non-cancel hook result is superseded by any extension result.
-				const hookResult = hasHooks
-					? await hookRunner.dispatchCompact(compactEvent, this.workflowSession, this.ui)
-					: undefined;
-				if (hookResult?.cancel) return hookResult;
-				const extensionResult = hasExtension ? await runner.emit(compactEvent, this) : undefined;
-				return extensionResult ?? hookResult;
+				return hookRunner.dispatchCompact(compactEvent, this.workflowSession, this.ui);
 			}),
 		);
 
-		// (c) message_end interceptor. The engine runs this before persisting the finalized message; an
-		// extension may return a same-role replacement, which we apply in place so agent state + the
-		// persisted copy stay one object. Workflows observe the finalized (possibly replaced) message
-		// here too — mutation stays extension-only.
+		// (c) message_end interceptor. The engine runs this before persisting the finalized message; a
+		// hook may return a same-role replacement, which we apply in place so agent state + the persisted
+		// copy stay one object. Workflows observe the finalized (possibly replaced) message last.
 		unsubscribe.push(
 			harness.onMessageEnd(async (message) => {
-				const runner = runtime.extensionRunner;
 				const hookRunner = runtime.hookRunner;
 				const workflowRunner = runtime.workflowRunner;
-				if (
-					!runner.hasHandlers("message_end") &&
-					!hookRunner.hasHooks("message_end") &&
-					!workflowRunner?.hasTriggers("message_end")
-				)
-					return;
+				if (!hookRunner.hasHooks("message_end") && !workflowRunner?.hasTriggers("message_end")) return;
 				const lifecycleEvent: AgentEventMap["message_end"] = { type: "message_end", message };
-				// Hooks first: a same-role hook replacement applies in place BEFORE the extension chain, so
-				// extensions see the hook-replaced message. Workflows observe the final message last.
 				if (hookRunner.hasHooks("message_end")) {
 					const replacement = await hookRunner.dispatchMessageEnd(lifecycleEvent, this.workflowSession, this.ui);
-					if (replacement && replacement !== message) {
-						replaceMessageInPlace(message, replacement);
-					}
-				}
-				if (runner.hasHandlers("message_end")) {
-					const replacement = await runner.emitMessageEnd(lifecycleEvent, this);
 					if (replacement && replacement !== message) {
 						replaceMessageInPlace(message, replacement);
 					}

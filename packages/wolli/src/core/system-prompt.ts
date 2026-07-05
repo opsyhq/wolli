@@ -60,9 +60,10 @@ const ONBOARDING_INSTRUCTION = [
 const EXTENDING_YOURSELF = [
 	"## Extending yourself",
 	"",
-	"You can grow new capabilities, not just edit your files: author extensions (custom tools, slash",
-	"commands, events, UI), connect external services and message channels via integrations, and add",
-	"skills, prompt templates, and themes — bundle and install them as plugins. Before building from",
+	"You can grow new capabilities, not just edit your files: add tools the model can call, automate",
+	"reactions to events with workflows, intercept the agent loop with hooks, connect external services",
+	"and message channels via integrations, register model providers, and add skills, prompt templates,",
+	"and themes — bundle and install them as plugins. Before building from",
 	"scratch, check the bundled plugins folder (path below) for a ready-made plugin: if one fits the need",
 	"(e.g. Telegram for chat), have your human install and onboard it instead of writing your own. Skills",
 	"are lighter — the built-in skills folder (path below) holds ready-made ones you can install yourself by",
@@ -136,10 +137,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const builtInSkillsDir = getBuiltInSkillsDir();
 	parts.push(
 		"",
-		`## ${APP_NAME} documentation (read when the user asks about ${APP_NAME} itself — its extensions, integrations, skills, prompt templates, themes, plugins, or SDK — or when you extend or modify yourself)`,
+		`## ${APP_NAME} documentation (read when the user asks about ${APP_NAME} itself — its workflows, integrations, tools, providers, hooks, skills, prompt templates, themes, plugins, or SDK — or when you extend or modify yourself)`,
 		`- Main documentation: ${readmePath}`,
 		`- Additional docs: ${docsPath} (resolve docs/... under here, not the current working directory)`,
-		`- Topics: extensions (docs/extensions.md), integrations (docs/integrations.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), themes (docs/themes.md), plugins (docs/plugins.md), sdk (docs/sdk.md)`,
+		`- Topics: workflows (docs/workflows.md), integrations (docs/integrations.md), tools (docs/tools.md), providers (docs/providers.md), hooks (docs/hooks.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), themes (docs/themes.md), plugins (docs/plugins.md), sdk (docs/sdk.md)`,
 		`- Bundled plugins ready to install: ${pluginsDir} (e.g. telegram, scheduler) — prefer installing a fitting one over building from scratch; have your human run \`${APP_NAME} <name> plugins install <path>\` then onboard it`,
 		`- Built-in skills ready to install: ${builtInSkillsDir} — browse them, then install one yourself by copying its folder into your own skills/ dir (\`mkdir -p skills && cp -r ${builtInSkillsDir}/<name> skills/\`); it loads next session`,
 		`- When working on ${APP_NAME} topics, read the docs and follow .md cross-references before implementing`,

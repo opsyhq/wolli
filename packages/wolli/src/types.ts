@@ -130,58 +130,40 @@ export type DaemonResponse =
 	| { id?: string; type: "response"; command: string; success: false; error: string };
 
 // ============================================================================
-// Extension UI (the round-trip the daemon-side extension runner drives)
+// Dialog UI (the round-trip the daemon-side dialog rail drives)
 // ============================================================================
 
 /**
- * An extension-UI request, pushed to attach clients as an SSE frame (NOT an `AgentHarnessEvent`
- * — it bypasses the curated forwarded set and the replay ring). The four awaited dialogs
- * (`select`/`confirm`/`input`/`editor`) park a promise keyed by `id`; the client answers via
- * `POST /ui-response`. The five fire-and-forget methods carry no `id` correlation. All nine
- * `method` literals are camelCase.
+ * A dialog-UI request, pushed to attach clients as an SSE frame (NOT an `AgentHarnessEvent`
+ * — it bypasses the curated forwarded set and the replay ring). The three awaited dialogs
+ * (`select`/`confirm`/`input`) park a promise keyed by `id`; the client answers via
+ * `POST /ui-response`. The fire-and-forget `notify` carries no answer. All `method`
+ * literals are camelCase.
  */
 export type ExtensionUIRequest =
-	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
-	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
+	| { type: "ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
+	| { type: "ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
 	| {
-			type: "extension_ui_request";
+			type: "ui_request";
 			id: string;
 			method: "input";
 			title: string;
 			placeholder?: string;
 			timeout?: number;
 	  }
-	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string }
 	| {
-			type: "extension_ui_request";
+			type: "ui_request";
 			id: string;
 			method: "notify";
 			message: string;
 			notifyType?: "info" | "warning" | "error";
-	  }
-	| {
-			type: "extension_ui_request";
-			id: string;
-			method: "setStatus";
-			statusKey: string;
-			statusText: string | undefined;
-	  }
-	| {
-			type: "extension_ui_request";
-			id: string;
-			method: "setWidget";
-			widgetKey: string;
-			widgetLines: string[] | undefined;
-			widgetPlacement?: "aboveEditor" | "belowEditor";
-	  }
-	| { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
-	| { type: "extension_ui_request"; id: string; method: "setEditorText"; text: string };
+	  };
 
 /** A client's answer to an awaited `ExtensionUIRequest`, posted to `/ui-response`. */
 export type ExtensionUIResponse =
-	| { type: "extension_ui_response"; id: string; value: string }
-	| { type: "extension_ui_response"; id: string; confirmed: boolean }
-	| { type: "extension_ui_response"; id: string; cancelled: true };
+	| { type: "ui_response"; id: string; value: string }
+	| { type: "ui_response"; id: string; confirmed: boolean }
+	| { type: "ui_response"; id: string; cancelled: true };
 
 // ============================================================================
 // Login UI (the daemon→client login seam — parallel to extension-UI, separate from it)

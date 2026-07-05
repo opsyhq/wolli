@@ -46,7 +46,6 @@ import { getAgentDir } from "../src/config.ts";
 import { AgentRuntime } from "../src/core/agent-runtime.ts";
 import { AgentSettingsManager } from "../src/core/agent-settings-manager.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { noOpUIContext } from "../src/core/extensions/runner.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { IntegrationStore } from "../src/core/integration-store.ts";
 import { defineIntegration, IntegrationRunner, loadIntegrationFromDefinition } from "../src/core/integrations/index.ts";
@@ -72,6 +71,14 @@ import {
 	WorkflowRunner,
 	type WorkflowSession,
 } from "../src/core/workflows/index.ts";
+
+/** The inert dialog rail a session falls back to when it has no live presentation channel. */
+const noOpUIContext: DialogUI = {
+	select: async () => undefined,
+	confirm: async () => false,
+	input: async () => undefined,
+	notify: () => {},
+};
 
 interface HeartbeatTick {
 	seq: number;

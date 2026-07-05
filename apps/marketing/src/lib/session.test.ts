@@ -27,7 +27,7 @@ describe("loadSession", () => {
 				role: "assistant",
 				content: [
 					{ type: "text", text: "Reading the docs." },
-					{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "docs/extensions.md" } },
+					{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "docs/workflows.md" } },
 				],
 				api: "anthropic",
 				provider: "anthropic",
@@ -40,7 +40,7 @@ describe("loadSession", () => {
 				role: "toolResult",
 				toolCallId: "call_1",
 				toolName: "read",
-				content: [{ type: "text", text: "# Extensions" }],
+				content: [{ type: "text", text: "# Workflows" }],
 				isError: false,
 				timestamp: 3,
 			}),
