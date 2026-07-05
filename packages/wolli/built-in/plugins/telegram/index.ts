@@ -311,7 +311,7 @@ export default defineIntegration({
 			});
 		});
 
-		// Swallow producer-side errors so a transient poll failure can't crash the host.
+		// Update-handler errors (middleware throwing while processing an inbound update) — log, don't rethrow.
 		bot.catch((err) => {
 			console.error("[telegram] bot error:", err.message);
 		});
@@ -324,6 +324,12 @@ export default defineIntegration({
 			.then(() => {
 				if (ctx.signal.aborted) return;
 				runner = run(bot);
+				// A fatal getUpdates error (e.g. a 409 conflict from a poll overlap on reload) rejects the
+				// runner task. bot.catch does NOT cover the runner's fetch loop, so catch it here — otherwise
+				// the rejection is unhandled and crashes the whole daemon, not just the poller.
+				runner.task()?.catch((err) => {
+					console.error("[telegram] long polling stopped:", err instanceof Error ? err.message : err);
+				});
 			})
 			.catch((err) => {
 				console.error("[telegram] failed to start long polling:", err instanceof Error ? err.message : err);
