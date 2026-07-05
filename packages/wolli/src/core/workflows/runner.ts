@@ -100,12 +100,6 @@ export class WorkflowRunner {
 	/** Controllers of in-flight runs; `stop()` fires them. */
 	private readonly activeRuns = new Set<AbortController>();
 	private readonly errorListeners = new Set<WorkflowErrorListener>();
-	/**
-	 * Index-time load failures: a workflow whose integration trigger carries an unstamped
-	 * descriptor (`service === ""`, i.e. the definition never passed through the integrations
-	 * loader) is not indexed and lands here instead of binding silently under `" event"`.
-	 */
-	private readonly _indexErrors: Array<{ path: string; error: string }> = [];
 
 	constructor(workflows: Workflow[], options: WorkflowRunnerOptions) {
 		this.backend = options.backend;
@@ -127,13 +121,6 @@ export class WorkflowRunner {
 				const bindings = this.lifecycleTriggers.get(definition.on);
 				if (bindings) bindings.push({ workflow, definition });
 				else this.lifecycleTriggers.set(definition.on, [{ workflow, definition }]);
-			} else if (definition.on.service === "") {
-				// An unstamped descriptor means the integration definition was not loaded from
-				// integrations/, so the trigger addresses no real service — fail the index.
-				this._indexErrors.push({
-					path: workflow.path,
-					error: `workflow '${workflow.name}': integration definition was not loaded from integrations/ (event descriptor has no service)`,
-				});
 			} else {
 				const key = this.triggerKey(definition.on.service, definition.on.event);
 				const bindings = this.integrationTriggers.get(key);
@@ -141,11 +128,6 @@ export class WorkflowRunner {
 				else this.integrationTriggers.set(key, [{ workflow, definition }]);
 			}
 		}
-	}
-
-	/** Index-time load failures (unstamped integration triggers), surfaced in the resource summary. */
-	get indexErrors(): ReadonlyArray<{ path: string; error: string }> {
-		return this._indexErrors;
 	}
 
 	/** Journals of every run this runner has executed, in start order — the observability seam. */

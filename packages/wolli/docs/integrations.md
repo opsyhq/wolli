@@ -42,7 +42,7 @@ const telegram = defineIntegration({
 export default telegram;
 ```
 
-The exported value is more than configuration. It is a typed handle other files import: a workflow binds `telegram.events.message` as a trigger and calls `sendMessage` through `ctx.integration(telegram)`.
+The exported value is more than configuration. It is a typed handle other files import: a workflow binds an event with `telegram.on("message", run)` and calls `sendMessage` through `ctx.integration(telegram)`.
 
 ## Accounts and onboarding
 
@@ -77,7 +77,7 @@ async onboard(ctx) {
 
 `events` maps each event name to a TypeBox payload schema. Inside `run`, the producer publishes with `ctx.emit("message", data)`, and wolli validates `data` against the declared schema at that boundary. An invalid payload is dropped and reported on the error sink; it is never delivered. `emit` never throws back into the producer, so no `try`/`catch` is needed around it.
 
-The definition exposes each event as a typed descriptor: `telegram.events.message` is inert data carrying the service, the event name, and the payload type. Its only use is as a workflow trigger, where it types the handler's payload from the schema. See [Workflows](./workflows.md) for triggers.
+The definition exposes each event two ways: `telegram.on("message", run)` binds it to a workflow directly, and `telegram.events.message` is the inert descriptor it funnels through — data carrying the service, the event name, and the payload type. Either way the handler's payload is typed from the schema. See [Workflows](./workflows.md) for triggers.
 
 ## Actions
 

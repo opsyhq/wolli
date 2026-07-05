@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import chalk from "chalk";
 import { CONFIG_DIR_NAME } from "../config.ts";
 import { loadThemeFromPath, type Theme } from "../theme/theme.ts";
@@ -23,7 +23,7 @@ import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
 import { createSourceInfo, type SourceInfo } from "./source-info.ts";
 import { loadTools } from "./tools/loader.ts";
-import type { LoadedTool, LoadToolsResult } from "./tools/types.ts";
+import type { LoadToolsResult, Tool } from "./tools/types.ts";
 
 const require = createRequire(import.meta.url);
 
@@ -135,30 +135,6 @@ export function loadProjectContextFiles(options: {
 	contextFiles.push(...ancestorContextFiles);
 
 	return contextFiles;
-}
-
-/**
- * Service name for a package-declared integration entry, derived from the ORIGINAL
- * source identity in the resolve metadata. A local package's root `index.ts` entry is
- * loaded from the MATERIALIZED install dir (`.plugins/local/<slug>-<hash>/index.ts`),
- * so the loader's basename rule would stamp the hash-suffixed store dir's name; the
- * original source dir's basename is the service everyone else (integrations.json,
- * store, onboarding) keys by. npm/git installs need no override — their install dirs
- * (`node_modules/<name>`, `git/<host>/<path>`) already end in the package name.
- * Returns undefined wherever the loader's basename rule is already right (flat
- * agent-home files, nested package entries), deferring to it.
- */
-export function deriveIntegrationServiceName(entryPath: string, metadata: PathMetadata): string | undefined {
-	if (metadata.origin !== "package" || !metadata.baseDir || !isLocalPath(metadata.source)) {
-		return undefined;
-	}
-	if (
-		dirname(resolve(entryPath)) !== resolve(metadata.baseDir) ||
-		basename(entryPath, extname(entryPath)) !== "index"
-	) {
-		return undefined;
-	}
-	return basename(resolvePath(metadata.source));
 }
 
 export interface DefaultResourceLoaderOptions {
@@ -449,10 +425,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const getEnabledPaths = (resources: ResolvedResource[]): string[] =>
 			getEnabledResources(resources).map((r) => r.path);
 		const enabledExtensions = getEnabledPaths(resolvedPaths.extensions);
-		const enabledIntegrations = getEnabledResources(resolvedPaths.integrations).map((r) => ({
-			path: r.path,
-			service: deriveIntegrationServiceName(r.path, r.metadata),
-		}));
+		const enabledIntegrations = getEnabledPaths(resolvedPaths.integrations);
 		const enabledWorkflows = getEnabledPaths(resolvedPaths.workflows);
 		const enabledHooks = getEnabledPaths(resolvedPaths.hooks);
 		const enabledTools = getEnabledPaths(resolvedPaths.tools);
@@ -800,7 +773,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	/** Mirror of `applyIntegrationSourceInfo` for tools/ definitions. */
-	private applyToolSourceInfo(tools: LoadedTool[], metadataByPath: Map<string, PathMetadata>): void {
+	private applyToolSourceInfo(tools: Tool[], metadataByPath: Map<string, PathMetadata>): void {
 		for (const tool of tools) {
 			tool.sourceInfo =
 				this.findSourceInfoForPath(tool.path, undefined, metadataByPath) ??

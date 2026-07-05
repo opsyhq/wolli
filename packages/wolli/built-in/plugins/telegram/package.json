@@ -5,7 +5,7 @@
 	"type": "module",
 	"wolli": {
 		"integrations": ["./index.ts"],
-		"workflows": ["./telegram-inbound.ts", "./telegram-reply.ts", "./telegram-typing.ts"]
+		"workflows": ["./telegram-chat.ts"]
 	},
 	"dependencies": {
 		"grammy": "1.44.0",

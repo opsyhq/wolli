@@ -18,8 +18,7 @@ Every agent lives under `~/.wolli/agents/<name>/`:
 ├── integrations/
 │   └── telegram.ts
 ├── workflows/
-│   ├── telegram-inbound.ts
-│   └── telegram-reply.ts
+│   └── telegram-chat.ts
 ├── hooks/
 ├── tools/
 ├── providers/
@@ -46,20 +45,17 @@ A new agent needs none of the capability folders. wolli writes `SOUL.md` with yo
 
 ## The files are the interface
 
-Identity comes from the path. A workflow's name is its filename, and moving or renaming the file moves its identity with it. This file defines a workflow named `telegram-inbound`:
+Identity comes from the path. A workflow's name is its export binding — a `default` export takes the filename — and a file may hold several. This file defines a workflow named `inbound`:
 
 ```ts
-// ~/.wolli/agents/assistant/workflows/telegram-inbound.ts
-import { defineWorkflow } from "wolli";
+// ~/.wolli/agents/assistant/workflows/telegram-chat.ts
 import telegram from "../integrations/telegram";
 
-export default defineWorkflow({
-  on: telegram.events.message, // msg is typed from the event schema
-  async run(msg, ctx) {
-    const [match] = await ctx.agent.findSessions({ "telegram:chat": String(msg.chatId) });
-    const session = await ctx.agent.openSession(match.id); // create-if-missing elided
-    await session.sendUserMessage(msg.text, { deliverAs: "followUp" });
-  },
+// msg is typed from the event schema
+export const inbound = telegram.on("message", async (msg, ctx) => {
+  const [match] = await ctx.agent.findSessions({ "telegram:chat": String(msg.chatId) });
+  const session = await ctx.agent.openSession(match.id); // create-if-missing elided
+  await session.sendUserMessage(msg.text, { deliverAs: "followUp" });
 });
 ```
 

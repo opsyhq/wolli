@@ -69,16 +69,9 @@ export function defineTool<TParams extends TSchema, TDetails = unknown>(
 	return definition;
 }
 
-/** The widest definition shape the loader/runtime handles — a `defineTool` result with the generics erased. */
-export type LoadedToolDefinition = ToolDefinition<TSchema, unknown>;
-
-/**
- * A loaded tool module — mirror of `Integration`/`Hook`: the definition plus its file
- * identity. Keeps the `Loaded` prefix where siblings use the bare noun (`Workflow`/`Hook`)
- * because the bare `Tool` in this folder is the built-in `AgentTool` alias.
- */
-export interface LoadedTool {
-	definition: LoadedToolDefinition;
+/** A loaded tool module — mirror of `Integration`/`Workflow`: the definition plus its file identity. */
+export interface Tool {
+	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
 	path: string;
 	resolvedPath: string;
@@ -86,6 +79,6 @@ export interface LoadedTool {
 
 /** Mirror of `LoadIntegrationsResult`. */
 export interface LoadToolsResult {
-	tools: LoadedTool[];
+	tools: Tool[];
 	errors: Array<{ path: string; error: string }>;
 }

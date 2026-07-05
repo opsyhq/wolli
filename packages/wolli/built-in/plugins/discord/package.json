@@ -5,7 +5,7 @@
 	"type": "module",
 	"wolli": {
 		"integrations": ["./index.ts"],
-		"workflows": ["./discord-inbound.ts", "./discord-reply.ts", "./discord-typing.ts"]
+		"workflows": ["./discord-chat.ts"]
 	},
 	"dependencies": {
 		"discord.js": "14.26.4"

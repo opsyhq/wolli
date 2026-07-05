@@ -3,9 +3,8 @@
  *
  * This integration faces the network, holds the bot token, and emits a `message`
  * event per inbound Telegram message. It does not touch sessions or the agent; the
- * routing workflows (`telegram-inbound.ts`, `telegram-reply.ts`, `telegram-typing.ts`,
- * declared under `wolli.workflows`) map those events onto sessions and are resolved in
- * place by the package manager. In-memory transport state that outlives a single call —
+ * routing workflows (`telegram-chat.ts`, declared under `wolli.workflows`) map those
+ * events onto sessions and are resolved in place by the package manager. In-memory transport state that outlives a single call —
  * the "typing…" keep-alive timers and the BotFather command menu — lives here, since
  * workflow files hold no module state.
  *

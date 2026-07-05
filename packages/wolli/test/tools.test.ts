@@ -16,7 +16,6 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Api, fauxAssistantMessage, fauxToolCall, type Model, registerFauxProvider } from "@earendil-works/pi-ai";
-import type { AgentToolResult } from "@opsyhq/agent";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import { getAgentDir } from "../src/config.ts";
@@ -26,16 +25,10 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { Session } from "../src/core/extensions/types.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { IntegrationStore } from "../src/core/integration-store.ts";
-import {
-	defineIntegration,
-	IntegrationRunner,
-	loadIntegrationFromDefinition,
-	loadIntegrations,
-} from "../src/core/integrations/index.ts";
+import { IntegrationRunner, loadIntegrations } from "../src/core/integrations/index.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { loadTools } from "../src/core/tools/loader.ts";
-import { wrapAuthoredTool } from "../src/core/tools/tool-definition-wrapper.ts";
 import { defineTool, type ToolContext, type ToolDefinition } from "../src/core/tools/types.ts";
 import type { IntegrationHandleOf, IntegrationKey } from "../src/core/workflows/types.ts";
 import { defineTool as barrelDefineTool } from "../src/index.ts";
@@ -136,103 +129,6 @@ describe("loadTools", () => {
 });
 
 // ============================================================================
-// wrapAuthoredTool (the AgentTool bridge)
-// ============================================================================
-
-describe("wrapAuthoredTool", () => {
-	it("copies the definition surface and threads ctx, result, and onUpdate", async () => {
-		const seen: { toolCallId?: string; text?: string; ctx?: ToolContext } = {};
-		const definition = defineTool({
-			name: "echo",
-			label: "Echo",
-			description: "Echoes text.",
-			parameters: Type.Object({ text: Type.String() }),
-			executionMode: "sequential",
-			async execute(toolCallId, { text }, _signal, onUpdate, ctx) {
-				seen.toolCallId = toolCallId;
-				seen.text = text;
-				seen.ctx = ctx;
-				onUpdate?.({ content: [{ type: "text", text: "partial" }], details: "partial" });
-				return { content: [{ type: "text", text }], details: "final" };
-			},
-		});
-		const session = {} as Session;
-		const ctx: ToolContext = {
-			session,
-			integration: () => {
-				throw new Error("unused in this test");
-			},
-		};
-
-		const wrapped = wrapAuthoredTool(definition, () => ctx);
-
-		expect(wrapped.name).toBe("echo");
-		expect(wrapped.label).toBe("Echo");
-		expect(wrapped.executionMode).toBe("sequential");
-
-		const updates: AgentToolResult<unknown>[] = [];
-		const result = await wrapped.execute("call-1", { text: "hi" }, undefined, (partial) => updates.push(partial));
-
-		expect(seen.toolCallId).toBe("call-1");
-		expect(seen.text).toBe("hi");
-		expect(seen.ctx?.session).toBe(session);
-		expect(updates).toEqual([{ content: [{ type: "text", text: "partial" }], details: "partial" }]);
-		expect(result.content).toEqual([{ type: "text", text: "hi" }]);
-		expect(result.details).toBe("final");
-	});
-
-	it("resolves ctx.integration action calls against a live IntegrationRunner", async () => {
-		const heartbeat = defineIntegration({
-			account: Type.Object({}),
-			actions: {
-				ping: {
-					parameters: Type.Object({}),
-					execute: async () => ({ ok: true }),
-				},
-			},
-		});
-		const integration = loadIntegrationFromDefinition(heartbeat, "<heartbeat>");
-		const runner = new IntegrationRunner(
-			[integration],
-			process.cwd(),
-			IntegrationAccountStorage.inMemory({ heartbeat: {} }),
-			IntegrationStore.inMemory(),
-		);
-		runner.bindCore();
-
-		const definition = defineTool({
-			name: "ping_heartbeat",
-			label: "Ping Heartbeat",
-			description: "Pings the heartbeat integration.",
-			parameters: Type.Object({}),
-			async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-				const pong = await ctx.integration(heartbeat).ping({});
-				return { content: [{ type: "text", text: JSON.stringify(pong) }], details: pong };
-			},
-		});
-
-		// The flat handle over the runner surface — the same shape the runtime's ctx builder produces.
-		const ctx: ToolContext = {
-			session: {} as Session,
-			integration: <TActions>(key: IntegrationKey<TActions>) => {
-				const handle = runner.getIntegration(key.service);
-				const capability = runner.getServiceCapabilities().find((c) => c.service === key.service);
-				const actions: Record<string, (params: unknown) => Promise<unknown>> = {};
-				for (const action of capability?.actions ?? []) {
-					actions[action] = (params) => handle.call(action, params);
-				}
-				return actions as IntegrationHandleOf<TActions>;
-			},
-		};
-
-		const wrapped = wrapAuthoredTool(definition, () => ctx);
-		const result = await wrapped.execute("call-1", {}, undefined, undefined);
-
-		expect(result.details).toEqual({ ok: true });
-	});
-});
-
-// ============================================================================
 // Full-runtime wiring (mirror of extensions.test.ts)
 // ============================================================================
 
@@ -263,24 +159,7 @@ export default defineTool({
 });
 `;
 
-// Registers an extension tool named "echo" — the collision loser once tools/echo.ts exists.
-const ECHO_EXTENSION_SOURCE = `
-import { Type } from "typebox";
-
-export default function echoExtension(pi) {
-	pi.registerTool({
-		name: "echo",
-		label: "Extension Echo",
-		description: "Extension-registered echo.",
-		parameters: Type.Object({ text: Type.String() }),
-		async execute(_toolCallId, params) {
-			return { content: [{ type: "text", text: String(params.text) }] };
-		},
-	});
-}
-`;
-
-// Collides with the built-in read tool — must be dropped with an error diagnostic.
+// Collides with the built-in read tool — the harness rejects the duplicate name.
 const READ_SHADOW_TOOL_SOURCE = `
 import { Type } from "typebox";
 import { defineTool } from "wolli";
@@ -469,25 +348,14 @@ describe("tools subsystem wiring", () => {
 		await runtime.cleanup();
 	});
 
-	it("dedupes name collisions: base tools beat authored, authored beat extension-registered", async () => {
+	it("rejects a tools/ tool that shadows a built-in tool name", async () => {
 		const agentDir = getAgentDir(AGENT);
 		writeFileSync(join(agentDir, "tools", "read.ts"), READ_SHADOW_TOOL_SOURCE, "utf-8");
-		mkdirSync(join(agentDir, "extensions"), { recursive: true });
-		writeFileSync(join(agentDir, "extensions", "echo-ext.ts"), ECHO_EXTENSION_SOURCE, "utf-8");
 
 		const { runtime } = makeRuntime();
 		await runtime.start();
-		const session = await runtime.createSession();
-
-		const toolNames = session.harness.getTools().map((tool) => tool.name);
-		expect(toolNames.filter((name) => name === "echo")).toHaveLength(1);
-		expect(toolNames.filter((name) => name === "read")).toHaveLength(1);
-
-		const diagnostics = runtime.getResourceSummary().diagnostics;
-		expect(
-			diagnostics.some((d) => d.type === "error" && d.message.includes('"read"') && d.path?.endsWith("read.ts")),
-		).toBe(true);
-		expect(diagnostics.some((d) => d.type === "warning" && d.message.includes('"echo"'))).toBe(true);
+		// The harness rejects duplicate tool names, so a tools/read.ts collides with the built-in read.
+		await expect(runtime.createSession()).rejects.toThrow(/[Dd]uplicate tool name/);
 		await runtime.cleanup();
 	});
 
@@ -590,12 +458,12 @@ describe("built-in cron tool", () => {
 			},
 		};
 
-		const wrapped = wrapAuthoredTool(cron, () => ctx);
-		const result = await wrapped.execute(
+		const result = await cron.execute(
 			"call-1",
 			{ action: "add", prompt: "digest", everyMs: 60000 },
 			undefined,
 			undefined,
+			ctx,
 		);
 
 		// The reply confirms the add ran; the store confirms the session tags were snapshotted.

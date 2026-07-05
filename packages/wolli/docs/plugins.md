@@ -80,7 +80,7 @@ Example manifest (modeled on the shipped Telegram plugin; see the [worked exampl
   "type": "module",
   "wolli": {
     "integrations": ["./index.ts"],
-    "workflows": ["./telegram-inbound.ts", "./telegram-reply.ts", "./telegram-typing.ts"]
+    "workflows": ["./telegram-chat.ts"]
   },
   "dependencies": {
     "grammy": "1.44.0",
@@ -263,12 +263,11 @@ The shipped Telegram plugin (`packages/wolli/plugins/telegram/`) is the canonica
 
 ```
 telegram/
-├── package.json          # "wolli": { integrations: ["./index.ts"], workflows: ["./telegram-inbound.ts", "./telegram-reply.ts", "./telegram-typing.ts"] }
+├── package.json          # "wolli": { integrations: ["./index.ts"], workflows: ["./telegram-chat.ts"] }
 ├── index.ts              # transport: long-polls grammY, holds the bot token, emits a `message` event,
 │                         #   exposes sendMessage / startTyping / stopTyping, declares onboard
-├── telegram-inbound.ts   # workflow: routes each message into a per-chat session by tag (and /commands)
-├── telegram-reply.ts     # workflow: on agent_end, ships the reply back through the transport
-└── telegram-typing.ts    # workflow: on agent_start, starts the typing indicator
+└── telegram-chat.ts      # workflows: inbound routes each message into a per-chat session by tag
+                          #   (and /commands); typing on agent_start; reply on agent_end
 ```
 
 Its manifest:
@@ -281,7 +280,7 @@ Its manifest:
   "type": "module",
   "wolli": {
     "integrations": ["./index.ts"],
-    "workflows": ["./telegram-inbound.ts", "./telegram-reply.ts", "./telegram-typing.ts"]
+    "workflows": ["./telegram-chat.ts"]
   },
   "dependencies": {
     "grammy": "1.44.0",

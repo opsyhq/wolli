@@ -122,8 +122,7 @@ import {
 	createWriteTool,
 } from "./tools/index.ts";
 import { createMemoryTool } from "./tools/memory.ts";
-import { wrapAuthoredTool, wrapToolDefinition } from "./tools/tool-definition-wrapper.ts";
-import type { LoadedTool, ToolContext } from "./tools/types.ts";
+import type { Tool, ToolContext } from "./tools/types.ts";
 import { loadWorkflows } from "./workflows/loader.ts";
 import { WorkflowRunner } from "./workflows/runner.ts";
 import type { AgentEventMap, IntegrationHandleOf, IntegrationKey, WorkflowSession } from "./workflows/types.ts";
@@ -295,9 +294,10 @@ export type SessionLifecycleEvent =
 
 /** The per-session tool set + frozen prompt the runtime builds for an `AgentSession`. */
 interface SessionTooling {
+	/** The built-in suite; on reload these keep their prior active state. */
 	baseTools: AgentTool[];
-	extensionTools: AgentTool[];
-	authoredTools: AgentTool[];
+	/** Loaded tools/ definitions plus extension-registered tools; these auto-activate on reload. */
+	tools: AgentTool[];
 	systemPrompt: string;
 	systemPromptOptions: BuildSystemPromptOptions;
 }
@@ -351,12 +351,10 @@ export class AgentRuntime {
 	private _workflowLoadErrors: { path: string; error: string }[] = [];
 	/** Hook load failures from the last build, surfaced in the resource summary. */
 	private _hookLoadErrors: { path: string; error: string }[] = [];
-	/** Authored tools/ definitions from the last build, merged into every session's tooling. */
-	private _authoredTools: LoadedTool[] = [];
+	/** Loaded tools/ definitions from the last build, merged into every session's tooling. */
+	private _tools: Tool[] = [];
 	/** Tool load failures from the last build, surfaced in the resource summary. */
 	private _toolLoadErrors: { path: string; error: string }[] = [];
-	/** Tool name-collision diagnostics from the last tooling build, surfaced in the resource summary. */
-	private _toolDiagnostics: ResourceDiagnostic[] = [];
 	/** Skill name collisions from the last build, surfaced in the resource summary. */
 	private _skillDiagnostics: ResourceDiagnostic[] = [];
 	/** Graceful-shutdown handler installed by the host mode (default no-op). */
@@ -615,13 +613,12 @@ export class AgentRuntime {
 			...this._toolLoadErrors.map(
 				({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path }),
 			),
-			...this._toolDiagnostics,
 			...this._skillDiagnostics,
 			...runner.getCommandDiagnostics(),
 		];
 		return {
 			extensions: this._extensionCount,
-			tools: this._authoredTools.length,
+			tools: this._tools.length,
 			skills: this._skills.length,
 			prompts: this._promptTemplates.length,
 			commands: runner.getRegisteredCommands().length,
@@ -631,8 +628,7 @@ export class AgentRuntime {
 
 	/** Granular capability lists for the agent detail page, against a session's harness. */
 	getToolInfos(harness: AgentHarness): ToolInfo[] {
-		const runner = this.extensionRunner;
-		const registered = new Map(runner.getAllRegisteredTools().map((rt) => [rt.definition.name, rt]));
+		const registered = new Map(this._tools.map((tool) => [tool.definition.name, tool]));
 		return harness.getTools().map((tool) => {
 			const rt = registered.get(tool.name);
 			if (rt) {
@@ -723,25 +719,19 @@ export class AgentRuntime {
 			session.systemPrompt = tooling.systemPrompt;
 			session.systemPromptOptions = tooling.systemPromptOptions;
 			await harness.setResources(toHarnessResources(this._skills, this._promptTemplates));
-			const nextToolNames = new Set(
-				[...tooling.baseTools, ...tooling.extensionTools, ...tooling.authoredTools].map((tool) => tool.name),
-			);
-			// Active = previously-active tools that still exist, plus all extension + authored tools
-			// (so newly registered/added ones become active); the filter drops tools that were removed.
+			const nextToolNames = new Set([...tooling.baseTools, ...tooling.tools].map((tool) => tool.name));
+			// Active = previously-active tools that still exist, plus all loaded/registered tools
+			// (so newly added ones become active); the filter drops tools that were removed.
 			const activeToolNames = [
 				...new Set([
 					...harness
 						.getActiveTools()
 						.map((tool) => tool.name)
 						.filter((toolName) => nextToolNames.has(toolName)),
-					...tooling.extensionTools.map((tool) => tool.name),
-					...tooling.authoredTools.map((tool) => tool.name),
+					...tooling.tools.map((tool) => tool.name),
 				]),
 			];
-			await harness.setTools(
-				[...tooling.baseTools, ...tooling.extensionTools, ...tooling.authoredTools],
-				activeToolNames,
-			);
+			await harness.setTools([...tooling.baseTools, ...tooling.tools], activeToolNames);
 		}
 
 		previousRunner.invalidate();
@@ -1130,8 +1120,7 @@ export class AgentRuntime {
 			generation: ++this._workflowGeneration,
 			runsDir: getAgentRunsDir(name),
 		});
-		// Load errors from the loader plus index errors from the runner (unstamped triggers).
-		this._workflowLoadErrors = [...workflowsResult.errors, ...workflowRunner.indexErrors];
+		this._workflowLoadErrors = workflowsResult.errors;
 		this._workflowRunner = workflowRunner;
 
 		// One HookRunner per load generation: the interception chains rebuild from the discovered
@@ -1144,7 +1133,7 @@ export class AgentRuntime {
 		// Authored tools (tools/): inert definitions the loader already evaluated; every
 		// session's tooling build wraps and merges them (`buildSessionTooling`).
 		const toolsResult = loader.getTools();
-		this._authoredTools = toolsResult.tools;
+		this._tools = toolsResult.tools;
 		this._toolLoadErrors = toolsResult.errors;
 
 		// This runtime owns the approval policy (store + gate). The shared run-target map's gate routes
@@ -1258,7 +1247,7 @@ export class AgentRuntime {
 			model: args.model,
 			thinkingLevel: args.thinkingLevel,
 			systemPrompt: () => tooling.systemPrompt,
-			tools: [...tooling.baseTools, ...tooling.extensionTools, ...tooling.authoredTools],
+			tools: [...tooling.baseTools, ...tooling.tools],
 			resources: toHarnessResources(this._skills, this._promptTemplates),
 			getApiKeyAndHeaders: (requestModel) => this.resolveRequestAuth(requestModel, args.metadata.id),
 			// No configured model → the session runs on the placeholder sentinel (contextWindow 0, no auth),
@@ -1285,7 +1274,6 @@ export class AgentRuntime {
 		const { name } = this.options;
 		const agentDir = getAgentDir(name);
 		const config = this.config;
-		const runner = this.extensionRunner;
 		const environments = session.environments;
 		const defaultEnv = environments.targets[environments.default];
 
@@ -1302,51 +1290,25 @@ export class AgentRuntime {
 			// Only bash gets the target map; the rest stay on the default target.
 			createBashTool(defaultEnv, { environments }),
 		];
-		// Authored tools (tools/), deduped by name against the base suite: a base-tool name is
-		// reserved, so a colliding authored tool is dropped with an error diagnostic. The ctx
-		// factory is lazy, so `execute` sees the live facade and the current generation's
-		// integration runner at execution time.
-		const baseToolNames = new Set(baseTools.map((tool) => tool.name));
-		const toolDiagnostics: ResourceDiagnostic[] = [];
-		const authoredByName = new Map<string, LoadedTool>();
-		for (const tool of this._authoredTools) {
-			if (baseToolNames.has(tool.definition.name)) {
-				toolDiagnostics.push({
-					type: "error",
-					message: `Tool "${tool.definition.name}" collides with a built-in tool and was dropped`,
-					path: tool.path,
-				});
-				continue;
-			}
-			authoredByName.set(tool.definition.name, tool);
-		}
-		const authoredTools: AgentTool[] = [...authoredByName.values()].map((tool) =>
-			wrapAuthoredTool(
-				tool.definition,
-				(): ToolContext => ({
-					session: session.facade,
-					integration: <TActions>(key: IntegrationKey<TActions>) => this.createToolIntegrationHandle(key),
-				}),
-			),
-		);
-
-		// Wrap each extension-registered tool into an engine AgentTool. The context factory is lazy
-		// (`runner.createContext(session)`) so it resolves the live binding at execution time, scoped
-		// to this session. An extension tool colliding with an authored tool loses to it (warning),
-		// so migrating a tool off `registerTool` onto tools/ is monotone.
-		const extensionTools: AgentTool[] = runner
-			.getAllRegisteredTools()
-			.filter((rt) => {
-				if (!authoredByName.has(rt.definition.name)) return true;
-				toolDiagnostics.push({
-					type: "warning",
-					message: `Extension tool "${rt.definition.name}" is superseded by the tools/ definition of the same name`,
-					path: authoredByName.get(rt.definition.name)?.path,
-				});
-				return false;
-			})
-			.map((rt) => wrapToolDefinition(rt.definition, () => runner.createContext(session)));
-		this._toolDiagnostics = toolDiagnostics;
+		// Tools from the tools/ capability, wrapped into engine AgentTools. The ctx is built lazily
+		// inside `execute`, so it sees the live facade and the current generation's integration runner.
+		const tools: AgentTool[] = this._tools.map((tool) => {
+			const definition = tool.definition;
+			return {
+				name: definition.name,
+				label: definition.label,
+				description: definition.description,
+				parameters: definition.parameters,
+				executionMode: definition.executionMode,
+				execute: (toolCallId, params, signal, onUpdate) => {
+					const ctx: ToolContext = {
+						session: session.facade,
+						integration: <TActions>(key: IntegrationKey<TActions>) => this.createToolIntegrationHandle(key),
+					};
+					return definition.execute(toolCallId, params, signal, onUpdate, ctx);
+				},
+			};
+		});
 
 		// Read curated files ONCE and freeze them into the prompt. Mid-session edits persist to disk
 		// but only enter a session's prompt when it is next built.
@@ -1355,7 +1317,7 @@ export class AgentRuntime {
 		// no trust gate. Re-read on each session build, like curated memory (frozen-snapshot rule).
 		const appendPath = join(agentDir, "APPEND_SYSTEM.md");
 		const appendSystemPrompt = existsSync(appendPath) ? readFileSync(appendPath, "utf-8") : undefined;
-		const selectedTools = [...baseTools, ...extensionTools, ...authoredTools].map((t) => t.name);
+		const selectedTools = [...baseTools, ...tools].map((t) => t.name);
 		const systemPromptOptions: BuildSystemPromptOptions = {
 			config,
 			cwd: agentDir,
@@ -1367,7 +1329,7 @@ export class AgentRuntime {
 			appendSystemPrompt,
 		};
 		const systemPrompt = buildSystemPrompt(systemPromptOptions);
-		return { baseTools, extensionTools, authoredTools, systemPrompt, systemPromptOptions };
+		return { baseTools, tools, systemPrompt, systemPromptOptions };
 	}
 
 	/**
@@ -1396,10 +1358,7 @@ export class AgentRuntime {
 	refreshSessionTools(session: AgentSession): void {
 		const tooling = this.buildSessionTooling(session);
 		const active = session.harness.getActiveTools().map((tool) => tool.name);
-		void session.harness.setTools(
-			[...tooling.baseTools, ...tooling.extensionTools, ...tooling.authoredTools],
-			active,
-		);
+		void session.harness.setTools([...tooling.baseTools, ...tooling.tools], active);
 	}
 
 	/**

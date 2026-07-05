@@ -289,9 +289,9 @@ export {
 	DEFAULT_MAX_LINES,
 	defineTool,
 	formatSize,
-	type LoadedTool,
 	type LoadToolsResult,
 	loadTools,
+	type Tool,
 	type ToolContext,
 	type ToolDefinition,
 	type TruncationOptions,
@@ -329,6 +329,7 @@ export {
 	type StepEndRecord,
 	type StepKind,
 	type StepStartRecord,
+	type WolliApi,
 	type Workflow,
 	type WorkflowAgent,
 	type WorkflowAgentBackend,
@@ -339,6 +340,7 @@ export {
 	WorkflowRunner,
 	type WorkflowRunnerOptions,
 	type WorkflowSession,
+	wolli,
 } from "./core/workflows/index.ts";
 export { type RunDaemonOptions, runDaemon } from "./server.ts";
 export {

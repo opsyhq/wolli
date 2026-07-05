@@ -1,7 +1,7 @@
 /**
  * Discord transport — holds the bot token, emits a `message` event per inbound message;
- * the routing workflows (`discord-inbound.ts`, `discord-reply.ts`, `discord-typing.ts`,
- * declared under `wolli.workflows`) map those onto sessions. Transport is the gateway
+ * the routing workflows (`discord-chat.ts`, declared under `wolli.workflows`) map those
+ * onto sessions. Transport is the gateway
  * WebSocket (discord.js `Client`); snowflake ids stay `string`. MESSAGE CONTENT is a
  * privileged intent — enable it in the Developer Portal or `m.content` is empty. The
  * "typing…" keep-alive timers live here, since workflow files hold no module state.

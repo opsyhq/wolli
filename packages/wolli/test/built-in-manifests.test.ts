@@ -20,11 +20,11 @@ const MODULE_KEYS = ["integrations", "workflows", "tools"] as const;
 const EXPECTED: Record<string, { integrations: string[]; workflows: string[]; tools?: string[] }> = {
 	telegram: {
 		integrations: ["./index.ts"],
-		workflows: ["./telegram-inbound.ts", "./telegram-reply.ts", "./telegram-typing.ts"],
+		workflows: ["./telegram-chat.ts"],
 	},
 	discord: {
 		integrations: ["./index.ts"],
-		workflows: ["./discord-inbound.ts", "./discord-reply.ts", "./discord-typing.ts"],
+		workflows: ["./discord-chat.ts"],
 	},
 	scheduler: {
 		integrations: ["./index.ts"],

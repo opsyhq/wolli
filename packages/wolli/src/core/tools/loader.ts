@@ -15,12 +15,12 @@ import { isBunBinary, isBundled } from "../../config.ts";
 import { canonicalizePath, resolvePath } from "../../utils/paths.ts";
 import { getAliases, VIRTUAL_MODULES } from "../extensions/loader.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
-import type { LoadedTool, LoadedToolDefinition, LoadToolsResult } from "./types.ts";
+import type { LoadToolsResult, Tool, ToolDefinition } from "./types.ts";
 
 const require = createRequire(import.meta.url);
 
 export async function loadTools(paths: string[], cwd: string): Promise<LoadToolsResult> {
-	const tools: LoadedTool[] = [];
+	const tools: Tool[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
 	const resolvedCwd = resolvePath(cwd);
 	const jiti = createJiti(import.meta.url, {
@@ -48,7 +48,7 @@ export async function loadTools(paths: string[], cwd: string): Promise<LoadTools
 				continue;
 			}
 			tools.push({
-				definition: definition as LoadedToolDefinition,
+				definition: definition as ToolDefinition,
 				sourceInfo: createSyntheticSourceInfo(toolPath, { source: "local", baseDir: path.dirname(resolvedPath) }),
 				path: toolPath,
 				resolvedPath,

@@ -24,6 +24,9 @@ import type { ExtensionUIContext } from "../extensions/types.ts";
 import type { IntegrationAccountRecord } from "../integration-account-storage.ts";
 import type { resolveConfigValueUncached } from "../resolve-config-value.ts";
 import type { SourceInfo } from "../source-info.ts";
+// Value import: `.on` funnels through defineWorkflow. The reverse edge (workflows importing
+// this file's descriptor types) is type-only, so the runtime dependency stays one-directional.
+import { defineWorkflow, type IntegrationWorkflowDefinition, type WorkflowContext } from "../workflows/types.ts";
 
 /**
  * The narrowed UI surface an integration's `onboard(ctx)` may use — the dialog
@@ -178,6 +181,14 @@ export interface IntegrationDefinition<
 	events: { [K in keyof TEvents]: IntegrationEventDescriptor<Static<TEvents[K]>> };
 	config: IntegrationDefinitionConfig<TAccount, TEvents, TActions>;
 	/**
+	 * Bind one of this integration's events to a workflow: `telegram.on("message", run)` — sugar
+	 * for `defineWorkflow({ on: telegram.events.message, run })`, funnelling through the same primitive.
+	 */
+	on<K extends keyof TEvents & string>(
+		event: K,
+		run: (payload: Static<TEvents[K]>, ctx: WorkflowContext) => void | Promise<void>,
+	): IntegrationWorkflowDefinition<Static<TEvents[K]>>;
+	/**
 	 * Phantom action-signature carrier (action name to call signature); never present at
 	 * runtime. `IntegrationKey`/`IntegrationHandleOf` read it to type `ctx.integration`.
 	 */
@@ -201,7 +212,18 @@ export function defineIntegration<
 	for (const [event, schema] of Object.entries(config.events ?? {})) {
 		events[event as keyof TEvents] = { kind: "integration", service: "", event, schema };
 	}
-	return { kind: "integration", service: "", events, config };
+	return {
+		kind: "integration",
+		service: "",
+		events,
+		config,
+		on<K extends keyof TEvents & string>(
+			event: K,
+			run: (payload: Static<TEvents[K]>, ctx: WorkflowContext) => void | Promise<void>,
+		): IntegrationWorkflowDefinition<Static<TEvents[K]>> {
+			return defineWorkflow({ on: events[event], run });
+		},
+	};
 }
 
 /** A loaded integration module — mirror of `Extension`. */

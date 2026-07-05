@@ -34,26 +34,30 @@ export async function loadWorkflows(paths: string[], cwd: string): Promise<LoadW
 			// Evict the entry so every load call re-evaluates it; nested modules stay cached
 			// (a subtree flush here would wipe the stamped integration modules).
 			delete require.cache[canonicalPath];
-			const definition = await jiti.import(canonicalPath, { default: true });
-			// Structural defineWorkflow-result check: a trigger (`on`) or the callable schema
-			// pair (`input`/`output`), plus the run function.
-			const shaped =
-				typeof definition === "object" &&
-				definition !== null &&
-				typeof (definition as { run?: unknown }).run === "function" &&
-				("on" in definition || ("input" in definition && "output" in definition));
-			if (!shaped) {
+			const module = await jiti.import(canonicalPath);
+			let found = false;
+			for (const [name, definition] of Object.entries(module as Record<string, unknown>)) {
+				// Structural defineWorkflow-result check: a trigger (`on`) or the callable schema
+				// pair (`input`/`output`), plus the run function.
+				const shaped =
+					typeof definition === "object" &&
+					definition !== null &&
+					typeof (definition as { run?: unknown }).run === "function" &&
+					("on" in definition || ("input" in definition && "output" in definition));
+				if (!shaped) continue;
+				workflows.push({
+					name: name === "default" ? path.basename(resolvedPath, path.extname(resolvedPath)) : name,
+					path: workflowPath,
+					definition: definition as WorkflowDefinition,
+				});
+				found = true;
+			}
+			if (!found) {
 				errors.push({
 					path: workflowPath,
 					error: `Workflow does not export a valid defineWorkflow definition as default: ${workflowPath}`,
 				});
-				continue;
 			}
-			workflows.push({
-				name: path.basename(resolvedPath, path.extname(resolvedPath)),
-				path: workflowPath,
-				definition: definition as WorkflowDefinition,
-			});
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			errors.push({ path: workflowPath, error: `Failed to load workflow: ${message}` });

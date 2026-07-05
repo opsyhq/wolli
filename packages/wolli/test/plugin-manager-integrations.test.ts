@@ -195,10 +195,10 @@ describe("DefaultPluginManager — integrations as a plugin resource", () => {
 		expect(result.tools.some((r) => r.path.endsWith("util.ts"))).toBe(false);
 	});
 
-	it("stamps a materialized package's integration with the original package dir's name", async () => {
+	it("stamps a materialized package's integration with its install dir basename", async () => {
 		// A local package is copied to a hash-suffixed store dir (`.plugins/local/telegram-<hash>/`),
-		// so the loader's basename rule alone would stamp `telegram-<hash>` as the service. The
-		// resource loader must thread the ORIGINAL source dir's name through instead.
+		// so the loader's basename rule stamps `telegram-<hash>` as the service — the same name every
+		// producer/consumer keys by, declared by where it loads from, not derived from the source.
 		const pkgDir = join(tempDir, "telegram");
 		mkdirSync(pkgDir, { recursive: true });
 		writeFileSync(
@@ -224,8 +224,8 @@ export default defineIntegration({});
 		expect(integrations).toHaveLength(1);
 		// The fixture really exercised the materialized case: the entry lives in a hash-suffixed store dir…
 		expect(basename(dirname(integrations[0].resolvedPath))).toMatch(/^telegram-[0-9a-f]{12}$/);
-		// …yet the stamped service is the original package dir's name.
-		expect(integrations[0].service).toBe("telegram");
+		// …and the stamped service is exactly that install dir's basename.
+		expect(integrations[0].service).toBe(basename(dirname(integrations[0].resolvedPath)));
 	});
 
 	it("persists installs to the named agent's agent.json only, and round-trips on resolve", async () => {

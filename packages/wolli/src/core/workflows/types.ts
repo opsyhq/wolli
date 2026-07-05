@@ -198,6 +198,22 @@ export function defineWorkflow(definition: WorkflowDefinition): WorkflowDefiniti
 	return definition;
 }
 
+/**
+ * The agent lifecycle surface: `wolli.on("agent_end", run)` authors a lifecycle workflow the
+ * same way `defineWorkflow({ on: "agent_end", run })` does, but reads as binding to the agent.
+ */
+export interface WolliApi {
+	on<TEvent extends keyof AgentEventMap>(
+		event: TEvent,
+		run: LifecycleWorkflowDefinition<TEvent>["run"],
+	): LifecycleWorkflowDefinition<TEvent>;
+}
+
+/** The agent lifecycle surface; import it in a `workflows/` file to bind lifecycle events. */
+export const wolli: WolliApi = {
+	on: (event, run) => defineWorkflow({ on: event, run }),
+};
+
 /** Trigger kind of a workflow definition. */
 export type WorkflowKind = "integration" | "lifecycle" | "callable";
 
