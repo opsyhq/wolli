@@ -16,12 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { IntegrationAccountRecord } from "../src/core/integration-account-storage.ts";
 import { IntegrationAccountStorage } from "../src/core/integration-account-storage.ts";
 import { IntegrationStore } from "../src/core/integration-store.ts";
-import {
-	createIntegrationRuntime,
-	IntegrationRunner,
-	type IntegrationsAPI,
-	loadIntegrationFromFactory,
-} from "../src/core/integrations/index.ts";
+import { defineIntegration, IntegrationRunner, loadIntegrationFromDefinition } from "../src/core/integrations/index.ts";
 import { onboardIntegration } from "../src/core/integrations/onboarding.ts";
 import type { IntegrationOnboardContext, IntegrationOnboardUI } from "../src/core/integrations/types.ts";
 
@@ -48,25 +43,22 @@ afterEach(() => {
 
 type OnboardFn = (ctx: IntegrationOnboardContext) => Promise<IntegrationAccountRecord | undefined>;
 
-async function makeIntegration(onboard: OnboardFn | undefined) {
-	const runtime = createIntegrationRuntime();
-	const factory = (wolli: IntegrationsAPI) => {
-		wolli.registerIntegration({
-			name: "fakesvc",
-			account: Type.Object({ token: Type.String() }),
-			onboard,
-		});
-	};
-	return loadIntegrationFromFactory(factory, process.cwd(), runtime, join(tmp("wolli-onboard-int-"), "index.ts"));
+/** An inline `fakesvc` integration; the service name comes from the file basename. */
+function makeIntegration(onboard: OnboardFn | undefined) {
+	const definition = defineIntegration({
+		account: Type.Object({ token: Type.String() }),
+		onboard,
+	});
+	return loadIntegrationFromDefinition(definition, join(tmp("wolli-onboard-int-"), "fakesvc.ts"));
 }
 
 describe("onboardIntegration", () => {
 	it("persists the $ENV reference on success", async () => {
 		process.env.FAKE_ONBOARD_TOKEN = "secret-value";
-		const integration = await makeIntegration(async () => ({ token: "$FAKE_ONBOARD_TOKEN" }));
+		const integration = makeIntegration(async () => ({ token: "$FAKE_ONBOARD_TOKEN" }));
 		const accounts = IntegrationAccountStorage.inMemory({});
 
-		expect(accounts.has("fakesvc", "default")).toBe(false);
+		expect(accounts.has("fakesvc")).toBe(false);
 		const result = await onboardIntegration({
 			service: "fakesvc",
 			integrations: [integration],
@@ -75,9 +67,9 @@ describe("onboardIntegration", () => {
 		});
 
 		expect(result.status).toBe("connected");
-		expect(accounts.has("fakesvc", "default")).toBe(true);
+		expect(accounts.has("fakesvc")).toBe(true);
 		// The stored record is the $ENV reference, never the raw secret.
-		expect(accounts.get("fakesvc", "default")).toEqual({ token: "$FAKE_ONBOARD_TOKEN" });
+		expect(accounts.get("fakesvc")).toEqual({ token: "$FAKE_ONBOARD_TOKEN" });
 		delete process.env.FAKE_ONBOARD_TOKEN;
 	});
 
@@ -85,7 +77,7 @@ describe("onboardIntegration", () => {
 		// A raw secret (no `$`/`!` prefix) is a literal: it survives the resolve+schema
 		// check unchanged. This is how Telegram onboarding stores the pasted BotFather
 		// token directly, not as a reference.
-		const integration = await makeIntegration(async () => ({ token: "raw-literal-token" }));
+		const integration = makeIntegration(async () => ({ token: "raw-literal-token" }));
 		const accounts = IntegrationAccountStorage.inMemory({});
 
 		const result = await onboardIntegration({
@@ -96,12 +88,12 @@ describe("onboardIntegration", () => {
 		});
 
 		expect(result.status).toBe("connected");
-		expect(accounts.get("fakesvc", "default")).toEqual({ token: "raw-literal-token" });
+		expect(accounts.get("fakesvc")).toEqual({ token: "raw-literal-token" });
 	});
 
 	it("does not persist a record that fails validation", async () => {
 		// token: 123 is not a string → schema check fails before persist → never stored.
-		const integration = await makeIntegration(async () => ({ token: 123 }));
+		const integration = makeIntegration(async () => ({ token: 123 }));
 		const accounts = IntegrationAccountStorage.inMemory({});
 
 		const result = await onboardIntegration({
@@ -112,11 +104,11 @@ describe("onboardIntegration", () => {
 		});
 
 		expect(result.status).toBe("error");
-		expect(accounts.has("fakesvc", "default")).toBe(false);
+		expect(accounts.has("fakesvc")).toBe(false);
 	});
 
 	it("returns cancelled (and stores nothing) when onboard yields undefined", async () => {
-		const integration = await makeIntegration(async () => undefined);
+		const integration = makeIntegration(async () => undefined);
 		const accounts = IntegrationAccountStorage.inMemory({});
 
 		const result = await onboardIntegration({
@@ -127,12 +119,12 @@ describe("onboardIntegration", () => {
 		});
 
 		expect(result.status).toBe("cancelled");
-		expect(accounts.has("fakesvc", "default")).toBe(false);
+		expect(accounts.has("fakesvc")).toBe(false);
 	});
 
 	it("reports not-found / no-onboard cleanly", async () => {
 		const accounts = IntegrationAccountStorage.inMemory({});
-		const withOnboard = await makeIntegration(async () => ({ token: "x" }));
+		const withOnboard = makeIntegration(async () => ({ token: "x" }));
 
 		const notFound = await onboardIntegration({
 			service: "missing",
@@ -142,7 +134,7 @@ describe("onboardIntegration", () => {
 		});
 		expect(notFound.status).toBe("not-found");
 
-		const noOnboard = await makeIntegration(undefined);
+		const noOnboard = makeIntegration(undefined);
 		const result = await onboardIntegration({
 			service: "fakesvc",
 			integrations: [noOnboard],
@@ -156,27 +148,17 @@ describe("onboardIntegration", () => {
 describe("IntegrationRunner.start idempotency (go-live)", () => {
 	it("attaches a configured producer exactly once across repeated start()", async () => {
 		let runs = 0;
-		const runtime = createIntegrationRuntime();
-		const factory = (wolli: IntegrationsAPI) => {
-			wolli.registerIntegration({
-				name: "fakesvc",
-				account: Type.Object({ token: Type.String() }),
-				events: { ping: Type.Object({}) },
-				run() {
-					runs++;
-					return () => {};
-				},
-			});
-		};
-		const integration = await loadIntegrationFromFactory(factory, process.cwd(), runtime, "<fake>");
-		const accounts = IntegrationAccountStorage.inMemory({ fakesvc: { default: { token: "literal" } } });
-		const runner = new IntegrationRunner(
-			[integration],
-			runtime,
-			process.cwd(),
-			accounts,
-			IntegrationStore.inMemory(),
-		);
+		const definition = defineIntegration({
+			account: Type.Object({ token: Type.String() }),
+			events: { ping: Type.Object({}) },
+			run() {
+				runs++;
+				return () => {};
+			},
+		});
+		const integration = loadIntegrationFromDefinition(definition, "<fakesvc>");
+		const accounts = IntegrationAccountStorage.inMemory({ fakesvc: { token: "literal" } });
+		const runner = new IntegrationRunner([integration], process.cwd(), accounts, IntegrationStore.inMemory());
 		runner.bindCore();
 
 		await runner.start();

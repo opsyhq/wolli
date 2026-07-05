@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { basename, join, resolve, sep } from "node:path";
 import chalk from "chalk";
 import { CONFIG_DIR_NAME } from "../config.ts";
@@ -12,15 +13,19 @@ import { AgentSettingsManager } from "./agent-settings-manager.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } from "./extensions/loader.ts";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
-import { createIntegrationRuntime, loadIntegrations } from "./integrations/loader.ts";
+import { loadIntegrations } from "./integrations/loader.ts";
 import type { IntegrationRunner } from "./integrations/runner.ts";
-import type { Integration, IntegrationRuntime, LoadIntegrationsResult } from "./integrations/types.ts";
+import type { Integration, LoadIntegrationsResult } from "./integrations/types.ts";
 import { DefaultPluginManager, type PathMetadata, type ResolvedResource } from "./plugin-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
 import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
 import { createSourceInfo, type SourceInfo } from "./source-info.ts";
+import { loadTools } from "./tools/loader.ts";
+import type { LoadToolsResult, Tool } from "./tools/types.ts";
+
+const require = createRequire(import.meta.url);
 
 export interface ResourceExtensionPaths {
 	skillPaths?: Array<{ path: string; metadata: PathMetadata }>;
@@ -31,13 +36,13 @@ export interface ResourceExtensionPaths {
 export interface ResourceLoaderReloadOptions {
 	resolveProjectTrust?: (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean>;
 	/**
-	 * Build the integration producer runner from the loaded integrations + runtime.
+	 * Build the integration producer runner from the loaded integrations.
 	 * Injected so the loader can construct the (unbound) runner — and thread it into
 	 * the extension loader so extensions wire `getIntegration` at load time — without
 	 * importing the account store. The caller (agent-runtime) owns the runner's
 	 * bind/start/stop lifecycle.
 	 */
-	buildIntegrationRunner?: (input: { integrations: Integration[]; runtime: IntegrationRuntime }) => IntegrationRunner;
+	buildIntegrationRunner?: (input: { integrations: Integration[] }) => IntegrationRunner;
 }
 
 export interface ResourceLoader {
@@ -46,6 +51,7 @@ export interface ResourceLoader {
 	getIntegrationRunner(): IntegrationRunner | undefined;
 	getWorkflowPaths(): string[];
 	getHookPaths(): string[];
+	getTools(): LoadToolsResult;
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
@@ -211,6 +217,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private workflowPaths: string[];
 	/** Resolved hook file paths; the runtime loads them itself so it owns the per-generation runner swap. */
 	private hookPaths: string[];
+	/** Loaded tools/ definitions — inert (no runner), merged into session tooling by the runtime. */
+	private toolsResult: LoadToolsResult;
 	private skills: Skill[];
 	private skillDiagnostics: ResourceDiagnostic[];
 	private prompts: PromptTemplate[];
@@ -257,9 +265,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.appendSystemPromptOverride = options.appendSystemPromptOverride;
 
 		this.extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
-		this.integrationsResult = { integrations: [], errors: [], runtime: createIntegrationRuntime() };
+		this.integrationsResult = { integrations: [], errors: [] };
 		this.workflowPaths = [];
 		this.hookPaths = [];
+		this.toolsResult = { tools: [], errors: [] };
 		this.skills = [];
 		this.skillDiagnostics = [];
 		this.prompts = [];
@@ -294,6 +303,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getHookPaths(): string[] {
 		return this.hookPaths;
+	}
+
+	getTools(): LoadToolsResult {
+		return this.toolsResult;
 	}
 
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] } {
@@ -376,6 +389,20 @@ export class DefaultResourceLoader implements ResourceLoader {
 			this.settingsManager.setProjectTrusted(projectTrusted);
 		}
 
+		// New load generation: evict the previous generation's modules under the agent home so
+		// the resource loaders' jiti (moduleCache: true, backed by the process-global CommonJS
+		// cache) re-evaluates edited files. Loaders realpath before importing and jiti resolves
+		// nested imports through realpath, so the canonicalized prefix matches every key a
+		// generation wrote. Keys under node_modules stay cached: plugin dependency trees are
+		// immutable between installs, and re-evaluating their module graphs (grammy, discord.js)
+		// on every reload is the dominant reload cost.
+		const canonicalRoot = canonicalizePath(this.cwd) + sep;
+		for (const key of Object.keys(require.cache)) {
+			if (key.startsWith(canonicalRoot) && !key.includes(`${sep}node_modules${sep}`)) {
+				delete require.cache[key];
+			}
+		}
+
 		// reload() preserves SettingsManager.projectTrusted and reloads settings for that trust state.
 		await this.settingsManager.reload();
 		const resolvedPaths = await this.pluginManager.resolve();
@@ -401,6 +428,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const enabledIntegrations = getEnabledPaths(resolvedPaths.integrations);
 		const enabledWorkflows = getEnabledPaths(resolvedPaths.workflows);
 		const enabledHooks = getEnabledPaths(resolvedPaths.hooks);
+		const enabledTools = getEnabledPaths(resolvedPaths.tools);
 		const enabledSkillResources = getEnabledResources(resolvedPaths.skills);
 		const enabledPrompts = getEnabledPaths(resolvedPaths.prompts);
 		const enabledThemes = getEnabledPaths(resolvedPaths.themes);
@@ -412,14 +440,23 @@ export class DefaultResourceLoader implements ResourceLoader {
 		// its paired extension), overwrite their synthetic source info with the real
 		// resolve() metadata, then build the (unbound) producer runner. The runner is
 		// threaded into the extension loader below so extensions can wire `getIntegration`
-		// at load time. The caller owns its bind/start/stop lifecycle.
+		// at load time. The caller owns its bind/start/stop lifecycle. Integrations
+		// evaluate before the runtime's workflow load, so descriptors are stamped before
+		// workflow triggers are indexed.
 		const integrationsResult = await loadIntegrations(enabledIntegrations, this.cwd);
 		this.applyIntegrationSourceInfo(integrationsResult.integrations, metadataByPath);
 		this.integrationsResult = integrationsResult;
 		this.integrationRunner = options?.buildIntegrationRunner?.({
 			integrations: integrationsResult.integrations,
-			runtime: integrationsResult.runtime,
 		});
+
+		// Tools arm — after the integration arm, so a tool importing its integration file
+		// resolves (through the shared module cache) to the stamped definition. Tools are
+		// inert defineTool definitions: no runner, no runtime object — session tooling
+		// assembly stays workflow-independent by construction.
+		const toolsResult = await loadTools(enabledTools, this.cwd);
+		this.applyToolSourceInfo(toolsResult.tools, metadataByPath);
+		this.toolsResult = toolsResult;
 
 		// Workflows arm: resolution only. The runtime runs loadWorkflows over these paths
 		// itself so it can stamp the load generation and swap the WorkflowRunner.
@@ -732,6 +769,16 @@ export class DefaultResourceLoader implements ResourceLoader {
 				this.findSourceInfoForPath(integration.path, undefined, metadataByPath) ??
 				this.findSourceInfoForPath(integration.resolvedPath, undefined, metadataByPath) ??
 				integration.sourceInfo;
+		}
+	}
+
+	/** Mirror of `applyIntegrationSourceInfo` for tools/ definitions. */
+	private applyToolSourceInfo(tools: Tool[], metadataByPath: Map<string, PathMetadata>): void {
+		for (const tool of tools) {
+			tool.sourceInfo =
+				this.findSourceInfoForPath(tool.path, undefined, metadataByPath) ??
+				this.findSourceInfoForPath(tool.resolvedPath, undefined, metadataByPath) ??
+				tool.sourceInfo;
 		}
 	}
 

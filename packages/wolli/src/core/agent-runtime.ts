@@ -122,10 +122,10 @@ import {
 	createWriteTool,
 } from "./tools/index.ts";
 import { createMemoryTool } from "./tools/memory.ts";
-import { wrapToolDefinition } from "./tools/tool-definition-wrapper.ts";
+import type { Tool, ToolContext } from "./tools/types.ts";
 import { loadWorkflows } from "./workflows/loader.ts";
 import { WorkflowRunner } from "./workflows/runner.ts";
-import type { AgentEventMap, WorkflowSession } from "./workflows/types.ts";
+import type { AgentEventMap, IntegrationHandleOf, IntegrationKey, WorkflowSession } from "./workflows/types.ts";
 
 /**
  * Placeholder model handed to the engine when the agent has none configured yet (fresh agent / logged
@@ -171,7 +171,7 @@ export interface AgentRuntimeOptions {
 	modelRegistry: ModelRegistry;
 	/**
 	 * Per-agent integration account store. Constructed once (process-scoped) and
-	 * must survive `/reload` so per-account state isn't lost.
+	 * must survive `/reload` so configured records aren't lost.
 	 */
 	integrationAccounts: IntegrationAccountStorage;
 	/**
@@ -294,8 +294,10 @@ export type SessionLifecycleEvent =
 
 /** The per-session tool set + frozen prompt the runtime builds for an `AgentSession`. */
 interface SessionTooling {
+	/** The built-in suite; on reload these keep their prior active state. */
 	baseTools: AgentTool[];
-	extensionTools: AgentTool[];
+	/** Loaded tools/ definitions plus extension-registered tools; these auto-activate on reload. */
+	tools: AgentTool[];
 	systemPrompt: string;
 	systemPromptOptions: BuildSystemPromptOptions;
 }
@@ -349,6 +351,10 @@ export class AgentRuntime {
 	private _workflowLoadErrors: { path: string; error: string }[] = [];
 	/** Hook load failures from the last build, surfaced in the resource summary. */
 	private _hookLoadErrors: { path: string; error: string }[] = [];
+	/** Loaded tools/ definitions from the last build, merged into every session's tooling. */
+	private _tools: Tool[] = [];
+	/** Tool load failures from the last build, surfaced in the resource summary. */
+	private _toolLoadErrors: { path: string; error: string }[] = [];
 	/** Skill name collisions from the last build, surfaced in the resource summary. */
 	private _skillDiagnostics: ResourceDiagnostic[] = [];
 	/** Graceful-shutdown handler installed by the host mode (default no-op). */
@@ -604,11 +610,15 @@ export class AgentRuntime {
 			...this._hookLoadErrors.map(
 				({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path }),
 			),
+			...this._toolLoadErrors.map(
+				({ path, error }): ResourceDiagnostic => ({ type: "error", message: error, path }),
+			),
 			...this._skillDiagnostics,
 			...runner.getCommandDiagnostics(),
 		];
 		return {
 			extensions: this._extensionCount,
+			tools: this._tools.length,
 			skills: this._skills.length,
 			prompts: this._promptTemplates.length,
 			commands: runner.getRegisteredCommands().length,
@@ -618,8 +628,7 @@ export class AgentRuntime {
 
 	/** Granular capability lists for the agent detail page, against a session's harness. */
 	getToolInfos(harness: AgentHarness): ToolInfo[] {
-		const runner = this.extensionRunner;
-		const registered = new Map(runner.getAllRegisteredTools().map((rt) => [rt.definition.name, rt]));
+		const registered = new Map(this._tools.map((tool) => [tool.definition.name, tool]));
 		return harness.getTools().map((tool) => {
 			const rt = registered.get(tool.name);
 			if (rt) {
@@ -644,7 +653,7 @@ export class AgentRuntime {
 	getIntegrationInfos(): IntegrationInfo[] {
 		return (this._integrationRunner?.getServiceCapabilities() ?? []).map((cap) => ({
 			service: cap.service,
-			configured: this.integrationAccounts.listAccounts(cap.service).length > 0,
+			configured: this.integrationAccounts.has(cap.service),
 			actions: cap.actions,
 			events: cap.events,
 		}));
@@ -710,19 +719,19 @@ export class AgentRuntime {
 			session.systemPrompt = tooling.systemPrompt;
 			session.systemPromptOptions = tooling.systemPromptOptions;
 			await harness.setResources(toHarnessResources(this._skills, this._promptTemplates));
-			const nextToolNames = new Set([...tooling.baseTools, ...tooling.extensionTools].map((tool) => tool.name));
-			// Active = previously-active tools that still exist, plus all extension tools (so newly
-			// registered ones become active); the filter drops tools an extension removed.
+			const nextToolNames = new Set([...tooling.baseTools, ...tooling.tools].map((tool) => tool.name));
+			// Active = previously-active tools that still exist, plus all loaded/registered tools
+			// (so newly added ones become active); the filter drops tools that were removed.
 			const activeToolNames = [
 				...new Set([
 					...harness
 						.getActiveTools()
 						.map((tool) => tool.name)
 						.filter((toolName) => nextToolNames.has(toolName)),
-					...tooling.extensionTools.map((tool) => tool.name),
+					...tooling.tools.map((tool) => tool.name),
 				]),
 			];
-			await harness.setTools([...tooling.baseTools, ...tooling.extensionTools], activeToolNames);
+			await harness.setTools([...tooling.baseTools, ...tooling.tools], activeToolNames);
 		}
 
 		previousRunner.invalidate();
@@ -1076,8 +1085,8 @@ export class AgentRuntime {
 			noContextFiles: true,
 		});
 		await loader.reload({
-			buildIntegrationRunner: ({ integrations, runtime }) =>
-				new IntegrationRunner(integrations, runtime, agentDir, integrationAccounts, integrationStore),
+			buildIntegrationRunner: ({ integrations }) =>
+				new IntegrationRunner(integrations, agentDir, integrationAccounts, integrationStore),
 		});
 
 		const integrationRunner = loader.getIntegrationRunner();
@@ -1099,8 +1108,7 @@ export class AgentRuntime {
 		// generation against this build's integration runner.
 		this._workflowRunner?.stop();
 		const workflowsResult = await loadWorkflows(loader.getWorkflowPaths(), agentDir);
-		this._workflowLoadErrors = workflowsResult.errors;
-		this._workflowRunner = new WorkflowRunner(workflowsResult.workflows, {
+		const workflowRunner = new WorkflowRunner(workflowsResult.workflows, {
 			backend: {
 				cwd: agentDir,
 				findSessions: (filter) => this.findSessions(filter),
@@ -1112,6 +1120,8 @@ export class AgentRuntime {
 			generation: ++this._workflowGeneration,
 			runsDir: getAgentRunsDir(name),
 		});
+		this._workflowLoadErrors = workflowsResult.errors;
+		this._workflowRunner = workflowRunner;
 
 		// One HookRunner per load generation: the interception chains rebuild from the discovered
 		// hook files. Unlike the workflow runner there is nothing to stop — the outgoing runner holds
@@ -1119,6 +1129,12 @@ export class AgentRuntime {
 		const hooksResult = await loadHooks(loader.getHookPaths(), agentDir);
 		this._hookLoadErrors = hooksResult.errors;
 		this._hookRunner = new HookRunner(hooksResult.hooks);
+
+		// Authored tools (tools/): inert definitions the loader already evaluated; every
+		// session's tooling build wraps and merges them (`buildSessionTooling`).
+		const toolsResult = loader.getTools();
+		this._tools = toolsResult.tools;
+		this._toolLoadErrors = toolsResult.errors;
 
 		// This runtime owns the approval policy (store + gate). The shared run-target map's gate routes
 		// host-escalation dialogs raised through `wolli.environments` to a live session's UI (best-
@@ -1177,6 +1193,12 @@ export class AgentRuntime {
 		runner.bindCore();
 		await previousIntegrationRunner?.stop();
 		integrationRunner.bindCore();
+		// Every validated integration event fans out to this generation's workflow triggers.
+		// Subscribed before start() so no early producer emit is missed; on reload the runner
+		// pair is discarded together, so no unsubscribe bookkeeping.
+		integrationRunner.onEvent((evt) => {
+			void workflowRunner.dispatchIntegrationEvent(evt.service, evt.event, evt.data);
+		});
 		await integrationRunner.start();
 		this._applyInteractiveContext();
 	}
@@ -1225,7 +1247,7 @@ export class AgentRuntime {
 			model: args.model,
 			thinkingLevel: args.thinkingLevel,
 			systemPrompt: () => tooling.systemPrompt,
-			tools: [...tooling.baseTools, ...tooling.extensionTools],
+			tools: [...tooling.baseTools, ...tooling.tools],
 			resources: toHarnessResources(this._skills, this._promptTemplates),
 			getApiKeyAndHeaders: (requestModel) => this.resolveRequestAuth(requestModel, args.metadata.id),
 			// No configured model → the session runs on the placeholder sentinel (contextWindow 0, no auth),
@@ -1252,7 +1274,6 @@ export class AgentRuntime {
 		const { name } = this.options;
 		const agentDir = getAgentDir(name);
 		const config = this.config;
-		const runner = this.extensionRunner;
 		const environments = session.environments;
 		const defaultEnv = environments.targets[environments.default];
 
@@ -1269,12 +1290,25 @@ export class AgentRuntime {
 			// Only bash gets the target map; the rest stay on the default target.
 			createBashTool(defaultEnv, { environments }),
 		];
-		// Wrap each extension-registered tool into an engine AgentTool. The context factory is lazy
-		// (`runner.createContext(session)`) so it resolves the live binding at execution time, scoped
-		// to this session.
-		const extensionTools: AgentTool[] = runner
-			.getAllRegisteredTools()
-			.map((rt) => wrapToolDefinition(rt.definition, () => runner.createContext(session)));
+		// Tools from the tools/ capability, wrapped into engine AgentTools. The ctx is built lazily
+		// inside `execute`, so it sees the live facade and the current generation's integration runner.
+		const tools: AgentTool[] = this._tools.map((tool) => {
+			const definition = tool.definition;
+			return {
+				name: definition.name,
+				label: definition.label,
+				description: definition.description,
+				parameters: definition.parameters,
+				executionMode: definition.executionMode,
+				execute: (toolCallId, params, signal, onUpdate) => {
+					const ctx: ToolContext = {
+						session: session.facade,
+						integration: <TActions>(key: IntegrationKey<TActions>) => this.createToolIntegrationHandle(key),
+					};
+					return definition.execute(toolCallId, params, signal, onUpdate, ctx);
+				},
+			};
+		});
 
 		// Read curated files ONCE and freeze them into the prompt. Mid-session edits persist to disk
 		// but only enter a session's prompt when it is next built.
@@ -1283,7 +1317,7 @@ export class AgentRuntime {
 		// no trust gate. Re-read on each session build, like curated memory (frozen-snapshot rule).
 		const appendPath = join(agentDir, "APPEND_SYSTEM.md");
 		const appendSystemPrompt = existsSync(appendPath) ? readFileSync(appendPath, "utf-8") : undefined;
-		const selectedTools = [...baseTools, ...extensionTools].map((t) => t.name);
+		const selectedTools = [...baseTools, ...tools].map((t) => t.name);
 		const systemPromptOptions: BuildSystemPromptOptions = {
 			config,
 			cwd: agentDir,
@@ -1295,14 +1329,36 @@ export class AgentRuntime {
 			appendSystemPrompt,
 		};
 		const systemPrompt = buildSystemPrompt(systemPromptOptions);
-		return { baseTools, extensionTools, systemPrompt, systemPromptOptions };
+		return { baseTools, tools, systemPrompt, systemPromptOptions };
 	}
 
-	/** Re-apply a session's base + extension tool set — backs the facade's `refreshTools()`. */
+	/**
+	 * Build the flat action handle authored-tool `ctx.integration(key)` returns — the
+	 * workflow runner's handle over the same runner surface, minus the run journal. A plain
+	 * object over the registered action names: a typo'd or stale action fails as a missing
+	 * property, and no property is fabricated. The cast covers the phantom `_actions`
+	 * carrier, which has no runtime counterpart to derive from.
+	 */
+	private createToolIntegrationHandle<TActions>(key: IntegrationKey<TActions>): IntegrationHandleOf<TActions> {
+		if (key.service === "") {
+			throw new Error("integration definition was not loaded from integrations/");
+		}
+		const integrationRunner = this._integrationRunner;
+		if (!integrationRunner) throw new Error("AgentRuntime not started.");
+		const handle = integrationRunner.getIntegration(key.service);
+		const capability = integrationRunner.getServiceCapabilities().find((c) => c.service === key.service);
+		const actions: Record<string, (params: unknown) => Promise<unknown>> = {};
+		for (const action of capability?.actions ?? []) {
+			actions[action] = (params) => handle.call(action, params);
+		}
+		return actions as IntegrationHandleOf<TActions>;
+	}
+
+	/** Re-apply a session's base + extension + authored tool set — backs the facade's `refreshTools()`. */
 	refreshSessionTools(session: AgentSession): void {
 		const tooling = this.buildSessionTooling(session);
 		const active = session.harness.getActiveTools().map((tool) => tool.name);
-		void session.harness.setTools([...tooling.baseTools, ...tooling.extensionTools], active);
+		void session.harness.setTools([...tooling.baseTools, ...tooling.tools], active);
 	}
 
 	/**
@@ -1379,13 +1435,19 @@ export class AgentSession {
 		this.mode = init.mode;
 		this.systemPromptOptions = { cwd: runtime.getCwd() };
 		this.facade = this.buildFacade();
-		// The facade's methods are closures over this session, so detaching them is safe.
+		// The facade's methods are closures over this session, so detaching them is safe;
+		// `model` stays a getter so it tracks the live model rather than snapshotting here.
+		const facade = this.facade;
 		this.workflowSession = {
 			id: this.getSessionId(),
-			prompt: this.facade.prompt,
-			sendUserMessage: this.facade.sendUserMessage,
-			getTags: this.facade.getTags,
-			setTags: this.facade.setTags,
+			prompt: facade.prompt,
+			sendUserMessage: facade.sendUserMessage,
+			getTags: facade.getTags,
+			setTags: facade.setTags,
+			getSessionName: facade.getSessionName,
+			get model() {
+				return facade.model;
+			},
 		};
 	}
 

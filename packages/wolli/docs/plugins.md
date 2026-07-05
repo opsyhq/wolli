@@ -80,7 +80,7 @@ Example manifest (modeled on the shipped Telegram plugin; see the [worked exampl
   "type": "module",
   "wolli": {
     "integrations": ["./index.ts"],
-    "workflows": ["./telegram-inbound.ts", "./telegram-reply.ts"]
+    "workflows": ["./telegram-chat.ts"]
   },
   "dependencies": {
     "grammy": "1.44.0",
@@ -263,11 +263,11 @@ The shipped Telegram plugin (`packages/wolli/plugins/telegram/`) is the canonica
 
 ```
 telegram/
-├── package.json          # "wolli": { integrations: ["./index.ts"], workflows: ["./telegram-inbound.ts", "./telegram-reply.ts"] }
+├── package.json          # "wolli": { integrations: ["./index.ts"], workflows: ["./telegram-chat.ts"] }
 ├── index.ts              # transport: long-polls grammY, holds the bot token, emits a `message` event,
 │                         #   exposes sendMessage / startTyping / stopTyping, declares onboard
-├── telegram-inbound.ts   # workflow: routes each message into a per-chat session by tag
-└── telegram-reply.ts     # workflow: on agent_end, ships the reply back through the transport
+└── telegram-chat.ts      # workflows: inbound routes each message into a per-chat session by tag
+                          #   (and /commands); typing on agent_start; reply on agent_end
 ```
 
 Its manifest:
@@ -280,7 +280,7 @@ Its manifest:
   "type": "module",
   "wolli": {
     "integrations": ["./index.ts"],
-    "workflows": ["./telegram-inbound.ts", "./telegram-reply.ts"]
+    "workflows": ["./telegram-chat.ts"]
   },
   "dependencies": {
     "grammy": "1.44.0",
@@ -303,4 +303,4 @@ wolli my-agent plugins install ./packages/wolli/plugins/telegram
 
 The transport and both workflows resolve from that one copy. The transport starts; once the account is configured, the workflows bind its events and bidirectional chat is live. To package it for others, publish the same directory to npm (`wolli-integration-telegram`) or a git repo and have them install with `npm:` / `git:` instead of the local path.
 
-The shipped scheduler plugin has the identical shape — a transport under `"integrations"`, its routing under `"workflows"`, one runtime dep (`croner`), and the same `wolli` peer — confirming the channel pattern is the convention, not Telegram-specific. The only manifest differences are the package name, the dependency, and the workflow filenames.
+The shipped scheduler plugin has the same shape with one addition — a transport under `"integrations"`, its `due` routing under `"workflows"`, the agent-facing `cron` tool under `"tools"`, one runtime dep (`croner`), and the same `wolli` peer — confirming the channel pattern is the convention, not Telegram-specific. The only differences are the package name, the dependency, the workflow/tool filenames, and that a scheduler ships a tool the model calls rather than typing indicators.

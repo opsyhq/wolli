@@ -197,7 +197,7 @@ export function getAgentConfigPath(name: string): string {
 	return join(getAgentDir(name), "agent.json");
 }
 
-/** Path to an agent's integrations.json (per-agent `(service, account)` credential registry). */
+/** Path to an agent's integrations.json (per-agent per-service credential registry). */
 export function getAgentIntegrationsPath(name: string): string {
 	return join(getAgentDir(name), "integrations.json");
 }

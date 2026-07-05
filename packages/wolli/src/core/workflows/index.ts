@@ -27,6 +27,7 @@ export type {
 	StepEndRecord,
 	StepKind,
 	StepStartRecord,
+	WolliApi,
 	Workflow,
 	WorkflowAgent,
 	WorkflowContext,
@@ -36,4 +37,4 @@ export type {
 	WorkflowKind,
 	WorkflowSession,
 } from "./types.ts";
-export { defineWorkflow, getWorkflowKind } from "./types.ts";
+export { defineWorkflow, getWorkflowKind, wolli } from "./types.ts";

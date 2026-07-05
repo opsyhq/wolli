@@ -1,3 +1,5 @@
+// The tool authoring surface (docs/tools.md): one defineTool file per tool under tools/.
+
 export {
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -26,6 +28,7 @@ export {
 	type GrepToolDetails,
 	type GrepToolInput,
 } from "./grep.ts";
+export { loadTools } from "./loader.ts";
 export {
 	createLsTool,
 	createLsToolDefinition,
@@ -49,6 +52,8 @@ export {
 	truncateLine,
 	truncateTail,
 } from "./truncate.ts";
+export type { LoadToolsResult, Tool, ToolContext, ToolDefinition } from "./types.ts";
+export { defineTool } from "./types.ts";
 export {
 	createWriteTool,
 	createWriteToolDefinition,
@@ -57,7 +62,9 @@ export {
 
 import type { AgentTool } from "@opsyhq/agent";
 import type { Environment } from "../environments/types.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
+// Aliased: the unqualified `ToolDefinition` export above is the authored (tools/) type;
+// the built-in suite still types against the extension one until Phase 5.
+import type { ToolDefinition as ExtensionToolDefinition } from "../extensions/types.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition } from "./edit.ts";
 import { createFindTool, createFindToolDefinition } from "./find.ts";
@@ -66,8 +73,7 @@ import { createLsTool, createLsToolDefinition } from "./ls.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { createWriteTool, createWriteToolDefinition } from "./write.ts";
 
-export type Tool = AgentTool<any>;
-export type ToolDef = ToolDefinition<any, any>;
+export type ToolDef = ExtensionToolDefinition<any, any>;
 export type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
 export const allToolNames: Set<ToolName> = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 
@@ -97,7 +103,7 @@ export function createToolDefinition(toolName: ToolName, environment: Environmen
 	}
 }
 
-export function createTool(toolName: ToolName, environment: Environment, options?: ToolsOptions): Tool {
+export function createTool(toolName: ToolName, environment: Environment, options?: ToolsOptions): AgentTool<any> {
 	switch (toolName) {
 		case "read":
 			return createReadTool(environment, options?.read);
@@ -148,7 +154,7 @@ export function createAllToolDefinitions(environment: Environment, options?: Too
 	};
 }
 
-export function createCodingTools(environment: Environment, options?: ToolsOptions): Tool[] {
+export function createCodingTools(environment: Environment, options?: ToolsOptions): AgentTool<any>[] {
 	return [
 		createReadTool(environment, options?.read),
 		createBashTool(environment, options?.bash),
@@ -157,7 +163,7 @@ export function createCodingTools(environment: Environment, options?: ToolsOptio
 	];
 }
 
-export function createReadOnlyTools(environment: Environment, options?: ToolsOptions): Tool[] {
+export function createReadOnlyTools(environment: Environment, options?: ToolsOptions): AgentTool<any>[] {
 	return [
 		createReadTool(environment, options?.read),
 		createGrepTool(environment),
@@ -166,7 +172,7 @@ export function createReadOnlyTools(environment: Environment, options?: ToolsOpt
 	];
 }
 
-export function createAllTools(environment: Environment, options?: ToolsOptions): Record<ToolName, Tool> {
+export function createAllTools(environment: Environment, options?: ToolsOptions): Record<ToolName, AgentTool<any>> {
 	return {
 		read: createReadTool(environment, options?.read),
 		bash: createBashTool(environment, options?.bash),

@@ -6,8 +6,7 @@
  * event translation.
  *
  *  1. discovered skills are frozen into the system prompt the harness sends;
- *  2. an extension's registerTool reaches the harness AND its session_start
- *     lifecycle handler fires on create;
+ *  2. an extension's session_start lifecycle handler fires on create;
  *  3. an extension's message_end mutation is applied in place and persisted;
  *  4. createConversation() invalidates the superseded runner (a captured wolli goes stale).
  */
@@ -245,14 +244,11 @@ describe("extension subsystem wiring", () => {
 		await runtime.cleanup();
 	});
 
-	it("registers extension tools on the harness and fires session_start on create", async () => {
+	it("fires an extension's session_start handler on create", async () => {
 		const { runtime } = makeRuntime();
 		await runtime.start();
 
-		const conversation = await runtime.createSession();
-
-		// registerTool reached the harness alongside the built-ins.
-		expect(conversation.harness.getTools().map((tool) => tool.name)).toContain("test_echo");
+		await runtime.createSession();
 
 		// session_start fired with reason "new" (fresh build) — recorded by the extension.
 		const marker = JSON.parse(readFileSync(join(markerDir, "session_start.json"), "utf-8"));

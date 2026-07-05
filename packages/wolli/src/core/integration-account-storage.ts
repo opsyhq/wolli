@@ -1,11 +1,11 @@
 /**
  * Per-agent account storage for integrations.
  *
- * Each account record holds whatever one configured account needs — credentials
- * and plain config alike (e.g. heartbeat's `{ intervalMs }`). The on-disk shape is
- * nested `Record<service, Record<accountId, AccountRecord>>` (integrations are
- * multi-account). The store lives at `~/.wolli/agents/<name>/integrations.json`,
- * is process-scoped, and must survive `/reload` so per-account state isn't lost.
+ * Each service holds exactly ONE account record — whatever its configuration needs,
+ * credentials and plain config alike (e.g. heartbeat's `{ intervalMs }`). The on-disk
+ * shape is flat `Record<service, AccountRecord>`. The store lives at
+ * `~/.wolli/agents/<name>/integrations.json`, is process-scoped, and must survive
+ * `/reload` so configured records aren't lost.
  *
  * Pure persistence: stores and returns RAW records; the runner resolves + validates
  * them into `ctx.account`.
@@ -20,8 +20,8 @@ import { normalizePath } from "../utils/paths.ts";
 /** One configured account: an open bag of string/literal fields. */
 export type IntegrationAccountRecord = Record<string, unknown>;
 
-/** Nested on-disk shape: service → accountId → record. */
-export type IntegrationAccountStorageData = Record<string, Record<string, IntegrationAccountRecord>>;
+/** Flat on-disk shape: service → record. */
+export type IntegrationAccountStorageData = Record<string, IntegrationAccountRecord>;
 
 type LockResult<T> = {
 	result: T;
@@ -117,7 +117,7 @@ export class InMemoryIntegrationAccountStorageBackend implements IntegrationAcco
 }
 
 /**
- * Per-agent integration account store backed by a nested JSON file.
+ * Per-agent integration account store backed by a flat JSON file.
  */
 export class IntegrationAccountStorage {
 	private data: IntegrationAccountStorageData = {};
@@ -175,7 +175,7 @@ export class IntegrationAccountStorage {
 		}
 	}
 
-	private persistServiceChange(service: string, accounts: Record<string, IntegrationAccountRecord> | undefined): void {
+	private persistServiceChange(service: string, record: IntegrationAccountRecord | undefined): void {
 		if (this.loadError) {
 			return;
 		}
@@ -184,8 +184,8 @@ export class IntegrationAccountStorage {
 			this.storage.withLock((current) => {
 				const currentData = this.parseStorageData(current);
 				const merged: IntegrationAccountStorageData = { ...currentData };
-				if (accounts && Object.keys(accounts).length > 0) {
-					merged[service] = accounts;
+				if (record) {
+					merged[service] = record;
 				} else {
 					delete merged[service];
 				}
@@ -196,39 +196,26 @@ export class IntegrationAccountStorage {
 		}
 	}
 
-	/** Get an account record for `(service, accountId)`. */
-	get(service: string, accountId: string): IntegrationAccountRecord | undefined {
-		return this.data[service]?.[accountId] ?? undefined;
+	/** Get a service's account record. */
+	get(service: string): IntegrationAccountRecord | undefined {
+		return this.data[service] ?? undefined;
 	}
 
-	/** Set an account record, creating the inner per-service record on demand. */
-	set(service: string, accountId: string, record: IntegrationAccountRecord): void {
-		const accounts = { ...(this.data[service] ?? {}) };
-		accounts[accountId] = record;
-		this.data[service] = accounts;
-		this.persistServiceChange(service, accounts);
+	/** Set a service's account record. */
+	set(service: string, record: IntegrationAccountRecord): void {
+		this.data[service] = record;
+		this.persistServiceChange(service, record);
 	}
 
-	/** Remove an account; prunes the service key when its last account is removed. */
-	remove(service: string, accountId: string): void {
-		const accounts = { ...(this.data[service] ?? {}) };
-		delete accounts[accountId];
-		if (Object.keys(accounts).length > 0) {
-			this.data[service] = accounts;
-		} else {
-			delete this.data[service];
-		}
-		this.persistServiceChange(service, this.data[service]);
+	/** Remove a service's account record. */
+	remove(service: string): void {
+		delete this.data[service];
+		this.persistServiceChange(service, undefined);
 	}
 
-	/** Whether `(service, accountId)` has a configured record. */
-	has(service: string, accountId: string): boolean {
-		return Boolean(this.data[service] && accountId in this.data[service]);
-	}
-
-	/** Account ids configured under one service. */
-	listAccounts(service: string): string[] {
-		return this.data[service] ? Object.keys(this.data[service]) : [];
+	/** Whether the service has a configured record. */
+	has(service: string): boolean {
+		return service in this.data;
 	}
 
 	/** All configured service keys. */

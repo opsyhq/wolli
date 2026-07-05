@@ -33,13 +33,13 @@ response.
 
 ## Commands
 
-These commands are registered as the bot's command menu via BotFather on startup and
-are handled by the integration directly, not forwarded to the model:
+These commands are registered as the bot's command menu at producer startup and are
+handled locally by the inbound routing workflow, not forwarded to the model:
 
 | Command | Action |
 |---------|--------|
 | `/new` | Start a fresh session for this chat. The new session becomes the active one; the previous session stays addressable but new messages route to the new one. |
-| `/status` | Show the current session name and the model used in the last reply. |
+| `/status` | Show the current session name and its current model. |
 | `/help` | List the available commands. |
 
 Any other `/command` returns `Unknown command: /<name>. Try /help.`

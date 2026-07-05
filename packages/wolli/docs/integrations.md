@@ -42,23 +42,23 @@ const telegram = defineIntegration({
 export default telegram;
 ```
 
-The exported value is more than configuration. It is a typed handle other files import: a workflow binds `telegram.events.message` as a trigger and calls `sendMessage` through `ctx.integration(telegram)`.
+The exported value is more than configuration. It is a typed handle other files import: a workflow binds an event with `telegram.on("message", run)` and calls `sendMessage` through `ctx.integration(telegram)`.
 
 ## Accounts and onboarding
 
-Credentials live outside the code, in `integrations.json` in the agent home. Each service holds account records keyed by id; onboarding writes `default`.
+Credentials live outside the code, in `integrations.json` in the agent home. The file maps each service to its ONE account record; onboarding writes it.
 
 `~/.wolli/agents/assistant/integrations.json`
 
 ```json
 {
-  "telegram": {
-    "default": { "botToken": "$TELEGRAM_BOT_TOKEN" }
-  }
+  "telegram": { "botToken": "$TELEGRAM_BOT_TOKEN" }
 }
 ```
 
-Record values may be raw secrets or `$ENV`, `${ENV}`, or `!cmd` references. wolli resolves references on read, validates the resolved record against the `account` schema, and hands it to `run` and to actions as `ctx.account`. A record that fails the schema is reported and never reaches your code. The file is written `0o600`. Additional accounts are added by editing the file; a workflow selects one with `ctx.integration(telegram, "work")`.
+Record values may be raw secrets or `$ENV`, `${ENV}`, or `!cmd` references. wolli resolves references on read, validates the resolved record against the `account` schema, and hands it to `run` and to actions as `ctx.account`. A record that fails the schema is reported and never reaches your code. The file is written `0o600`.
+
+A second account is a second integration file: `telegram-work.ts` is the service `telegram-work`, with its own record, its own store, and its own producer, and workflows import the instance they mean. An integration that needs dynamic multi-tenancy models it inside its own account schema — an array of tenants, `onboard` collects them, `run` opens one connection per entry.
 
 `onboard(ctx)` is guided first-run setup. It runs on `plugins install` for an unconfigured service, or on demand via `plugins configure` (see [Plugins](./plugins.md)). It returns one account record to persist, or `undefined` to cancel. `ctx.ui` carries exactly four dialog primitives, `select`, `confirm`, `input`, and `notify`, because onboarding dialogs serialize to attached clients over the wire. The telegram service collects and verifies the token:
 
@@ -77,7 +77,7 @@ async onboard(ctx) {
 
 `events` maps each event name to a TypeBox payload schema. Inside `run`, the producer publishes with `ctx.emit("message", data)`, and wolli validates `data` against the declared schema at that boundary. An invalid payload is dropped and reported on the error sink; it is never delivered. `emit` never throws back into the producer, so no `try`/`catch` is needed around it.
 
-The definition exposes each event as a typed descriptor: `telegram.events.message` is inert data carrying the service, the event name, and the payload type. Its only use is as a workflow trigger, where it types the handler's payload from the schema. See [Workflows](./workflows.md) for triggers.
+The definition exposes each event two ways: `telegram.on("message", run)` binds it to a workflow directly, and `telegram.events.message` is the inert descriptor it funnels through — data carrying the service, the event name, and the payload type. Either way the handler's payload is typed from the schema. See [Workflows](./workflows.md) for triggers.
 
 ## Actions
 
@@ -87,7 +87,7 @@ Actions are not callable on the definition itself. A workflow calls them through
 
 ```typescript
 // inside a workflow handler
-const tg = ctx.integration(telegram); // account "default"
+const tg = ctx.integration(telegram);
 await tg.sendMessage({ chatId: 123456789, text: "Deployed." });
 ```
 
@@ -95,7 +95,7 @@ Transport state that must live in memory belongs in actions too. Telegram's typi
 
 ## The producer run(ctx)
 
-`run` is the long-lived half. It opens a connection or a timer loop and pushes each inbound item out with `ctx.emit`. wolli calls `run` once per `(service, account)` after the account record validates; two configured accounts mean two independent producers.
+`run` is the long-lived half. It opens a connection or a timer loop and pushes each inbound item out with `ctx.emit`. wolli calls `run` once per configured integration, after its account record validates: one producer per integration.
 
 `run` may return a disposer. On reload or shutdown wolli aborts `ctx.signal` and calls the disposer, so wire teardown to both paths and make it idempotent; both fire on every stop. A reload stops the old producer before starting the new one, which is what keeps a single poller on the token. Do not `await` a loop that never resolves; start it fire-and-forget and keep the handle for the disposer.
 

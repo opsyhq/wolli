@@ -141,15 +141,14 @@ export class WorkflowRunner {
 	}
 
 	/**
-	 * Fire every workflow bound to (service, event) — the seam the IntegrationRunner wires
-	 * into in Phase 2, which emits per (service, account). Runs execute inline and
-	 * sequentially; a failed run surfaces on the error sink and never throws back into the
-	 * emitting producer.
+	 * Fire every workflow bound to (service, event) — the seam the IntegrationRunner's
+	 * validated-event firehose wires into. Runs execute inline and sequentially; a failed
+	 * run surfaces on the error sink and never throws back into the emitting producer.
 	 */
-	async dispatchIntegrationEvent(service: string, account: string, event: string, payload: unknown): Promise<void> {
+	async dispatchIntegrationEvent(service: string, event: string, payload: unknown): Promise<void> {
 		const bindings = this.integrationTriggers.get(this.triggerKey(service, event));
 		if (!bindings) return;
-		const trigger: RunTrigger = { kind: "integration", service, account, event, payload };
+		const trigger: RunTrigger = { kind: "integration", service, event, payload };
 		for (const { workflow, definition } of bindings) {
 			await this.dispatchRun(workflow, trigger, `${service}.${event}`, (journal, signal) =>
 				definition.run(payload, this.createContext(journal, signal)),
@@ -187,6 +186,10 @@ export class WorkflowRunner {
 							}),
 						getTags: () => session.getTags(),
 						setTags: (tags) => session.setTags(tags),
+						getSessionName: () => session.getSessionName(),
+						get model() {
+							return session.model;
+						},
 					},
 					ui,
 				}),
@@ -311,8 +314,7 @@ export class WorkflowRunner {
 		};
 		return {
 			agent,
-			integration: <TActions>(key: IntegrationKey<TActions>, account = "default") =>
-				this.createIntegrationHandle(journal, key, account),
+			integration: <TActions>(key: IntegrationKey<TActions>) => this.createIntegrationHandle(journal, key),
 			step: (name, fn) => journal.step(name, fn, { kind: "user" }),
 			signal,
 		};
@@ -322,9 +324,8 @@ export class WorkflowRunner {
 	private createIntegrationHandle<TActions>(
 		journal: RunJournal,
 		key: IntegrationKey<TActions>,
-		account: string,
 	): IntegrationHandleOf<TActions> {
-		const handle = this.integrations.getIntegration(key.service, account);
+		const handle = this.integrations.getIntegration(key.service);
 		const capability = this.integrations.getServiceCapabilities().find((c) => c.service === key.service);
 		// A plain object over the registered action names: a typo'd or stale action fails as
 		// a missing property, and no property is fabricated (a Proxy handle would fabricate
@@ -367,6 +368,10 @@ export class WorkflowRunner {
 					}),
 				getTags: () => session.getTags(),
 				setTags: (tags) => session.setTags(tags),
+				getSessionName: () => session.getSessionName(),
+				get model() {
+					return session.model;
+				},
 			};
 		} catch (error) {
 			journal.endStep(stepId, { status: "error", error });

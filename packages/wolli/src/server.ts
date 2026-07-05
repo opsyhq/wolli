@@ -186,6 +186,8 @@ async function runDaemonOnboarding(
 	const agentDir = getAgentDir(name);
 	const { pluginManager } = createAgentPluginManager(name);
 	const resolved = await pluginManager.resolve();
+	// Load the enabled integrations exactly like the resource loader's reload, so onboarding
+	// writes accounts under the same services the runtime's producers read.
 	const integrationPaths = resolved.integrations.filter((r) => r.enabled).map((r) => r.path);
 	const { integrations } = await loadIntegrations(integrationPaths, agentDir);
 
@@ -357,9 +359,7 @@ async function handleCommand(
 					const services: string[] = [];
 					for (const integration of integrations) {
 						if (root && getCwdRelativePath(integration.resolvedPath, root) === undefined) continue;
-						for (const [service, config] of integration.definitions) {
-							if (config.onboard) services.push(service);
-						}
+						if (integration.config.onboard) services.push(integration.service);
 					}
 					return services;
 				}),

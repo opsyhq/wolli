@@ -462,7 +462,14 @@ export class SessionHandle {
 	private readonly stream: SseStream;
 	private snap: DaemonSessionState;
 	private queue: { steer: AgentMessage[]; followUp: AgentMessage[] } = { steer: [], followUp: [] };
-	private resourceSummary: ResourceSummary = { extensions: 0, skills: 0, prompts: 0, commands: 0, diagnostics: [] };
+	private resourceSummary: ResourceSummary = {
+		extensions: 0,
+		tools: 0,
+		skills: 0,
+		prompts: 0,
+		commands: 0,
+		diagnostics: [],
+	};
 	private commands: SlashCommandInfo[] = [];
 	// Compaction in-flight, tracked off the forwarded compaction_start/end frames so callers can
 	// route input to the queue while a compaction runs (mirrors coding-agent's session.isCompacting).

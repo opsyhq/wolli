@@ -209,11 +209,8 @@ function createExtensionAPI(
 ): ExtensionAPI {
 	// When no integration runner is wired (extension loaded outside an AgentRuntime), hand
 	// back a deferred handle so `getIntegration(...)` itself doesn't throw at load time —
-	// only its `.on`/`.call` throw if actually used.
+	// only its `.call` throws if actually used.
 	const deferredIntegrationHandle = (name: string): IntegrationHandle => ({
-		on() {
-			throw new Error(`integration runtime not initialized (getIntegration("${name}"))`);
-		},
 		call() {
 			return Promise.reject(new Error(`integration runtime not initialized (getIntegration("${name}"))`));
 		},
@@ -340,12 +337,12 @@ function createExtensionAPI(
 			runtime.unregisterProvider(name, extension.path);
 		},
 
-		getIntegration(name: string, account?: string): IntegrationHandle {
+		getIntegration(name: string): IntegrationHandle {
 			runtime.assertActive();
 			if (!integrationRunner) {
 				return deferredIntegrationHandle(name);
 			}
-			return integrationRunner.getIntegration(name, account);
+			return integrationRunner.getIntegration(name);
 		},
 
 		events: eventBus,

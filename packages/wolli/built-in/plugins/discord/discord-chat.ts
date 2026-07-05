@@ -1,87 +1,50 @@
 /**
- * Discord chat extension — maps the transport's `message` events onto wolli sessions:
- * each channel/DM gets its own session (bound by a `discord:channel` tag), inbound text
- * is queued as a followUp, and the final assistant text is sent back on `agent_end`.
- * Paired with `index.ts`.
+ * Discord chat routing, as one workflows file:
+ *  - `inbound` binds each channel/DM to its own session by a `discord:channel` tag and
+ *    delivers inbound text as a followUp. Discord has no channel commands, so every message
+ *    routes into a session.
+ *  - `typing` starts the "typing…" indicator on `agent_start`; the integration owns the
+ *    keep-alive timer.
+ *  - `reply` ships the turn's final assistant text back on `agent_end`, riding the
+ *    producing session's `discord:channel` tag; typing stops first so a pure tool-call turn
+ *    still clears the indicator.
  */
 
-import type { AgentMessage } from "@opsyhq/agent";
-import type { ExtensionAPI } from "@opsyhq/wolli";
+import { wolli } from "wolli";
+import discord from "./index.ts";
 
-// Discord's typing state lasts ~10s; refresh a little ahead of that.
-const TYPING_INTERVAL_MS = 8000;
+// m is typed from the event schema
+export const inbound = discord.on("message", async (m, ctx) => {
+	const channelTag = { "discord:channel": m.channelId };
+	const [match] = await ctx.agent.findSessions(channelTag);
+	const session = match
+		? await ctx.agent.openSession(match.id)
+		: await ctx.agent.createSession({
+				setup: (s) => s.appendTags(channelTag),
+			});
+	// followUp queues behind a running turn instead of interrupting it.
+	await session.sendUserMessage(m.text, { deliverAs: "followUp" });
+});
 
-interface DiscordMessage {
-	channelId: string;
-	messageId: string;
-	text: string;
-	author: { id: string; name?: string };
-}
+export const typing = wolli.on("agent_start", async (_evt, ctx) => {
+	const channelId = ctx.session.getTags()["discord:channel"];
+	if (!channelId) return; // not a discord-bound session
+	await ctx.integration(discord).startTyping({ channelId });
+});
 
-/** Text of the last assistant message; "" for a pure tool-call turn. */
-function finalAssistantText(messages: AgentMessage[]): string {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const m = messages[i];
-		if (m.role !== "assistant") continue;
-		return m.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("")
-			.trim();
-	}
-	return "";
-}
-
-export default function (wolli: ExtensionAPI) {
-	const discord = wolli.getIntegration("discord", "default");
-
-	let typingTimer: ReturnType<typeof setInterval> | undefined;
-
-	discord.on("message", async (data) => {
-		const m = data as DiscordMessage;
-
-		// Reuse this channel's session, or create + tag a fresh one.
-		const channelTag = { "discord:channel": m.channelId };
-		const [match] = await wolli.findSessions(channelTag);
-		const session = match
-			? await wolli.openSession(match.id)
-			: await wolli.createSession({
-					setup: async (sessionManager) => {
-						await sessionManager.appendTags(channelTag);
-					},
-				});
-
-		// followUp: a message arriving mid-turn queues instead of interrupting.
-		void session.sendUserMessage(m.text, { deliverAs: "followUp" });
-	});
-
-	const stopTyping = (): void => {
-		if (typingTimer) {
-			clearInterval(typingTimer);
-			typingTimer = undefined;
-		}
-	};
-
-	wolli.on("agent_start", async (_event, ctx) => {
-		const channelId = ctx.session.getTags()["discord:channel"];
-		if (!channelId) return; // not a discord-bound session
-		const sendTyping = () => {
-			void discord.call("sendTyping", { channelId }).catch(() => {});
-		};
-		sendTyping();
-		stopTyping();
-		typingTimer = setInterval(sendTyping, TYPING_INTERVAL_MS);
-	});
-
-	wolli.on("agent_end", async ({ messages }, ctx) => {
-		stopTyping();
-
-		// Reply goes to the channel that started this turn (the producing session's tag).
-		const channelId = ctx.session.getTags()["discord:channel"];
-		if (!channelId) return; // not a discord-bound session
-
-		const text = finalAssistantText(messages as AgentMessage[]);
-		if (!text) return; // pure tool-call turn — nothing to send
-		await discord.call("sendMessage", { channelId, text });
-	});
-}
+export const reply = wolli.on("agent_end", async (evt, ctx) => {
+	const channelId = ctx.session.getTags()["discord:channel"];
+	if (!channelId) return; // not a discord-bound session
+	// Stop the typing indicator before the empty-text early return, so a pure tool-call
+	// turn still clears it.
+	await ctx.integration(discord).stopTyping({ channelId });
+	const text = evt.messages
+		.filter((m) => m.role === "assistant")
+		.at(-1)
+		?.content.filter((c) => c.type === "text")
+		.map((c) => c.text)
+		.join("")
+		.trim();
+	if (!text) return; // a pure tool-call turn sends nothing
+	await ctx.integration(discord).sendMessage({ channelId, text });
+});

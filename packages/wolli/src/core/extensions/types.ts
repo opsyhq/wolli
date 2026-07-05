@@ -1241,23 +1241,18 @@ export interface ExtensionAPI {
 	unregisterProvider(name: string): void;
 
 	/**
-	 * Get a handle to a configured integration `(name, account)` — listen to its
-	 * events with `.on(event, handler)` and invoke its actions with `.call(action,
-	 * params)`. `account` defaults to `"default"`.
+	 * Get a handle to a configured integration — invoke its actions with
+	 * `.call(action, params)`. Inbound events are consumed by workflows, not here.
 	 *
-	 * Throws if the integration or account is not configured. The integration itself
-	 * is defined in the agent's `integrations/` folder; credentials live in the
-	 * per-agent `integrations.json`.
+	 * Throws if the integration is unknown or not configured. The integration itself
+	 * is defined in the agent's `integrations/` folder; its account record lives in
+	 * the per-agent `integrations.json`.
 	 *
 	 * @example
-	 * const telegram = wolli.getIntegration("telegram", "default");
-	 * telegram.on("message", async (msg) => {
-	 *   const [match] = await wolli.findSessions({ "telegram:chat": String(msg.chatId) });
-	 *   const session = match ? await wolli.openSession(match.id) : await wolli.createSession();
-	 *   await session.sendUserMessage(msg.text);
-	 * });
+	 * const telegram = wolli.getIntegration("telegram");
+	 * await telegram.call("sendMessage", { chatId: 123456789, text: "Deployed." });
 	 */
-	getIntegration(name: string, account?: string): IntegrationHandle;
+	getIntegration(name: string): IntegrationHandle;
 
 	/** Shared event bus for extension communication. */
 	events: EventBus;

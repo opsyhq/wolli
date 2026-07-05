@@ -5,12 +5,13 @@
 	"type": "module",
 	"wolli": {
 		"integrations": ["./index.ts"],
-		"extensions": ["./scheduler-chat.ts"]
+		"workflows": ["./scheduler-due.ts"],
+		"tools": ["./cron.ts"]
 	},
 	"dependencies": {
 		"croner": "10.0.1"
 	},
 	"peerDependencies": {
-		"@opsyhq/wolli": "*"
+		"wolli": "*"
 	}
 }
