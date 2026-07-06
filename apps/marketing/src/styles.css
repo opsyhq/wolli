@@ -175,119 +175,16 @@ body {
   }
 }
 
-/* Hero ambient glows: four bold, heavily-feathered brand-orange fields moving
-   behind the hero content (index.tsx). Radial gradients with a transparent
-   falloff instead of filter: blur — same softness, far cheaper. Transform-only
-   animation with an overshooting bezier, so each swing lands with a small
-   spring; static (but still tinted) under prefers-reduced-motion. */
-/* The field hard-clips the glows at its bottom edge (overflow: hidden), which
-   reads as a sharp line when a glow is mid-swing across it — the mask fades
-   the last stretch to transparent so the animation dissolves instead. */
-.hero-glow-field {
-  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 240px), transparent);
-  mask-image: linear-gradient(to bottom, black calc(100% - 240px), transparent);
-}
+/* Page-wide ambient field: brand-orange balls (sized and colored inline in
+   index.tsx) that drift and bounce around the full-page layer. The physics loop
+   in index.tsx writes each ball's transform every frame to position it, so the
+   base offset is 0,0 here; transform-only keeps it off the layout/paint path. */
 .hero-glow {
   position: absolute;
+  top: 0;
+  left: 0;
   border-radius: 50%;
   will-change: transform;
-}
-/* All four glows share the brand orange (#E84D35, the wordmark color); the
-   long three-stop feather out to 90% is what keeps them smooth. */
-.hero-glow-1 {
-  top: -28%;
-  left: -10%;
-  width: 1100px;
-  height: 1100px;
-  background: radial-gradient(
-    closest-side,
-    rgba(232, 77, 53, 0.3),
-    rgba(232, 77, 53, 0.16) 40%,
-    rgba(232, 77, 53, 0.05) 68%,
-    transparent 90%
-  );
-}
-.hero-glow-2 {
-  top: -6%;
-  right: -12%;
-  width: 950px;
-  height: 950px;
-  background: radial-gradient(
-    closest-side,
-    rgba(232, 77, 53, 0.25),
-    rgba(232, 77, 53, 0.13) 40%,
-    rgba(232, 77, 53, 0.04) 68%,
-    transparent 90%
-  );
-}
-.hero-glow-3 {
-  bottom: -38%;
-  left: 14%;
-  width: 1020px;
-  height: 1020px;
-  background: radial-gradient(
-    closest-side,
-    rgba(232, 77, 53, 0.27),
-    rgba(232, 77, 53, 0.14) 40%,
-    rgba(232, 77, 53, 0.05) 68%,
-    transparent 90%
-  );
-}
-.hero-glow-4 {
-  right: 6%;
-  bottom: -24%;
-  width: 860px;
-  height: 860px;
-  background: radial-gradient(
-    closest-side,
-    rgba(232, 77, 53, 0.21),
-    rgba(232, 77, 53, 0.11) 40%,
-    rgba(232, 77, 53, 0.04) 68%,
-    transparent 90%
-  );
-}
-/* The overshoot in the bezier (y > 1) is what reads as bounce: each glow
-   springs well past its endpoint before settling, in both directions. Spawn
-   point, direction, duration, and phase are randomized per page load —
-   index.tsx sets left/top and the --glow-* vars inline after mount; the
-   values here are the pre-hydration (and no-JS) defaults. Translate
-   percentages are relative to each glow's own size, so the swing scales
-   with the blob. */
-@media (prefers-reduced-motion: no-preference) {
-  .hero-glow {
-    animation: glow-drift var(--glow-duration, 8s) cubic-bezier(0.34, 1.85, 0.64, 1) infinite
-      alternate;
-  }
-}
-@keyframes glow-drift {
-  to {
-    transform: translate3d(var(--glow-dx, 12%), var(--glow-dy, 18%), 0)
-      scale(var(--glow-scale, 1.08));
-  }
-}
-.hero-glow-1 {
-  --glow-dx: 18%;
-  --glow-dy: 20%;
-  --glow-scale: 1.1;
-  --glow-duration: 4.5s;
-}
-.hero-glow-2 {
-  --glow-dx: -20%;
-  --glow-dy: 14%;
-  --glow-scale: 1.08;
-  --glow-duration: 5.5s;
-}
-.hero-glow-3 {
-  --glow-dx: 22%;
-  --glow-dy: -12%;
-  --glow-scale: 1.12;
-  --glow-duration: 5s;
-}
-.hero-glow-4 {
-  --glow-dx: -17%;
-  --glow-dy: 16%;
-  --glow-scale: 1.06;
-  --glow-duration: 6s;
 }
 
 /* Demo rail card slide: a scroll-driven animation on the rail's view timeline,

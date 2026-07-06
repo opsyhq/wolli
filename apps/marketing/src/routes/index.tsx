@@ -47,6 +47,34 @@ const RAIL_SECTIONS: Array<{ url: string; continues?: boolean; title: string; co
 
 const RAIL_HINT = "scroll to watch scout form";
 
+// Brand-orange balls that drift across the whole page and bounce off the walls
+// and each other. Just the look here (size + gradient); the motion is a physics
+// loop in Home (positions/velocities/collisions), because bouncing needs real
+// state, not keyframes. Sizes vary so the collisions read as heavier vs lighter.
+const GLOW_BALLS: Array<{ size: number; opacity: number }> = [
+	{ size: 1200, opacity: 0.22 },
+	{ size: 880, opacity: 0.18 },
+	{ size: 1080, opacity: 0.23 },
+	{ size: 960, opacity: 0.19 },
+	{ size: 1040, opacity: 0.21 },
+	{ size: 900, opacity: 0.2 },
+	{ size: 1140, opacity: 0.19 },
+];
+
+const ballBackground = (opacity: number) =>
+	`radial-gradient(closest-side, rgba(232, 77, 53, ${opacity}), rgba(232, 77, 53, ${(opacity * 0.5).toFixed(3)}) 40%, rgba(232, 77, 53, ${(opacity * 0.17).toFixed(3)}) 68%, transparent 90%)`;
+
+// The core (where balls actually collide) is a fraction of the visible radius,
+// so the soft halos can overlap while the dense centers bounce apart.
+const BALL_CORE = 0.42;
+// Base drift speed in px/s. Elastic collisions conserve it, so the field keeps
+// moving indefinitely.
+const BALL_SPEED = 220;
+// Walls give a little kick (>1) so bounces feel springy; MAX_SPEED caps the
+// added energy so it never runs away.
+const WALL_BOUNCE = 1.07;
+const MAX_SPEED = BALL_SPEED * 1.7;
+
 // The secondary-features grid below the rail.
 const FEATURES: Array<{ icon: LucideIcon; title: string; description: string }> = [
 	{
@@ -140,39 +168,178 @@ function DemoCard({
 function Home() {
 	const [copied, setCopied] = useState(false);
 	const railRef = useRef<HTMLElement | null>(null);
+	const glowLayerRef = useRef<HTMLDivElement | null>(null);
 
-	// Randomized per page load, applied after mount (randomizing during render
-	// would mismatch the server HTML): each glow spawns somewhere in its rough
-	// quadrant — random within it, but the four stay spread out — and heads off
-	// in a random direction with guaranteed sideways travel. Until the effect
-	// runs, the CSS defaults in styles.css position and move them.
-	const [glowStyles, setGlowStyles] = useState<React.CSSProperties[] | null>(null);
-	useEffect(() => {
-		const spawns = [
-			{ left: [-18, 20], top: [-30, 10] },
-			{ left: [55, 90], top: [-25, 15] },
-			{ left: [0, 35], top: [40, 75] },
-			{ left: [50, 85], top: [35, 70] },
-		];
-		const range = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
-		const sign = () => (Math.random() < 0.5 ? -1 : 1);
-		setGlowStyles(
-			spawns.map((spawn) => {
-				const duration = range(4, 6.5);
-				return {
-					left: `${range(spawn.left[0]!, spawn.left[1]!)}%`,
-					top: `${range(spawn.top[0]!, spawn.top[1]!)}%`,
-					right: "auto",
-					bottom: "auto",
-					animationDuration: `${duration}s`,
-					// Random phase, so the four never pulse in step on load.
-					animationDelay: `${-range(0, duration)}s`,
-					"--glow-dx": `${sign() * range(16, 30)}%`,
-					"--glow-dy": `${sign() * range(10, 24)}%`,
-					"--glow-scale": range(1.04, 1.14).toFixed(3),
-				} as React.CSSProperties;
-			}),
-		);
+	// The glow balls' physics. The layer is fixed to the viewport, but the balls
+	// live in a taller "background space" (the page height) and are drawn offset
+	// by the scroll, so they travel the whole page as you scroll. The catch: while
+	// the demo rail pins its card, the page scrolls but the demo stays on the
+	// spot — so there the offset is frozen and the background holds still too.
+	// Positions are written straight to each element's transform (never React
+	// state); layout effect so the first frame lands before paint.
+	useBrowserLayoutEffect(() => {
+		const layer = glowLayerRef.current;
+		if (!layer) return;
+		const els = Array.from(layer.querySelectorAll<HTMLElement>(".hero-glow"));
+		if (els.length === 0) return;
+
+		let viewportW = layer.clientWidth;
+		let viewportH = layer.clientHeight;
+		// The demo card is pinned over a stretch of scroll on desktop; there the
+		// background offset must freeze. freeze() measures that stretch from the
+		// rail's geometry and the sticky top (mirrors the card's sticky offset:
+		// max(1rem, (100svh - 32rem) / 2) in routes/index.tsx). bgHeight is the
+		// page minus the frozen stretch — the distance the background scrolls.
+		let freezeStart = Number.POSITIVE_INFINITY;
+		let freezeLength = 0;
+		let bgHeight = viewportH;
+		const measure = () => {
+			viewportW = layer.clientWidth;
+			viewportH = layer.clientHeight;
+			const rail = document.getElementById("demo-rail");
+			const pinned = rail && window.matchMedia("(min-width: 48rem)").matches;
+			if (pinned) {
+				const railTop = rail.getBoundingClientRect().top + window.scrollY;
+				const stickyTop = Math.max(16, (viewportH - 512) / 2);
+				freezeStart = railTop - stickyTop;
+				freezeLength = Math.max(0, rail.offsetHeight - viewportH + stickyTop);
+			} else {
+				freezeStart = Number.POSITIVE_INFINITY;
+				freezeLength = 0;
+			}
+			bgHeight = Math.max(viewportH, document.documentElement.scrollHeight - freezeLength);
+		};
+		measure();
+
+		// Scroll position with the frozen stretch removed — continuous, so the
+		// background never jumps as the demo pins and releases.
+		const offset = () => {
+			const s = window.scrollY;
+			return s - Math.max(0, Math.min(s - freezeStart, freezeLength));
+		};
+
+		const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+		const balls = els.map((el, i) => {
+			const visualRadius = el.offsetWidth / 2;
+			const radius = visualRadius * BALL_CORE;
+			const angle = Math.random() * Math.PI * 2;
+			const margin = radius + 8;
+			// Spread the balls down the whole background space so no stretch of the
+			// page is empty; random x, with margins keeping them off the walls.
+			return {
+				el,
+				visualRadius,
+				radius,
+				mass: radius * radius,
+				x: margin + Math.random() * Math.max(1, viewportW - 2 * margin),
+				y: ((i + 0.5) / els.length) * bgHeight + (Math.random() - 0.5) * bgHeight * 0.04,
+				vx: Math.cos(angle) * BALL_SPEED,
+				vy: Math.sin(angle) * BALL_SPEED,
+			};
+		});
+
+		const draw = (b: (typeof balls)[number], off: number) => {
+			b.el.style.transform = `translate3d(${b.x - b.visualRadius}px, ${b.y - off - b.visualRadius}px, 0)`;
+		};
+		for (const b of balls) {
+			b.y = Math.max(b.radius, Math.min(bgHeight - b.radius, b.y));
+			draw(b, offset());
+		}
+
+		if (reduce) return;
+
+		let raf = 0;
+		let last = performance.now();
+		const step = (now: number) => {
+			// Clamp dt so a backgrounded tab doesn't teleport everything on return.
+			const dt = Math.min((now - last) / 1000, 0.05);
+			last = now;
+
+			for (const b of balls) {
+				b.x += b.vx * dt;
+				b.y += b.vy * dt;
+				// Walls: clamp to the edge and send the velocity back inward, with a
+				// springy kick.
+				if (b.x < b.radius) {
+					b.x = b.radius;
+					b.vx = Math.abs(b.vx) * WALL_BOUNCE;
+				} else if (b.x > viewportW - b.radius) {
+					b.x = viewportW - b.radius;
+					b.vx = -Math.abs(b.vx) * WALL_BOUNCE;
+				}
+				if (b.y < b.radius) {
+					b.y = b.radius;
+					b.vy = Math.abs(b.vy) * WALL_BOUNCE;
+				} else if (b.y > bgHeight - b.radius) {
+					b.y = bgHeight - b.radius;
+					b.vy = -Math.abs(b.vy) * WALL_BOUNCE;
+				}
+			}
+
+			// Pairwise elastic collisions on the cores (mass ~ area).
+			for (let i = 0; i < balls.length; i++) {
+				for (let j = i + 1; j < balls.length; j++) {
+					const a = balls[i]!;
+					const b = balls[j]!;
+					const dx = b.x - a.x;
+					const dy = b.y - a.y;
+					const minDist = a.radius + b.radius;
+					const dist2 = dx * dx + dy * dy;
+					if (dist2 === 0 || dist2 >= minDist * minDist) continue;
+					const dist = Math.sqrt(dist2);
+					const nx = dx / dist;
+					const ny = dy / dist;
+					// Push the pair apart so they don't sink into each other.
+					const overlap = minDist - dist;
+					const total = a.mass + b.mass;
+					a.x -= nx * overlap * (b.mass / total);
+					a.y -= ny * overlap * (b.mass / total);
+					b.x += nx * overlap * (a.mass / total);
+					b.y += ny * overlap * (a.mass / total);
+					// Exchange the velocity component along the collision normal.
+					const vn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+					if (vn >= 0) continue;
+					const impulse = (-2 * vn) / total;
+					a.vx -= impulse * b.mass * nx;
+					a.vy -= impulse * b.mass * ny;
+					b.vx += impulse * a.mass * nx;
+					b.vy += impulse * a.mass * ny;
+				}
+			}
+
+			// Cap the springy energy the walls add so nothing accelerates forever.
+			for (const b of balls) {
+				const speed = Math.hypot(b.vx, b.vy);
+				if (speed > MAX_SPEED) {
+					const k = MAX_SPEED / speed;
+					b.vx *= k;
+					b.vy *= k;
+				}
+			}
+
+			const off = offset();
+			for (const b of balls) draw(b, off);
+			raf = requestAnimationFrame(step);
+		};
+		raf = requestAnimationFrame(step);
+
+		// Remeasure when the viewport or page height changes, and keep the balls
+		// inside the new bounds.
+		const observer = new ResizeObserver(() => {
+			measure();
+			for (const b of balls) {
+				b.x = Math.max(b.radius, Math.min(viewportW - b.radius, b.x));
+				b.y = Math.max(b.radius, Math.min(bgHeight - b.radius, b.y));
+			}
+		});
+		observer.observe(layer);
+		observer.observe(document.body);
+
+		return () => {
+			cancelAnimationFrame(raf);
+			observer.disconnect();
+		};
 	}, []);
 
 	// One player per section, created once; activate() drives them from the scroll
@@ -302,19 +469,20 @@ function Home() {
 
 	return (
 		<>
+			{/* Viewport-fixed ambient field: brand balls that drift and bounce off the
+			    viewport walls and each other (physics loop above). Fixed, so it's a still
+			    backdrop — page scroll never moves it; content just scrolls over it. */}
+			<div ref={glowLayerRef} aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+				{GLOW_BALLS.map((ball) => (
+					<div
+						key={ball.size}
+						className="hero-glow"
+						style={{ width: ball.size, height: ball.size, background: ballBackground(ball.opacity) }}
+					/>
+				))}
+			</div>
 			{/* Short hero (81svh) so the card below peeks under the fold, hinting there's more. */}
-			<main className="relative flex min-h-[81svh] flex-col items-center justify-center px-6">
-				{/* Ambient brand glows drifting behind the hero (styles.css); decorative only.
-				    The field extends below the hero (-bottom) so the motion bleeds into the
-				    start of the demo rail instead of cutting off at the fold. */}
-				<div
-					aria-hidden
-					className="hero-glow-field pointer-events-none absolute inset-x-0 top-0 -bottom-[22svh] -z-10 overflow-hidden"
-				>
-					{["hero-glow-1", "hero-glow-2", "hero-glow-3", "hero-glow-4"].map((glow, index) => (
-						<div key={glow} className={`hero-glow ${glow}`} style={glowStyles?.[index]} />
-					))}
-				</div>
+			<main className="flex min-h-[81svh] flex-col items-center justify-center px-6">
 				<div className="mx-auto flex max-w-3xl flex-col items-center text-center">
 					<h1 className="font-heading text-[2.125rem]/[1.15] font-normal tracking-[-0.005em] text-balance [word-spacing:0.06em] sm:text-[2.75rem]/[1.1] md:text-[3.25rem]/[1.1]">
 						Create agents that grow around a purpose
@@ -355,7 +523,9 @@ function Home() {
 							data-rail-section
 							className="py-16 md:flex md:min-h-[60svh] md:flex-col md:justify-center md:py-0"
 						>
-							<h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{section.title}</h2>
+							<h2 className="text-3xl font-heading font-normal tracking-[-0.005em] text-balance sm:text-4xl">
+								{section.title}
+							</h2>
 							<p className="mt-4 max-w-md text-lg text-muted-foreground">{section.copy}</p>
 							<div className="mt-8 md:hidden">
 								<DemoCard
@@ -369,7 +539,7 @@ function Home() {
 					))}
 				</div>
 				<div className="hidden md:block">
-					<div className="sticky top-[max(1rem,calc((100svh-36rem)/2))]">
+					<div className="sticky top-[max(1rem,calc((100svh-32rem)/2))]">
 						<DemoCard
 							className="rail-card"
 							view={active}
@@ -382,7 +552,7 @@ function Home() {
 			</section>
 			<section className="mx-auto w-full max-w-6xl px-6 py-24 md:py-32">
 				<div className="mx-auto max-w-2xl text-center">
-					<h2 className="text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
+					<h2 className="font-heading text-[2rem]/[1.15] font-light tracking-[-0.005em] text-balance sm:text-[2.375rem]/[1.05] md:text-[2.75rem]/[1.05]">
 						Everything an agent needs to grow
 					</h2>
 					<p className="mt-5 text-lg text-balance text-muted-foreground">
@@ -394,7 +564,7 @@ function Home() {
 						<div key={feature.title}>
 							<div className="flex items-center gap-2.5">
 								<feature.icon className="size-4.5" aria-hidden />
-								<h3 className="font-medium">{feature.title}</h3>
+								<h3 className="font-normal">{feature.title}</h3>
 							</div>
 							<p className="mt-3 leading-relaxed text-muted-foreground">{feature.description}</p>
 						</div>
@@ -402,15 +572,18 @@ function Home() {
 				</div>
 			</section>
 			{/* Closing call to action. */}
-			<section className="mx-auto w-full max-w-6xl px-6 py-32 text-center md:py-48">
-				<h2 className="text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
+			<section className="mx-auto flex min-h-[calc(100svh-7rem)] w-full max-w-6xl flex-col items-center justify-center px-6 text-center">
+				<h2 className="font-heading text-[2rem]/[1.15] font-light tracking-[-0.005em] text-balance sm:text-[2.375rem]/[1.05] md:text-[2.75rem]/[1.05]">
 					Create your own agent today
 				</h2>
 				<div className="mt-10">
 					{/* Cross-worker link to the docs app, same as the header's Docs. */}
 					<a
 						href="/docs/getting-started/"
-						className={cn(buttonVariants({ size: "lg" }), "h-12 rounded-full px-7 text-base")}
+						className={cn(
+							buttonVariants({ size: "lg" }),
+							"h-12 rounded-full bg-[#E84D35] px-7 text-base text-white hover:bg-[#E84D35]/90",
+						)}
 					>
 						Get started
 					</a>
