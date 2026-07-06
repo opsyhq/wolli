@@ -261,6 +261,11 @@ export class Agent {
 		return "";
 	}
 
+	/** Whether this agent's daemon is up right now — a one-shot `GET /health` probe against its configured port. */
+	async isHealthy(): Promise<boolean> {
+		return isHealthy(`http://${getDaemonHost()}:${this.config.port}`);
+	}
+
 	/**
 	 * Find the agent's live daemon (config → /health) and connect, else spawn a detached `daemon <name>`
 	 * (the same command the OS service unit runs) and wait for it. Ensures the control link; opens no

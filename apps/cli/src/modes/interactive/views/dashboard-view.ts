@@ -7,7 +7,12 @@
  * global tier in-process, so each change persists the shared default that agents inherit.
  */
 
-import { type Api, getSupportedThinkingLevels, type Model, type OAuthSelectPrompt } from "@earendil-works/pi-ai";
+import {
+  type Api,
+  getSupportedThinkingLevels,
+  type Model,
+  type OAuthSelectPrompt,
+} from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@opsyhq/agent";
 import {
   type Agent,
@@ -49,6 +54,9 @@ import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 
+/** Shown, faint, in place of a description while an agent's SOUL.md has no purpose line yet. */
+const AGENT_PURPOSE_PLACEHOLDER = "still figuring out its purpose…";
+
 export class DashboardView extends Container implements AppView {
   private ctx!: ViewContext;
   private readonly keybindings: KeybindingsManager;
@@ -82,10 +90,15 @@ export class DashboardView extends Container implements AppView {
 
     // Focus the bar by hand (the view is the focus target). Bare-command mode (prefix "") lets the
     // editor's own autocomplete drive the menu without a leading slash.
-    this.editor = new CustomEditor(ctx.tui, getEditorTheme(), this.keybindings, {
-      paddingX: 1,
-      commandMenuPrefix: "",
-    });
+    this.editor = new CustomEditor(
+      ctx.tui,
+      getEditorTheme(),
+      this.keybindings,
+      {
+        paddingX: 1,
+        commandMenuPrefix: "",
+      },
+    );
     this.editor.focused = true;
     this.editor.setAutocompleteProvider(new HomeCommandProvider());
     this.editor.onEscape = () => this.editor.setText("");
@@ -123,7 +136,9 @@ export class DashboardView extends Container implements AppView {
     const agents = this.ctx.wolli.list();
     if (agents.length === 0) {
       this.list = undefined;
-      this.bodyContainer.addChild(new Text(theme.fg("dim", "No agents yet."), 1, 0));
+      this.bodyContainer.addChild(
+        new Text(theme.fg("dim", "No agents yet."), 1, 0),
+      );
       this.bodyContainer.addChild(
         new Text(
           theme.fg("dim", "Type ") +
@@ -135,13 +150,24 @@ export class DashboardView extends Container implements AppView {
       );
       return;
     }
-    const items: SelectItem[] = agents.map((agent) => ({
-      value: agent.name,
-      label: agent.name,
-      description: agent.getPurpose(),
-    }));
+    const items: SelectItem[] = agents.map((agent) => {
+      const purpose = agent.getPurpose();
+      const item: SelectItem = {
+        value: agent.name,
+        // Dot starts dim; flips green once this agent's daemon answers /health.
+        label: `${theme.fg("dim", "●")} ${agent.name}`,
+        description: purpose || AGENT_PURPOSE_PLACEHOLDER,
+      };
+      agent.isHealthy().then((active) => {
+        if (!active) return;
+        item.label = `${theme.fg("success", "●")} ${agent.name}`;
+        this.ctx.tui.requestRender();
+      });
+      return item;
+    });
     this.list = new SelectList(items, 12, getSelectListTheme());
-    this.list.onSelect = (item) => void this.ctx.navigate({ to: "chat", name: item.value });
+    this.list.onSelect = (item) =>
+      void this.ctx.navigate({ to: "chat", name: item.value });
     this.bodyContainer.addChild(this.list);
   }
 
@@ -155,8 +181,15 @@ export class DashboardView extends Container implements AppView {
           rawKeyHint("type", "to search commands"),
           rawKeyHint("ctrl+c", "quit"),
         ]
-      : [rawKeyHint("↑/↓", "select"), rawKeyHint("tab", "complete"), rawKeyHint("enter", "run"), rawKeyHint("esc", "clear")];
-    this.footerContainer.addChild(new Text(hints.join(theme.fg("muted", " · ")), 1, 0));
+      : [
+          rawKeyHint("↑/↓", "select"),
+          rawKeyHint("tab", "complete"),
+          rawKeyHint("enter", "run"),
+          rawKeyHint("esc", "clear"),
+        ];
+    this.footerContainer.addChild(
+      new Text(hints.join(theme.fg("muted", " · ")), 1, 0),
+    );
   }
 
   handleInput(data: string): void {
@@ -169,10 +202,16 @@ export class DashboardView extends Container implements AppView {
       this.statusContainer.clear();
       if (matchesKey(data, "tab") || matchesKey(data, "right")) {
         const selected = this.list?.getSelectedItem();
-        if (selected) void this.ctx.navigate({ to: "agent", name: selected.value });
+        if (selected)
+          void this.ctx.navigate({ to: "agent", name: selected.value });
         return;
       }
-      if (this.list && (matchesKey(data, "up") || matchesKey(data, "down") || matchesKey(data, "enter"))) {
+      if (
+        this.list &&
+        (matchesKey(data, "up") ||
+          matchesKey(data, "down") ||
+          matchesKey(data, "enter"))
+      ) {
         this.list.handleInput(data);
         return;
       }
@@ -209,7 +248,11 @@ export class DashboardView extends Container implements AppView {
       create: (name) => this.ctx.wolli.create(name),
       onCreated: (agent) => {
         this.overlay?.hide();
-        void this.ctx.navigate({ to: "chat", name: agent.name, initialAssistantMessage: BIRTH_OPENER });
+        void this.ctx.navigate({
+          to: "chat",
+          name: agent.name,
+          initialAssistantMessage: BIRTH_OPENER,
+        });
       },
       onCancel: () => {
         this.overlay?.hide();
@@ -217,11 +260,18 @@ export class DashboardView extends Container implements AppView {
       },
       onQuit: () => this.ctx.quit(),
     });
-    this.overlay = this.ctx.tui.showOverlay(create, { anchor: "center", width: "50%", minWidth: 40, maxHeight: "60%" });
+    this.overlay = this.ctx.tui.showOverlay(create, {
+      anchor: "center",
+      width: "50%",
+      minWidth: 40,
+      maxHeight: "60%",
+    });
   }
 
   /** Swap the bar for a selector; `done` restores the bar and hands focus back to the view. */
-  private showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
+  private showSelector(
+    create: (done: () => void) => { component: Component; focus: Component },
+  ): void {
     const done = () => {
       this.editorContainer.clear();
       this.editorContainer.addChild(this.editor);
@@ -248,7 +298,10 @@ export class DashboardView extends Container implements AppView {
     const id = this.settings.getDefaultModel();
     if (!id) return undefined;
     const provider = this.settings.getDefaultProvider();
-    return findExactModelReferenceMatch(provider ? `${provider}/${id}` : id, available);
+    return findExactModelReferenceMatch(
+      provider ? `${provider}/${id}` : id,
+      available,
+    );
   }
 
   /** `/model` — set the default model agents inherit. */
@@ -279,8 +332,11 @@ export class DashboardView extends Container implements AppView {
   /** `/thinking` — set the default thinking level. */
   private showThinkingSelector(): void {
     const model = this.defaultModel(this.registry.getAvailable());
-    const levels = (model ? getSupportedThinkingLevels(model) : THINKING_LEVELS) as ThinkingLevel[];
-    const current = (this.settings.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL) as ThinkingLevel;
+    const levels = (
+      model ? getSupportedThinkingLevels(model) : THINKING_LEVELS
+    ) as ThinkingLevel[];
+    const current = (this.settings.getDefaultThinkingLevel() ??
+      DEFAULT_THINKING_LEVEL) as ThinkingLevel;
     this.showSelector((done) => {
       const selector = new ThinkingSelectorComponent(
         current,
@@ -300,10 +356,20 @@ export class DashboardView extends Container implements AppView {
   private getLoginProviderOptions(): AuthSelectorProvider[] {
     const oauthProviders = this.auth.getOAuthProviders();
     const oauthIds = new Set(oauthProviders.map((p) => p.id));
-    const options: AuthSelectorProvider[] = oauthProviders.map((p) => ({ id: p.id, name: p.name, authType: "oauth" }));
-    for (const providerId of new Set(this.registry.getAll().map((m) => m.provider))) {
+    const options: AuthSelectorProvider[] = oauthProviders.map((p) => ({
+      id: p.id,
+      name: p.name,
+      authType: "oauth",
+    }));
+    for (const providerId of new Set(
+      this.registry.getAll().map((m) => m.provider),
+    )) {
       if (!isApiKeyLoginProvider(providerId, oauthIds)) continue;
-      options.push({ id: providerId, name: this.registry.getProviderDisplayName(providerId), authType: "api_key" });
+      options.push({
+        id: providerId,
+        name: this.registry.getProviderDisplayName(providerId),
+        authType: "api_key",
+      });
     }
     return options.sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -323,7 +389,8 @@ export class DashboardView extends Container implements AppView {
         (providerId) => {
           const option = options.find((o) => o.id === providerId);
           if (!option) return;
-          if (option.authType === "oauth") void this.showLoginDialog(option.id, option.name);
+          if (option.authType === "oauth")
+            void this.showLoginDialog(option.id, option.name);
           else void this.showApiKeyLoginDialog(option.id, option.name);
         },
         done,
@@ -333,8 +400,16 @@ export class DashboardView extends Container implements AppView {
   }
 
   /** Subscription/OAuth login, in-process against the global tier, driven through the login dialog. */
-  private async showLoginDialog(providerId: string, providerName: string): Promise<void> {
-    const dialog = new LoginDialogComponent(this.ctx.tui, providerId, () => {}, providerName);
+  private async showLoginDialog(
+    providerId: string,
+    providerName: string,
+  ): Promise<void> {
+    const dialog = new LoginDialogComponent(
+      this.ctx.tui,
+      providerId,
+      () => {},
+      providerName,
+    );
     this.editorContainer.clear();
     this.editorContainer.addChild(dialog);
     this.ctx.tui.setFocus(dialog);
@@ -343,9 +418,13 @@ export class DashboardView extends Container implements AppView {
       await this.auth.login(providerId, {
         onAuth: (info) => dialog.showAuth(info.url, info.instructions),
         onDeviceCode: (info) => dialog.showDeviceCode(info),
-        onPrompt: (prompt) => dialog.showPrompt(prompt.message, prompt.placeholder),
+        onPrompt: (prompt) =>
+          dialog.showPrompt(prompt.message, prompt.placeholder),
         onProgress: (message) => dialog.showProgress(message),
-        onManualCodeInput: () => dialog.showManualInput("Paste the redirect URL or code, or finish in your browser:"),
+        onManualCodeInput: () =>
+          dialog.showManualInput(
+            "Paste the redirect URL or code, or finish in your browser:",
+          ),
         onSelect: (prompt) => this.showOAuthLoginSelect(dialog, prompt),
         signal: dialog.signal,
       });
@@ -356,20 +435,35 @@ export class DashboardView extends Container implements AppView {
       this.restoreEditor();
       // A user cancel aborts the dialog's signal; only surface real failures.
       if (!dialog.signal.aborted) {
-        this.showStatus(theme.fg("warning", error instanceof Error ? error.message : String(error)));
+        this.showStatus(
+          theme.fg(
+            "warning",
+            error instanceof Error ? error.message : String(error),
+          ),
+        );
       }
     }
   }
 
   /** API-key login, in-process against the global tier, prompting inside the login dialog. */
-  private async showApiKeyLoginDialog(providerId: string, providerName: string): Promise<void> {
-    const dialog = new LoginDialogComponent(this.ctx.tui, providerId, () => {}, providerName);
+  private async showApiKeyLoginDialog(
+    providerId: string,
+    providerName: string,
+  ): Promise<void> {
+    const dialog = new LoginDialogComponent(
+      this.ctx.tui,
+      providerId,
+      () => {},
+      providerName,
+    );
     this.editorContainer.clear();
     this.editorContainer.addChild(dialog);
     this.ctx.tui.setFocus(dialog);
     this.ctx.tui.requestRender();
     try {
-      const key = (await dialog.showPrompt(`Enter API key for ${providerName}:`)).trim();
+      const key = (
+        await dialog.showPrompt(`Enter API key for ${providerName}:`)
+      ).trim();
       if (!key) throw new Error("API key cannot be empty.");
       this.auth.set(providerId, { type: "api_key", key });
       this.registry.refresh();
@@ -378,13 +472,21 @@ export class DashboardView extends Container implements AppView {
     } catch (error) {
       this.restoreEditor();
       if (!dialog.signal.aborted) {
-        this.showStatus(theme.fg("warning", error instanceof Error ? error.message : String(error)));
+        this.showStatus(
+          theme.fg(
+            "warning",
+            error instanceof Error ? error.message : String(error),
+          ),
+        );
       }
     }
   }
 
   /** An OAuth provider asked us to pick one of several options mid-login; swap to a selector and back. */
-  private showOAuthLoginSelect(dialog: LoginDialogComponent, prompt: OAuthSelectPrompt): Promise<string | undefined> {
+  private showOAuthLoginSelect(
+    dialog: LoginDialogComponent,
+    prompt: OAuthSelectPrompt,
+  ): Promise<string | undefined> {
     return new Promise((resolve) => {
       const restoreDialog = () => {
         this.editorContainer.clear();
@@ -417,7 +519,11 @@ export class DashboardView extends Container implements AppView {
     for (const id of this.auth.list()) {
       const credential = this.auth.get(id);
       if (!credential) continue;
-      options.push({ id, name: this.registry.getProviderDisplayName(id), authType: credential.type });
+      options.push({
+        id,
+        name: this.registry.getProviderDisplayName(id),
+        authType: credential.type,
+      });
     }
     options.sort((a, b) => a.name.localeCompare(b.name));
     if (options.length === 0) {
@@ -452,7 +558,13 @@ export class DashboardView extends Container implements AppView {
     const status = this.statusContainer.render(width);
     const footer = this.footerContainer.render(width);
     // +1 for a blank line of breathing room under the header.
-    const used = header.length + 1 + body.length + bar.length + status.length + footer.length;
+    const used =
+      header.length +
+      1 +
+      body.length +
+      bar.length +
+      status.length +
+      footer.length;
     const rows = this.ctx?.tui.terminal.rows ?? used + 1;
     const filler = new Array(Math.max(0, rows - used)).fill("");
     return [...header, "", ...body, ...filler, ...bar, ...status, ...footer];
@@ -480,7 +592,11 @@ class HomeCommandProvider implements AutocompleteProvider {
     const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
     if (before.trim() === "") return null;
     const query = before.trimStart().replace(/^\//, "");
-    const matches = fuzzyFilter([...HOME_SLASH_COMMANDS], query, (command) => command.name);
+    const matches = fuzzyFilter(
+      [...HOME_SLASH_COMMANDS],
+      query,
+      (command) => command.name,
+    );
     if (matches.length === 0) return null;
     return {
       items: matches.map((command) => ({
@@ -504,7 +620,11 @@ class HomeCommandProvider implements AutocompleteProvider {
     const afterCursor = currentLine.slice(cursorCol);
     const newLines = [...lines];
     newLines[cursorLine] = `${beforePrefix}/${item.value} ${afterCursor}`;
-    return { lines: newLines, cursorLine, cursorCol: beforePrefix.length + item.value.length + 2 };
+    return {
+      lines: newLines,
+      cursorLine,
+      cursorCol: beforePrefix.length + item.value.length + 2,
+    };
   }
 }
 
@@ -528,12 +648,22 @@ class CreateAgent implements Component, Focusable {
   constructor(tui: TUI, callbacks: CreateAgentCallbacks) {
     this.tui = tui;
     this.callbacks = callbacks;
-    this.box.addChild(new Text(theme.fg("accent", "You're bringing a new agent to life."), 1, 0));
-    this.box.addChild(new Text(theme.fg("dim", "What should we call it?"), 1, 0));
+    this.box.addChild(
+      new Text(
+        theme.fg("accent", "You're bringing a new agent to life."),
+        1,
+        0,
+      ),
+    );
+    this.box.addChild(
+      new Text(theme.fg("dim", "What should we call it?"), 1, 0),
+    );
     this.box.addChild(this.input);
     this.box.addChild(this.status);
     this.box.addChild(new Spacer(1));
-    this.box.addChild(new Text(theme.fg("dim", "enter create · esc cancel"), 1, 0));
+    this.box.addChild(
+      new Text(theme.fg("dim", "enter create · esc cancel"), 1, 0),
+    );
   }
 
   get focused(): boolean {
@@ -569,7 +699,12 @@ class CreateAgent implements Component, Focusable {
     try {
       this.callbacks.onCreated(await this.callbacks.create(name));
     } catch (error) {
-      this.status.setText(theme.fg("warning", error instanceof Error ? error.message : String(error)));
+      this.status.setText(
+        theme.fg(
+          "warning",
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
     } finally {
       this.busy = false;
       this.tui.requestRender();
@@ -584,4 +719,3 @@ class CreateAgent implements Component, Focusable {
     this.box.invalidate();
   }
 }
-
