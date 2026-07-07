@@ -117,7 +117,7 @@ function SiteHeader() {
 					{/* The docs live on a second worker (wolli-docs) behind /docs/*, so
 					    this is a plain cross-app <a>, prerendered via the speculation
 					    rules in the shell head. */}
-					<a href="/docs/getting-started/" className="transition-colors hover:text-foreground">
+					<a href="/docs/introduction/" className="transition-colors hover:text-foreground">
 						Docs
 					</a>
 					<a
