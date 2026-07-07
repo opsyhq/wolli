@@ -4,6 +4,7 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
+@import "@fontsource-variable/stack-sans-headline";
 @import "streamdown/styles.css";
 
 /* Let Tailwind generate the utility classes Streamdown emits (hoisted to repo root). */
@@ -26,7 +27,7 @@ body {
 }
 
 @theme inline {
-  --font-heading: var(--font-sans);
+  --font-heading: 'Stack Sans Headline Variable', sans-serif;
   --font-sans: 'Geist Variable', sans-serif;
   --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
   --color-sidebar-ring: var(--sidebar-ring);
@@ -174,10 +175,22 @@ body {
   }
 }
 
+/* Page-wide ambient field: brand-orange balls (sized and colored inline in
+   index.tsx) that drift and bounce around the full-page layer. The physics loop
+   in index.tsx writes each ball's transform every frame to position it, so the
+   base offset is 0,0 here; transform-only keeps it off the layout/paint path. */
+.hero-glow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 50%;
+  will-change: transform;
+}
+
 /* Demo rail card slide: a scroll-driven animation on the rail's view timeline,
    no JS involved — the browser derives it from geometry, so the first paint is
    already correct (no hydration flash). On load the rail top sits at the
-   header (h-14) + 72svh hero, so the range starts right there (100svh minus
+   header (h-14) + 81svh hero, so the range starts right there (100svh minus
    those) and ends at 50vh, mirroring LOCK_AT in routes/index.tsx: the card is
    viewport-centered at scroll 0 and slides into its grid slot as you scroll.
    Browsers without scroll-driven animations show the card in its locked slot. */
@@ -188,7 +201,7 @@ body {
   .rail-card {
     animation: rail-slide linear both;
     animation-timeline: --rail;
-    animation-range: entry calc(28svh - 3.5rem) entry 50vh;
+    animation-range: entry calc(19svh - 3.5rem) entry 50vh;
   }
   @keyframes rail-slide {
     from {

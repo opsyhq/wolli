@@ -81,8 +81,8 @@ function SiteHeader() {
 	return (
 		<header className="sticky top-0 z-50 border-b border-black/5 bg-background/80 backdrop-blur-xl backdrop-saturate-150">
 			{/* h-14 is mirrored by --fd-docs-row-1 in routes/docs/$.tsx. */}
-			<div className="mx-auto flex h-14 w-full items-center px-6 md:px-32 lg:px-48">
-				<a href="/" className="text-lg font-bold tracking-tight text-foreground">
+			<div className="mx-auto flex h-14 w-full items-center px-6 md:px-24 lg:px-40">
+				<a href="/" className="text-lg font-bold tracking-tight text-[#E84D35]">
 					Wolli
 				</a>
 				<nav className="ml-6 flex items-center gap-5 text-sm text-muted-foreground md:ml-10 md:gap-8">
@@ -144,7 +144,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 					    IMPORTANT: footer changes must be cross-applied between the two
 					    apps by hand. */}
 					<footer className="border-t border-border bg-muted/50">
-						<div className="mx-auto flex h-14 w-full items-center justify-between px-6 text-sm text-muted-foreground md:px-32 lg:px-48">
+						<div className="mx-auto flex h-14 w-full items-center justify-between px-6 text-sm text-muted-foreground md:px-24 lg:px-40">
 							<p>© 2026 Opsy, Inc.</p>
 							<a
 								href="https://github.com/opsyhq/wolli"

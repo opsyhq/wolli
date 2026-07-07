@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
 	<!-- PLACEHOLDER brand mark: replace with the real Wolli logo. -->
-	<rect width="512" height="512" rx="112" fill="#0a0a0a"/>
+	<rect width="512" height="512" rx="112" fill="#E84D35"/>
 	<path d="M116 176 L180 336 L256 212 L332 336 L396 176" fill="none" stroke="#ffffff" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

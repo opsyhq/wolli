@@ -1,5 +1,6 @@
 import geistWoff2 from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url";
 import geistMonoWoff2 from "@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2?url";
+import stackSansHeadlineWoff2 from "@fontsource-variable/stack-sans-headline/files/stack-sans-headline-latin-wght-normal.woff2?url";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
@@ -56,6 +57,13 @@ export const Route = createRootRoute({
 				crossOrigin: "anonymous",
 			},
 			{
+				rel: "preload",
+				href: stackSansHeadlineWoff2,
+				as: "font",
+				type: "font/woff2",
+				crossOrigin: "anonymous",
+			},
+			{
 				rel: "stylesheet",
 				href: appCss,
 			},
@@ -101,8 +109,8 @@ function GitHubIcon({ className }: { className?: string }) {
 function SiteHeader() {
 	return (
 		<header className="sticky top-0 z-50 border-b border-black/5 bg-background/80 backdrop-blur-xl backdrop-saturate-150">
-			<div className="mx-auto flex h-14 w-full items-center px-6 md:px-32 lg:px-48">
-				<a href="/" className="text-lg font-bold tracking-tight text-foreground">
+			<div className="mx-auto flex h-14 w-full items-center px-6 md:px-24 lg:px-40">
+				<a href="/" className="text-lg font-bold tracking-tight text-[#E84D35]">
 					Wolli
 				</a>
 				<nav className="ml-6 flex items-center gap-5 text-sm text-muted-foreground md:ml-10 md:gap-8">
