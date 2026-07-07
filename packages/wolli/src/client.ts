@@ -436,6 +436,13 @@ export class Agent {
 			// Bounce the supervised unit: stop, wait for the fixed port to free, then start its replacement.
 			service.stop(this.name);
 			await waitForShutdown(base);
+			// The port frees at `server.close()`, but launchd keeps the label registered until the old
+			// process is reaped after `runtime.cleanup()` — and `bootstrap` into a still-registered label
+			// fails with EIO. Wait for the unit to actually unload before starting its replacement.
+			const deadline = Date.now() + HEALTH_TIMEOUT_MS;
+			while (Date.now() < deadline && (await service.isRunning(this.name))) {
+				await sleep(HEALTH_POLL_MS);
+			}
 			service.start(this.name);
 		} else {
 			// Unsupervised dev daemon: ask it to exit, wait for the port, then respawn it directly.
