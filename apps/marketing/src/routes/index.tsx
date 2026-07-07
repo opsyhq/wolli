@@ -491,7 +491,7 @@ function Home() {
 						Each agent remembers across sessions, runs on schedules,{" "}
 						<span className="sm:whitespace-nowrap">reacts to events, and extends itself over time.</span>
 					</p>
-					<div className="group mt-14 flex items-center gap-1 rounded-full bg-background py-1.5 pr-2.5 pl-4 shadow-[0_2px_8px_rgba(0,0,0,0.06)] ring-1 ring-black/[0.06]">
+					<div className="group mt-14 flex items-center gap-1 rounded-full bg-background py-1.5 pr-2.5 pl-4 shadow-[0_2px_8px_rgba(0,0,0,0.06)]">
 						<span className="pr-1 font-mono text-base text-muted-foreground select-none">$</span>
 						<span className="font-mono text-sm text-foreground">{INSTALL_COMMAND}</span>
 						<Button
