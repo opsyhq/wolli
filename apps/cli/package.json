@@ -1,6 +1,6 @@
 {
 	"name": "wolli",
-	"version": "0.0.3",
+	"version": "0.0.4",
 	"description": "Wolli CLI — a daemon client (TUI + print) speaking HTTP/SSE to per-agent daemons",
 	"type": "module",
 	"bin": {
