@@ -1,0 +1,14 @@
+{
+	"name": "wolli-integration-github",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"wolli": {
+		"integrations": ["./index.ts"],
+		"workflows": ["./github-chat.ts"],
+		"tools": ["./github-review.ts"]
+	},
+	"peerDependencies": {
+		"wolli": "*"
+	}
+}
