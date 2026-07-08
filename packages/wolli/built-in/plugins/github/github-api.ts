@@ -371,7 +371,7 @@ export function normalizePullRequest(repo: string, raw: RawJson): PullRequestPay
 		repo,
 		action: pullRequestAction(raw),
 		pullRequestNumber: typeof raw.number === "number" ? raw.number : 0,
-		headSha: typeof raw.head?.sha === "string" ? raw.head.sha : "",
+		headSha: readHeadSha(raw),
 		title: typeof raw.title === "string" ? raw.title : "",
 		draft: raw.draft === true,
 		state: typeof raw.state === "string" ? raw.state : "",
