@@ -31,6 +31,11 @@ const EXPECTED: Record<string, { integrations: string[]; workflows: string[]; to
 		workflows: ["./scheduler-due.ts"],
 		tools: ["./cron.ts"],
 	},
+	github: {
+		integrations: ["./index.ts"],
+		workflows: ["./github-chat.ts"],
+		tools: ["./github-review.ts"],
+	},
 };
 
 describe("built-in plugin manifests", () => {
