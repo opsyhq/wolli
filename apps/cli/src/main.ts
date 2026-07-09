@@ -1,8 +1,8 @@
 /**
  * `wolli` dispatch.
  *
- * Agent surfaces are daemon clients: interactive `<name>`, the one-shot `--print` path (single-shot,
- * requires an inline message), and `new` (birth chat) connect to the agent's daemon (spawning one if needed) and drive a
+ * Agent surfaces are daemon clients: interactive `<name>` and the one-shot `--print` path (single-shot,
+ * requires an inline message) connect to the agent's daemon (spawning one if needed) and drive a
  * `SessionHandle` — the CLI never builds a `SessionHost`. `new`/`list`/`delete` are local commands; the
  * agent-scoped `<name> plugins ...` subcommand routes its mutating arms to the daemon (the single
  * writer); the hidden `daemon` subcommand runs the engine's `runDaemon` in-process (the

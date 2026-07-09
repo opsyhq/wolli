@@ -1,14 +1,15 @@
 /**
- * `new <name>` — create an agent, then drop into its first conversation.
+ * `new <name>` — create an agent and print how to start chatting with it.
  *
  * Creates the home tree (allocating the agent's fixed port + token into agent.json) and provisions
  * the OS service unit — the agent's daemon is always-on from creation (with the `none` backend a
- * detached daemon spawns on attach instead). Then opens a daemon client and runs the interactive
- * session seeded with the opener. The daemon binds the fixed port from agent.json.
+ * detached daemon spawns on attach instead). Then prints a confirmation and exits without attaching;
+ * `wolli <name>` opens the chat. (The interactive `wolli` dashboard is the create-and-chat path, and
+ * it seeds the birth opener when it routes into the new agent's chat.)
  */
 
 import { APP_NAME, Wolli } from "@opsyhq/wolli";
-import { App, BIRTH_OPENER } from "../modes/interactive/app.ts";
+import chalk from "chalk";
 
 export async function runNew(positionals: string[]): Promise<number> {
 	const wolli = new Wolli();
@@ -22,13 +23,9 @@ export async function runNew(positionals: string[]): Promise<number> {
 		return 1;
 	}
 
-	// `create` throws on an invalid name; cli.ts's top-level handler prints the message and exits 1
-	// (identical to a local catch), and `agent.connect()` already bubbles there — so no local try/catch.
+	// `create` throws on an invalid name; cli.ts's top-level handler prints the message and exits 1.
 	const agent = await wolli.create(name);
-	process.stdout.write(`Created agent "${agent.config.name}".\n`);
-
-	// Drop into the chat (seeded with the opener). App opens the daemon session for the route.
-	const app = new App(wolli);
-	await app.start({ to: "chat", name: agent.name, initialAssistantMessage: BIRTH_OPENER });
+	console.log(chalk.green(`Created agent "${agent.config.name}".`));
+	console.log(`${chalk.dim("Type")} ${chalk.bold(`${APP_NAME} ${agent.name}`)} ${chalk.dim("to chat with it")}`);
 	return 0;
 }

@@ -50,7 +50,7 @@ export function printHelp(): void {
 	console.log(`${APP_NAME} — persistent, purposeful agents
 
 Usage:
-  ${APP_NAME} new <name>                                   Create an agent, then start chatting with it
+  ${APP_NAME} new <name>                                   Create an agent (run "${APP_NAME} <name>" to chat)
   ${APP_NAME} list                                         List agents
   ${APP_NAME} delete <name>                                Delete an agent (type-the-name confirm)
   ${APP_NAME} restart <name>                               Restart an agent's daemon (picks up code changes)
