@@ -1,0 +1,93 @@
+name: Preview marketing
+
+on:
+  pull_request:
+    paths:
+      - "apps/marketing/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/preview-marketing.yml"
+
+concurrency:
+  group: preview-marketing-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # vite build emits dist/ and .wrangler/deploy/config.json, which redirects
+      # wrangler to the generated dist/server/wrangler.json (assets + worker).
+      - name: Build marketing
+        run: pnpm --filter marketing build
+
+      # versions upload publishes a new version without promoting it to
+      # production, and prints a preview URL on the workers.dev subdomain.
+      - name: Upload preview version
+        id: preview
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/marketing
+          # Pin to the wrangler that generated the build config to avoid drift.
+          wranglerVersion: "4.106.0"
+          command: versions upload
+
+      - name: Comment preview URL
+        if: steps.preview.outputs.deployment-url != ''
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.preview.outputs.deployment-url }}
+        with:
+          script: |
+            const marker = "<!-- preview-marketing -->";
+            const url = process.env.PREVIEW_URL;
+            const sha = context.payload.pull_request.head.sha.slice(0, 7);
+            const body = [
+              marker,
+              "### Marketing preview",
+              "",
+              url,
+              "",
+              `Updated for ${sha}.`,
+            ].join("\n");
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
