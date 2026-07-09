@@ -63,8 +63,10 @@ jobs:
         run: pnpm --filter wolli build:bundle
 
       # OIDC trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.x.
+      # Pinned instead of @latest: recent npm builds ship without the bundled
+      # `sigstore` module, breaking `--provenance` (npm/cli#9722).
       - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.5.1
 
       - name: Publish to npm
         run: node scripts/publish.mjs
