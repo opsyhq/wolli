@@ -15,7 +15,6 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   preview:
@@ -56,46 +55,6 @@ jobs:
           workingDirectory: apps/docs
           # Pin to the wrangler that generated the build config to avoid drift.
           wranglerVersion: "4.106.0"
+          # This worker serves everything under /docs (zone-route split), so the
+          # preview URL in the run log renders under <preview>/docs, not the root.
           command: versions upload
-
-      - name: Comment preview URL
-        if: steps.preview.outputs.deployment-url != ''
-        uses: actions/github-script@v7
-        env:
-          # This worker serves everything under /docs (zone-route split), so its
-          # preview root renders nothing useful; link straight to /docs.
-          PREVIEW_URL: ${{ steps.preview.outputs.deployment-url }}/docs
-        with:
-          script: |
-            const marker = "<!-- preview-docs -->";
-            const url = process.env.PREVIEW_URL;
-            const sha = context.payload.pull_request.head.sha.slice(0, 7);
-            const body = [
-              marker,
-              "### Docs preview",
-              "",
-              url,
-              "",
-              `Updated for ${sha}.`,
-            ].join("\n");
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const existing = comments.find((c) => c.body.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }

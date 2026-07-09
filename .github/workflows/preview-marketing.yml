@@ -13,7 +13,6 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   preview:
@@ -54,43 +53,3 @@ jobs:
           # Pin to the wrangler that generated the build config to avoid drift.
           wranglerVersion: "4.106.0"
           command: versions upload
-
-      - name: Comment preview URL
-        if: steps.preview.outputs.deployment-url != ''
-        uses: actions/github-script@v7
-        env:
-          PREVIEW_URL: ${{ steps.preview.outputs.deployment-url }}
-        with:
-          script: |
-            const marker = "<!-- preview-marketing -->";
-            const url = process.env.PREVIEW_URL;
-            const sha = context.payload.pull_request.head.sha.slice(0, 7);
-            const body = [
-              marker,
-              "### Marketing preview",
-              "",
-              url,
-              "",
-              `Updated for ${sha}.`,
-            ].join("\n");
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const existing = comments.find((c) => c.body.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
