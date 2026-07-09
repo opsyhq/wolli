@@ -19,6 +19,9 @@ permissions:
 
 jobs:
   preview:
+    # Only same-repo PRs. Fork PRs get no secrets (wrangler couldn't authenticate
+    # anyway), and this stops untrusted PR code from running on the runner at all.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
