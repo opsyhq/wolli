@@ -180,6 +180,7 @@ function Home() {
 	useBrowserLayoutEffect(() => {
 		const layer = glowLayerRef.current;
 		if (!layer) return;
+		if (!window.matchMedia("(min-width: 48rem)").matches) return;
 		const els = Array.from(layer.querySelectorAll<HTMLElement>(".hero-glow"));
 		if (els.length === 0) return;
 
@@ -193,17 +194,11 @@ function Home() {
 		let freezeStart = Number.POSITIVE_INFINITY;
 		let freezeLength = 0;
 		let bgHeight = viewportH;
-		// On mobile the balls stay a still, viewport-bound backdrop: the field is
-		// not coupled to scroll, so it never fights the address-bar show/hide that
-		// resizes the viewport mid-scroll (which otherwise re-measured against the
-		// page height and jerked the balls). Desktop keeps the full-page parallax.
-		let parallax = false;
 		const measure = () => {
 			viewportW = layer.clientWidth;
 			viewportH = layer.clientHeight;
-			parallax = window.matchMedia("(min-width: 48rem)").matches;
 			const rail = document.getElementById("demo-rail");
-			const pinned = rail && parallax;
+			const pinned = rail && window.matchMedia("(min-width: 48rem)").matches;
 			if (pinned) {
 				const railTop = rail.getBoundingClientRect().top + window.scrollY;
 				const stickyTop = Math.max(16, (viewportH - 512) / 2);
@@ -213,16 +208,13 @@ function Home() {
 				freezeStart = Number.POSITIVE_INFINITY;
 				freezeLength = 0;
 			}
-			// Parallax spans the page; the still mobile field is bound to the viewport.
-			bgHeight = parallax ? Math.max(viewportH, document.documentElement.scrollHeight - freezeLength) : viewportH;
+			bgHeight = Math.max(viewportH, document.documentElement.scrollHeight - freezeLength);
 		};
 		measure();
 
 		// Scroll position with the frozen stretch removed — continuous, so the
-		// background never jumps as the demo pins and releases. Mobile isn't
-		// scroll-coupled (parallax off), so the offset stays a flat 0 there.
+		// background never jumps as the demo pins and releases.
 		const offset = () => {
-			if (!parallax) return 0;
 			const s = window.scrollY;
 			return s - Math.max(0, Math.min(s - freezeStart, freezeLength));
 		};

@@ -187,6 +187,12 @@ body {
   will-change: transform;
 }
 
+@media (max-width: 47.999rem) {
+  .hero-glow {
+    display: none;
+  }
+}
+
 /* Demo rail card slide: a scroll-driven animation on the rail's view timeline,
    no JS involved — the browser derives it from geometry, so the first paint is
    already correct (no hydration flash). On load the rail top sits at the
