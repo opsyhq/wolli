@@ -12,5 +12,9 @@
 	],
 	"observability": {
 		"enabled": true
-	}
+	},
+	// Force workers.dev preview URLs on for `wrangler versions upload` (PR
+	// previews). Defaults to the workers_dev setting, which is off here since
+	// production serves only on the zone routes above.
+	"preview_urls": true
 }
