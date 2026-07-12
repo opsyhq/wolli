@@ -30,15 +30,8 @@ opens by interviewing you to work out its purpose, then writes its own
 `SOUL.md` — its first line becomes the agent's description everywhere. Agents
 and state live under `~/.wolli`.
 
-```
- Agents
+<img width="1272" height="647" alt="image" src="https://github.com/user-attachments/assets/f524eeef-b1a7-4b5d-babf-4f0b19d8463a" />
 
- → inbox    Triage my email each morning, draft replies to the routine ones, flag what needs me.
-   scout    Watch the repos and deps we ship; when a release or CVE needs action, open an issue and ping me.
-   ledger   Track project spend across providers, reconcile invoices weekly, warn me before a budget tips over.
-
- ↑/↓ browse · enter chat · tab details · type to search commands · ctrl+c quit
-```
 
 ## How it works
 
