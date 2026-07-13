@@ -1,0 +1,13 @@
+{
+	"name": "wolli-integration-slack",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"wolli": {
+		"integrations": ["./index.ts"],
+		"workflows": ["./slack-chat.ts"]
+	},
+	"peerDependencies": {
+		"wolli": "*"
+	}
+}
