@@ -27,10 +27,9 @@
  * allowlist — empty/absent means "allow any channel" (logged as a warning).
  *
  * ## Known v1 limitations
- *  - Slack sends a bot mention as BOTH `app_mention` and `message`; this transport
- *    emits only `app_mention` for it, keeping the two events disjoint. The suppression
- *    needs the bot's user id from `auth.test`, so a mention landing in the first
- *    moments after connect can still emit both.
+ *  - Slack sends a bot mention as BOTH `app_mention` and `message`, and both are
+ *    emitted. Consumers handling both events must split responsibilities (deliver via
+ *    `message`, create via `app_mention` — see slack-chat.ts) to avoid double-handling.
  *  - Envelopes are acked on receipt with no durable event-id dedupe, so a Slack
  *    retry after a crash can re-emit an event.
  *  - On a Slack-requested refresh the socket is closed and reopened, so events in
@@ -177,8 +176,8 @@ export default defineIntegration({
 	}),
 	events: {
 		/**
-		 * A plain user message the bot can see (no subtype — edits, joins, bot posts are
-		 * dropped). Messages that @-mention the bot arrive only as `app_mention`.
+		 * A user message the bot can see (no subtype — edits, joins, bot posts are
+		 * dropped). A message that @-mentions the bot is ALSO emitted as `app_mention`.
 		 */
 		message: Type.Object({
 			channelId: Type.String(),
@@ -191,7 +190,7 @@ export default defineIntegration({
 			/** "channel" | "group" | "im" | "mpim". */
 			channelType: Type.String(),
 		}),
-		/** The bot was @-mentioned. Mentions are NOT also emitted as `message`. */
+		/** The bot was @-mentioned. The same message is also emitted as `message`. */
 		app_mention: Type.Object({
 			channelId: Type.String(),
 			ts: Type.String(),
@@ -266,9 +265,6 @@ export default defineIntegration({
 
 			if (event.type === "message") {
 				if (event.subtype) return; // edits, deletes, joins, bot_message, ...
-				// Slack sends a bot mention as both `message` and `app_mention` — emit only the
-				// latter so the events stay disjoint and consumers never double-handle a mention.
-				if (botUserId && text.includes(`<@${botUserId}>`)) return;
 				ctx.emit("message", {
 					channelId,
 					ts: event.ts,

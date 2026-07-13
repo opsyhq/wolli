@@ -1,11 +1,13 @@
 /**
  * Slack chat routing, as one workflows file:
- *  - `mention` binds each mention thread to its own session by a `slack:thread` tag and
- *    delivers the mention text as a followUp. A mention posted outside a thread makes its
- *    own `ts` the thread root, so the reply opens the thread the session lives in.
- *  - `thread` continues tracked threads: replies inside a thread whose session exists are
- *    delivered as followUps without needing another mention. Untracked threads and
- *    non-thread channel chatter never route — the bot is mention-gated.
+ *  - `mention` only CREATES: the first mention of an untracked thread binds it to a new
+ *    session by a `slack:thread` tag and delivers the mention text. A mention posted
+ *    outside a thread makes its own `ts` the thread root, so the reply opens the thread
+ *    the session lives in. Mentions in already-tracked threads are ignored here — Slack
+ *    emits every mention as a `message` too, and `thread` delivers it.
+ *  - `thread` is the single delivery path for tracked threads: any message inside a
+ *    thread whose session exists (mention or not) is delivered as a followUp. Untracked
+ *    threads and non-thread channel chatter never route — the bot is mention-gated.
  *  - `reply` ships the turn's final assistant text back on `agent_end`, riding the
  *    producing session's `slack:thread` tag, threaded under the originating message.
  * Slack has no typing indicator for classic bots, so there is no typing workflow.
@@ -24,11 +26,10 @@ export const mention = slack.on("app_mention", async (m, ctx) => {
 	// The mention is the thread root unless it was posted inside an existing thread.
 	const tag = threadTag(m.channelId, m.threadTs ?? m.ts);
 	const [match] = await ctx.agent.findSessions(tag);
-	const session = match
-		? await ctx.agent.openSession(match.id)
-		: await ctx.agent.createSession({
-				setup: (s) => s.appendTags(tag),
-			});
+	if (match) return; // already tracked — the mention's `message` twin delivers it via `thread`
+	const session = await ctx.agent.createSession({
+		setup: (s) => s.appendTags(tag),
+	});
 	// followUp queues behind a running turn instead of interrupting it.
 	await session.sendUserMessage(m.text, { deliverAs: "followUp" });
 });

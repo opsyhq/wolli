@@ -32,8 +32,8 @@ holding `channelId:threadTs`:
 
 | Surface | Shape |
 |---------|-------|
-| `message` event | A plain user message the bot can see: `{ channelId, ts, threadTs?, text, user: { id }, channelType }`. Edits, deletes, joins, bot posts (including the bot's own), and messages that @-mention the bot are dropped. |
-| `app_mention` event | The bot was @-mentioned: `{ channelId, ts, threadTs?, text, user: { id } }`. Mentions arrive **only** as this event, never as `message`, so the two are disjoint. |
+| `message` event | A user message the bot can see: `{ channelId, ts, threadTs?, text, user: { id }, channelType }`. Edits, deletes, joins, and bot posts (including the bot's own) are dropped. |
+| `app_mention` event | The bot was @-mentioned: `{ channelId, ts, threadTs?, text, user: { id } }`. Slack sends a mention as **both** events, and both are emitted — the bundled workflow delivers through `message` and uses `app_mention` only to create sessions, so nothing is double-handled. |
 | `sendMessage` action | `{ channelId, text, threadTs? }` → `chat.postMessage`, chunked at 40,000 characters, returns `{ ts: string[] }`. Pass `threadTs` to reply in a thread; Slack renders `mrkdwn`, not standard markdown. |
 
 `ts` is Slack's message id and doubles as the key for threading: reply to a message
