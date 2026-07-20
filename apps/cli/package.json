@@ -1,0 +1,13 @@
+{
+  "name": "@wolli/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "wolli": "./src/index.ts"
+  },
+  "dependencies": {
+    "@wolli/core": "workspace:*",
+    "hono": "^4.12.31"
+  }
+}

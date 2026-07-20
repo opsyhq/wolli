@@ -11,11 +11,30 @@
         "typescript": "^5",
       },
     },
+    "apps/cli": {
+      "name": "@wolli/cli",
+      "version": "0.0.1",
+      "bin": {
+        "wolli": "./src/index.ts",
+      },
+      "dependencies": {
+        "@wolli/core": "workspace:*",
+        "hono": "^4.12.31",
+      },
+    },
+    "apps/server": {
+      "name": "@wolli/server",
+      "version": "0.0.1",
+      "dependencies": {
+        "@wolli/core": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@wolli/core",
       "version": "0.0.1",
       "dependencies": {
         "drizzle-orm": "^0.45.2",
+        "hono": "^4.12.31",
       },
     },
   },
@@ -100,7 +119,11 @@
 
     "@types/node": ["@types/node@26.1.1", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-nxAkRSVkN1Y0JC1W8ky/fTfkGsMmcrRsbx+3XoZE+rMOX71kLYTV7fLXpqud1GpbpP5TuffXFqfX7fH2GgZREw=="],
 
+    "@wolli/cli": ["@wolli/cli@workspace:apps/cli"],
+
     "@wolli/core": ["@wolli/core@workspace:packages/core"],
+
+    "@wolli/server": ["@wolli/server@workspace:apps/server"],
 
     "buffer-from": ["buffer-from@1.1.2", "", {}, "sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ=="],
 
@@ -115,6 +138,8 @@
     "fsevents": ["fsevents@2.3.3", "", { "os": "darwin" }, "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw=="],
 
     "get-tsconfig": ["get-tsconfig@4.14.0", "", { "dependencies": { "resolve-pkg-maps": "^1.0.0" } }, "sha512-yTb+8DXzDREzgvYmh6s9vHsSVCHeC0G3PI5bEXNBHtmshPnO+S5O7qgLEOn0I5QvMy6kpZN8K1NKGyilLb93wA=="],
+
+    "hono": ["hono@4.12.31", "", {}, "sha512-zJIHFrl6bq3RDd2YusFNCDlM8qUprxKswyi/OPzPyzKDdyBXDqWx8bZlZ7R+saTdSTatUmb3O7K4SspGPaEOQg=="],
 
     "resolve-pkg-maps": ["resolve-pkg-maps@1.0.0", "", {}, "sha512-seS2Tj26TBVOC2NIc2rOe2y2ZO7efxITtLZcGSOnHHNOQ7CkiUBfw0Iw2ck6xkIhPwLhKNLS8BO+hEpngQlqzw=="],
 

@@ -1,6 +1,6 @@
 # Workflow Engine
 
-This implements simple, in process workflow engine.
+This implements simple, in process workflow engine simillar to DBOS adapted to our own backends and append only logs.
 
 Steps and Workflows are defined as such:
 
