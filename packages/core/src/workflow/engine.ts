@@ -1,19 +1,21 @@
 import { desc, eq } from "drizzle-orm";
-import type { CancelSignal } from "./context.ts";
-import { createCancelSignal, createRunContext } from "./context.ts";
+import { WorkflowCancelledError } from "./errors.ts";
+import type { CancelSignal, StartOptions, WorkflowHandle } from "./run.ts";
 import {
-  rehydrateError,
-  serializeError,
-  WorkflowCancelledError,
-} from "./errors.ts";
+  createCancelSignal,
+  createRun,
+  createTerminalRunHandle,
+  markRunCancelled,
+  markRunCompleted,
+  markRunFailed,
+  markRunStarted,
+  TERMINAL_STATUSES,
+} from "./run.ts";
 import type { WorkflowDb } from "./schema.ts";
-import { workflowEvents, workflowRuns, workflowSteps } from "./schema.ts";
-import type {
-  AnyWorkflow,
-  StartOptions,
-  Workflow,
-  WorkflowHandle,
-} from "./types.ts";
+import { workflowRuns, workflowSteps } from "./schema.ts";
+import type { StepDefinition, StepRunState } from "./step.ts";
+import { executeChildStep, executeStep } from "./step.ts";
+import type { AnyWorkflow, Workflow, WorkflowContext } from "./workflow.ts";
 
 export interface CreateEngineOptions {
   db: WorkflowDb;
@@ -30,14 +32,6 @@ export interface Engine {
   resume(runId: string): Promise<WorkflowHandle<unknown>>;
   cancel(runId: string): Promise<void>;
 }
-
-type RunRow = typeof workflowRuns.$inferSelect;
-
-const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
-  "completed",
-  "failed",
-  "cancelled",
-]);
 
 export function createEngine(options: CreateEngineOptions): Engine {
   const { db } = options;
@@ -57,84 +51,11 @@ export function createEngine(options: CreateEngineOptions): Engine {
     registry.set(workflow.name, workflow);
   }
 
-  /** Idempotently persists the run row + run_created event. */
-  async function createRun(
-    workflow: AnyWorkflow,
-    runId: string,
-    input: unknown,
-    parent?: { runId: string; stepSeq: number },
-  ): Promise<boolean> {
-    const inputJson = JSON.stringify(input) ?? "null";
-    const ts = new Date().toISOString();
-    let created = false;
-    await db.transaction(async (tx) => {
-      const rows = await tx
-        .insert(workflowRuns)
-        .values({
-          id: runId,
-          workflowName: workflow.name,
-          status: "pending",
-          input: inputJson,
-          parentRunId: parent?.runId ?? null,
-          parentStepSeq: parent?.stepSeq ?? null,
-          createdAt: ts,
-          updatedAt: ts,
-        })
-        .onConflictDoNothing()
-        .returning({ id: workflowRuns.id });
-      if (rows.length > 0) {
-        created = true;
-        await tx
-          .insert(workflowEvents)
-          .values({ runId, type: "run_created", createdAt: ts });
-      }
-    });
-    return created;
-  }
-
-  async function markRunCancelled(runId: string): Promise<void> {
-    const ts = new Date().toISOString();
-    await db.transaction(async (tx) => {
-      await tx
-        .insert(workflowEvents)
-        .values({ runId, type: "run_cancelled", createdAt: ts });
-      await tx
-        .update(workflowRuns)
-        .set({ status: "cancelled", updatedAt: ts })
-        .where(eq(workflowRuns.id, runId));
-    });
-  }
-
-  /** The run already finished — its handle settles from the stored row. */
-  function createTerminalRunHandle(run: RunRow): WorkflowHandle<unknown> {
-    let result: Promise<unknown>;
-    if (run.status === "completed") {
-      result = Promise.resolve(
-        run.output === null ? null : JSON.parse(run.output),
-      );
-    } else if (run.status === "failed") {
-      result = Promise.reject(
-        run.error === null
-          ? new Error(`Workflow run "${run.id}" failed`)
-          : rehydrateError(run.error),
-      );
-    } else {
-      result = Promise.reject(new WorkflowCancelledError(run.id));
-    }
-    result.catch(() => {});
-    return {
-      runId: run.id,
-      result: () => result,
-      cancel: () => cancelRun(run.id),
-    };
-  }
-
   /**
    * Executes a persisted run in the background and returns its handle.
-   * Execution replays the workflow function from the top; ctx memoization
+   * Execution replays the workflow function from the top; step memoization
    * turns completed operations into instant returns, which is what makes a
-   * resumed run continue instead of redo. run_started is logged once per
-   * execution attempt: start + each resume.
+   * resumed run continue instead of redo.
    */
   function executeRun(
     workflow: AnyWorkflow,
@@ -152,7 +73,7 @@ export function createEngine(options: CreateEngineOptions): Engine {
         ).at(0);
         if (!run) throw new Error(`Unknown workflow run "${runId}"`);
         if (run.cancelRequested || cancel.requested) {
-          await markRunCancelled(runId);
+          await markRunCancelled(db, runId);
           throw new WorkflowCancelledError(runId);
         }
         let redriveSeq: number | null = null;
@@ -171,65 +92,41 @@ export function createEngine(options: CreateEngineOptions): Engine {
             redriveSeq = lastStep.seq;
           }
         }
-        const startedAt = new Date().toISOString();
-        await db.transaction(async (tx) => {
-          await tx
-            .insert(workflowEvents)
-            .values({ runId, type: "run_started", createdAt: startedAt });
-          await tx
-            .update(workflowRuns)
-            .set({ status: "running", updatedAt: startedAt })
-            .where(eq(workflowRuns.id, runId));
-        });
-        const ctx = createRunContext({
-          db,
+        await markRunStarted(db, runId);
+        const stepState: StepRunState = { db, runId, cancel, redriveSeq };
+        // The seq counter starts at 0 on every execution attempt — that reset
+        // is the replay mechanism: a resumed run's step calls land on the same
+        // seqs as last time and hit the memoized rows.
+        let nextSeq = 0;
+        const ctx: WorkflowContext = {
           runId,
-          cancel,
-          redriveSeq,
-          runChild: (childWorkflow, childInput, childRunId, parentStepSeq) =>
-            runChild(
-              childWorkflow,
-              childInput,
-              childRunId,
-              runId,
-              parentStepSeq,
-            ),
-        });
+          step<P, R>(stepDef: StepDefinition<P, R>, params: P): Promise<R> {
+            const seq = nextSeq;
+            nextSeq += 1;
+            return executeStep(stepState, seq, stepDef, params);
+          },
+          child<I, O>(childWorkflow: Workflow<I, O>, input: I): Promise<O> {
+            const seq = nextSeq;
+            nextSeq += 1;
+            return executeChildStep(
+              stepState,
+              seq,
+              childWorkflow.name,
+              input,
+              (childRunId) =>
+                runChild(childWorkflow, input, childRunId, runId, seq),
+            ) as Promise<O>;
+          },
+        };
         try {
           const output = await workflow.run(ctx, JSON.parse(run.input));
-          const outputJson = JSON.stringify(output) ?? "null";
-          const ts = new Date().toISOString();
-          await db.transaction(async (tx) => {
-            await tx
-              .insert(workflowEvents)
-              .values({ runId, type: "run_completed", createdAt: ts });
-            await tx
-              .update(workflowRuns)
-              .set({ status: "completed", output: outputJson, updatedAt: ts })
-              .where(eq(workflowRuns.id, runId));
-          });
+          await markRunCompleted(db, runId, JSON.stringify(output) ?? "null");
           return output;
         } catch (error) {
           if (error instanceof WorkflowCancelledError) {
-            await markRunCancelled(runId);
+            await markRunCancelled(db, runId);
           } else {
-            const ts = new Date().toISOString();
-            await db.transaction(async (tx) => {
-              await tx.insert(workflowEvents).values({
-                runId,
-                type: "run_failed",
-                data: serializeError(error),
-                createdAt: ts,
-              });
-              await tx
-                .update(workflowRuns)
-                .set({
-                  status: "failed",
-                  error: serializeError(error),
-                  updatedAt: ts,
-                })
-                .where(eq(workflowRuns.id, runId));
-            });
+            await markRunFailed(db, runId, error);
           }
           throw error;
         }
@@ -256,7 +153,7 @@ export function createEngine(options: CreateEngineOptions): Engine {
     parentStepSeq: number,
   ): Promise<unknown> {
     register(workflow);
-    const created = await createRun(workflow, childRunId, input, {
+    const created = await createRun(db, workflow.name, childRunId, input, {
       runId: parentRunId,
       stepSeq: parentStepSeq,
     });
@@ -289,7 +186,7 @@ export function createEngine(options: CreateEngineOptions): Engine {
   ): Promise<WorkflowHandle<unknown>> {
     register(workflow);
     const runId = opts?.runId ?? crypto.randomUUID();
-    const created = await createRun(workflow, runId, input);
+    const created = await createRun(db, workflow.name, runId, input);
     if (!created) {
       const run = (
         await db
@@ -304,8 +201,9 @@ export function createEngine(options: CreateEngineOptions): Engine {
           `Run "${runId}" belongs to workflow "${run.workflowName}", not "${workflow.name}"`,
         );
       }
-      if (TERMINAL_STATUSES.has(run.status))
-        return createTerminalRunHandle(run);
+      if (TERMINAL_STATUSES.has(run.status)) {
+        return createTerminalRunHandle(run, () => cancelRun(run.id));
+      }
     }
     return inflight.get(runId)?.handle ?? executeRun(workflow, runId);
   }
@@ -326,7 +224,7 @@ export function createEngine(options: CreateEngineOptions): Engine {
       );
     }
     if (run.status === "completed" || run.status === "cancelled") {
-      return createTerminalRunHandle(run);
+      return createTerminalRunHandle(run, () => cancelRun(run.id));
     }
     return inflight.get(runId)?.handle ?? executeRun(workflow, runId);
   }
@@ -350,7 +248,7 @@ export function createEngine(options: CreateEngineOptions): Engine {
       running.cancel.trigger();
     } else {
       // Interrupted run with no driver — finalize directly.
-      await markRunCancelled(runId);
+      await markRunCancelled(db, runId);
     }
   }
 
