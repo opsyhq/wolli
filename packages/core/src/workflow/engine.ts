@@ -106,7 +106,7 @@ export function createEngine(options: CreateEngineOptions): Engine {
   }
 
   /** The run already finished — its handle settles from the stored row. */
-  function handleForTerminalRun(run: RunRow): WorkflowHandle<unknown> {
+  function createTerminalRunHandle(run: RunRow): WorkflowHandle<unknown> {
     let result: Promise<unknown>;
     if (run.status === "completed") {
       result = Promise.resolve(
@@ -304,7 +304,8 @@ export function createEngine(options: CreateEngineOptions): Engine {
           `Run "${runId}" belongs to workflow "${run.workflowName}", not "${workflow.name}"`,
         );
       }
-      if (TERMINAL_STATUSES.has(run.status)) return handleForTerminalRun(run);
+      if (TERMINAL_STATUSES.has(run.status))
+        return createTerminalRunHandle(run);
     }
     return inflight.get(runId)?.handle ?? executeRun(workflow, runId);
   }
@@ -325,7 +326,7 @@ export function createEngine(options: CreateEngineOptions): Engine {
       );
     }
     if (run.status === "completed" || run.status === "cancelled") {
-      return handleForTerminalRun(run);
+      return createTerminalRunHandle(run);
     }
     return inflight.get(runId)?.handle ?? executeRun(workflow, runId);
   }
