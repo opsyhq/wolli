@@ -22,8 +22,11 @@ export {
   workflowRuns,
   workflowSchema,
   workflowSteps,
+  workflowStreamChunks,
 } from "./schema.ts";
-export type { RetryOptions, StepDefinition } from "./step.ts";
+export type { RetryOptions, StepContext, StepDefinition } from "./step.ts";
 export { defineStep } from "./step.ts";
+export type { StreamChunkRow } from "./stream.ts";
+export { readStream, writeStreamChunk } from "./stream.ts";
 export type { AnyWorkflow, Workflow, WorkflowContext } from "./workflow.ts";
 export { defineWorkflow } from "./workflow.ts";

@@ -8,6 +8,13 @@
       "when": 1784547776510,
       "tag": "0000_tan_wolfsbane",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784559530492,
+      "tag": "0001_demonic_terrax",
+      "breakpoints": true
     }
   ]
 }

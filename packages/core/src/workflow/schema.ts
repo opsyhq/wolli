@@ -99,7 +99,30 @@ export const workflowSteps = sqliteTable(
   (t) => [primaryKey({ columns: [t.runId, t.seq] })],
 );
 
-export const workflowSchema = { workflowRuns, workflowEvents, workflowSteps };
+// The run's durable output stream: one row per emitted chunk, ended by an
+// `eof` row. Read by cursor (`id`) for replay/reconnect; never read by replay
+// of the workflow itself — that uses workflow_steps.
+export const workflowStreamChunks = sqliteTable(
+  "workflow_stream_chunks",
+  {
+    id: integer().primaryKey({ autoIncrement: true }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => workflowRuns.id),
+    streamId: text("stream_id").notNull(), // = run id today; named streams later
+    stepSeq: integer("step_seq"), // NULL on eof and run-level rows
+    eof: integer({ mode: "boolean" }).notNull().default(false),
+    data: text(), // one JSON chunk; NULL on the eof row
+  },
+  (t) => [index("workflow_stream_chunks_run_id_id_idx").on(t.runId, t.id)],
+);
+
+export const workflowSchema = {
+  workflowRuns,
+  workflowEvents,
+  workflowSteps,
+  workflowStreamChunks,
+};
 
 /**
  * A drizzle sqlite-dialect database over the workflow schema. Typed to accept

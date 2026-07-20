@@ -1,11 +1,16 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   rehydrateError,
   serializeError,
   WorkflowCancelledError,
 } from "./errors.ts";
 import type { WorkflowDb } from "./schema.ts";
-import { workflowEvents, workflowRuns } from "./schema.ts";
+import {
+  workflowEvents,
+  workflowRuns,
+  workflowStreamChunks,
+} from "./schema.ts";
+import { wakeStreamReaders } from "./stream.ts";
 
 export interface StartOptions {
   runId?: string;
@@ -97,6 +102,16 @@ export async function markRunStarted(
       .update(workflowRuns)
       .set({ status: "running", updatedAt: ts })
       .where(eq(workflowRuns.id, runId));
+    // Reopen the stream: a resumed failed run appends past its old eof, so
+    // the eof row from the previous attempt must go.
+    await tx
+      .delete(workflowStreamChunks)
+      .where(
+        and(
+          eq(workflowStreamChunks.runId, runId),
+          eq(workflowStreamChunks.eof, true),
+        ),
+      );
   });
 }
 
@@ -114,7 +129,11 @@ export async function markRunCompleted(
       .update(workflowRuns)
       .set({ status: "completed", output, updatedAt: ts })
       .where(eq(workflowRuns.id, runId));
+    await tx
+      .insert(workflowStreamChunks)
+      .values({ runId, streamId: runId, eof: true });
   });
+  wakeStreamReaders(runId);
 }
 
 export async function markRunFailed(
@@ -134,7 +153,11 @@ export async function markRunFailed(
       .update(workflowRuns)
       .set({ status: "failed", error: serializeError(error), updatedAt: ts })
       .where(eq(workflowRuns.id, runId));
+    await tx
+      .insert(workflowStreamChunks)
+      .values({ runId, streamId: runId, eof: true });
   });
+  wakeStreamReaders(runId);
 }
 
 export async function markRunCancelled(
@@ -150,7 +173,11 @@ export async function markRunCancelled(
       .update(workflowRuns)
       .set({ status: "cancelled", updatedAt: ts })
       .where(eq(workflowRuns.id, runId));
+    await tx
+      .insert(workflowStreamChunks)
+      .values({ runId, streamId: runId, eof: true });
   });
+  wakeStreamReaders(runId);
 }
 
 /** The run already finished — its handle settles from the stored row. */
