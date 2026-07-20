@@ -33,3 +33,9 @@ engine.cancel(wf.runId)
 
 
 Both steps and workflows have maxAttempts parameter on how many times it should retry the step before it fails
+
+
+We have following schema:
+`workflow_runs` // store workflow run information
+`workflow_events` // append only store storing events as they go, created run, started run, completed run, etc, etc
+`workflow_steps` // store workflow step information
