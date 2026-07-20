@@ -11,7 +11,31 @@ import {
   text,
 } from "drizzle-orm/sqlite-core";
 
-import { EVENT_TYPES, RUN_STATUSES, STEP_STATUSES } from "./types.ts";
+export const RUN_STATUSES = [
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+export const STEP_STATUSES = ["running", "completed", "failed"] as const;
+export type StepStatus = (typeof STEP_STATUSES)[number];
+
+export const EVENT_TYPES = [
+  "run_created",
+  "run_started",
+  "run_completed",
+  "run_failed",
+  "run_cancelled",
+  "step_created",
+  "step_started",
+  "step_completed",
+  "step_failed",
+  "step_retrying",
+] as const;
+export type EventType = (typeof EVENT_TYPES)[number];
 
 export const workflowRuns = sqliteTable(
   "workflow_runs",
@@ -21,7 +45,7 @@ export const workflowRuns = sqliteTable(
     status: text({ enum: RUN_STATUSES }).notNull(),
     input: text().notNull(), // JSON
     output: text(), // JSON when completed
-    error: text(), // JSON {name,message,stack?} when failed
+    error: text(), // serializeError() output when failed
     cancelRequested: integer("cancel_requested", { mode: "boolean" })
       .notNull()
       .default(false),
