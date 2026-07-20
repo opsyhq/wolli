@@ -39,3 +39,10 @@ We have following schema:
 `workflow_runs` // store workflow run information
 `workflow_events` // append only store storing events as they go, created run, started run, completed run, etc, etc
 `workflow_steps` // store workflow step information
+`workflow_stream_chunks` // store workflow stream chunks and read it
+
+
+Workflows support streaming via workflow_stream_chunks
+
+for now its designed to be in process wakers, streaming is done to stream ai responses.
+Each chunk is stored in the dabase, notifies waker and waker reads db from the cursor it had

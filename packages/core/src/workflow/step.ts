@@ -7,7 +7,12 @@ import {
 } from "./errors.ts";
 import type { CancelSignal } from "./run.ts";
 import type { WorkflowDb } from "./schema.ts";
-import { workflowEvents, workflowSteps } from "./schema.ts";
+import {
+  workflowEvents,
+  workflowSteps,
+  workflowStreamChunks,
+} from "./schema.ts";
+import { wakeStreamReaders, writeStreamChunk } from "./stream.ts";
 
 export interface RetryOptions {
   /** Total attempts including the first. Default 1 (no retries). */
@@ -20,16 +25,28 @@ export interface RetryOptions {
   maxDelayMs?: number;
 }
 
+/** Capabilities a step body gets beyond its params. */
+export interface StepContext {
+  /**
+   * Appends a chunk to the run's live output stream. Observability only:
+   * chunks are never journaled or replayed — a memoized step never re-emits.
+   * The stream is append-only: a retried attempt's chunks stay in the log as
+   * history behind the repeated step.started restart boundary, and readers
+   * repair the framing on their side.
+   */
+  emitChunk(chunk: unknown): Promise<void>;
+}
+
 export interface StepDefinition<P, R> {
   readonly kind: "step";
   readonly name: string;
-  readonly run: (params: P) => Promise<R>;
+  readonly run: (params: P, step: StepContext) => Promise<R>;
   readonly retry: Required<RetryOptions>;
 }
 
 export function defineStep<P, R>(
   name: string,
-  run: (params: P) => Promise<R>,
+  run: (params: P, step: StepContext) => Promise<R>,
   opts?: RetryOptions,
 ): StepDefinition<P, R> {
   return {
@@ -89,11 +106,22 @@ async function createStep(
       createdAt: ts,
       updatedAt: ts,
     });
+    await tx.insert(workflowStreamChunks).values({
+      runId,
+      streamId: runId,
+      stepSeq: seq,
+      data: JSON.stringify({ type: "step.started", seq, name }),
+    });
   });
+  wakeStreamReaders(runId);
 }
 
 /** Re-execution after a crash mid-step or a redrive of the killing failure. */
-async function restartStep(state: StepRunState, seq: number): Promise<void> {
+async function restartStep(
+  state: StepRunState,
+  seq: number,
+  name: string,
+): Promise<void> {
   const { db, runId } = state;
   const ts = new Date().toISOString();
   await db.transaction(async (tx) => {
@@ -104,7 +132,18 @@ async function restartStep(state: StepRunState, seq: number): Promise<void> {
       .update(workflowSteps)
       .set({ status: "running", attempts: 1, error: null, updatedAt: ts })
       .where(and(eq(workflowSteps.runId, runId), eq(workflowSteps.seq, seq)));
+    // The stream is append-only: the dead attempt's chunks stay as history,
+    // and this repeated step.started is the restart boundary (eve emits
+    // step.started per execution the same way — retries are never a stream
+    // concept, only the journal's step_retrying).
+    await tx.insert(workflowStreamChunks).values({
+      runId,
+      streamId: runId,
+      stepSeq: seq,
+      data: JSON.stringify({ type: "step.started", seq, name }),
+    });
   });
+  wakeStreamReaders(runId);
 }
 
 async function markStepCompleted(
@@ -122,7 +161,14 @@ async function markStepCompleted(
       .update(workflowSteps)
       .set({ status: "completed", output, error: null, updatedAt: ts })
       .where(and(eq(workflowSteps.runId, runId), eq(workflowSteps.seq, seq)));
+    await tx.insert(workflowStreamChunks).values({
+      runId,
+      streamId: runId,
+      stepSeq: seq,
+      data: JSON.stringify({ type: "step.completed", seq }),
+    });
   });
+  wakeStreamReaders(runId);
 }
 
 async function markStepFailed(
@@ -144,7 +190,14 @@ async function markStepFailed(
       .update(workflowSteps)
       .set({ status: "failed", error: serializeError(error), updatedAt: ts })
       .where(and(eq(workflowSteps.runId, runId), eq(workflowSteps.seq, seq)));
+    await tx.insert(workflowStreamChunks).values({
+      runId,
+      streamId: runId,
+      stepSeq: seq,
+      data: JSON.stringify({ type: "step.failed", seq }),
+    });
   });
+  wakeStreamReaders(runId);
 }
 
 /**
@@ -182,7 +235,7 @@ export async function executeStep<P, R>(
         ? new Error(`Step failure in run "${runId}" has no recorded error`)
         : rehydrateError(recorded.error);
     }
-    await restartStep(state, seq);
+    await restartStep(state, seq, stepDef.name);
   } else {
     await createStep(
       state,
@@ -194,13 +247,19 @@ export async function executeStep<P, R>(
   }
   const { backoffFactor, initialDelayMs, maxAttempts, maxDelayMs } =
     stepDef.retry;
+  const stepContext: StepContext = {
+    emitChunk: (chunk) => writeStreamChunk(db, runId, seq, chunk),
+  };
   // Retries re-use this seq — the attempt loop is inside one durable op.
   for (let attempt = 1; ; attempt += 1) {
     if (cancel.requested) throw new WorkflowCancelledError(runId);
     try {
       // Race with the cancel signal so cancel() preempts a hung step; the
       // abandoned invocation is covered by at-least-once semantics.
-      const result = await Promise.race([stepDef.run(params), cancel.promise]);
+      const result = await Promise.race([
+        stepDef.run(params, stepContext),
+        cancel.promise,
+      ]);
       await markStepCompleted(state, seq, JSON.stringify(result) ?? "null");
       return result;
     } catch (error) {
@@ -231,7 +290,23 @@ export async function executeStep<P, R>(
           .where(
             and(eq(workflowSteps.runId, runId), eq(workflowSteps.seq, seq)),
           );
+        // Same rule as restartStep: the stream is append-only, so the failed
+        // attempt's chunks stay and the re-attempt announces itself as a
+        // fresh step.started restart boundary. Retries are not a stream
+        // concept (matching eve's protocol), only a journal one
+        // (step_retrying above); readers repair the framing on their side.
+        await tx.insert(workflowStreamChunks).values({
+          runId,
+          streamId: runId,
+          stepSeq: seq,
+          data: JSON.stringify({
+            type: "step.started",
+            seq,
+            name: stepDef.name,
+          }),
+        });
       });
+      wakeStreamReaders(runId);
       const delayMs = Math.min(
         initialDelayMs * backoffFactor ** (attempt - 1),
         maxDelayMs,
@@ -286,7 +361,7 @@ export async function executeChildStep(
         ? new Error(`Step failure in run "${runId}" has no recorded error`)
         : rehydrateError(recorded.error);
     }
-    await restartStep(state, seq);
+    await restartStep(state, seq, workflowName);
   } else {
     await createStep(
       state,

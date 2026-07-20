@@ -1,4 +1,6 @@
-import { api } from "@wolli/core/api";
+import { createApp } from "@wolli/core";
+
+const { api } = createApp();
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 3000),
