@@ -1,8 +1,11 @@
 {
   "name": "@wolli/core",
   "version": "0.0.1",
-  "type": "module",
+  "dependencies": {
+    "drizzle-orm": "^0.45.2"
+  },
   "exports": {
     ".": "./src/index.ts"
-  }
+  },
+  "type": "module"
 }
