@@ -2,13 +2,18 @@
   "name": "@wolli/core",
   "version": "0.0.1",
   "dependencies": {
-    "ai": "^7.0.31",
+    "@ai-sdk/azure": "^4.0.17",
+    "ai": "^7.0.32",
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.12.31"
+    "hono": "^4.12.31",
+    "zod": "^4.4.3"
   },
   "exports": {
     ".": "./src/index.ts",
     "./api": "./src/api/index.ts"
   },
-  "type": "module"
+  "type": "module",
+  "devDependencies": {
+    "@ai-sdk/provider": "4.0.3"
+  }
 }
